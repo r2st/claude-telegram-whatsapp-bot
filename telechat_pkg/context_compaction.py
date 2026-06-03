@@ -5,7 +5,6 @@ When conversation history grows too long, older messages are compressed into
 a concise summary while keeping recent messages verbatim. This preserves
 context without hitting token limits.
 
-Inspired by openclaw's context-engine compaction system.
 """
 from __future__ import annotations
 

@@ -62,8 +62,36 @@ _user_model: dict[str, str] = {}  # user → model override
 _browse_cwd: dict[str, Path] = {}  # user → current browse directory
 _browse_items: dict[str, list[Path]] = {}  # user → last listed items (for !cd N)
 
-BROWSE_ROOT = Path(cc.CLAUDE_WORK_DIR)
+BROWSE_ROOT = Path(cc.CLAUDE_WORK_DIR).expanduser().resolve()
 BROWSE_PAGE_SIZE = 15
+
+
+def _within_root(p: Path) -> bool:
+    """True iff ``p`` resolves to a path inside BROWSE_ROOT (no .. / symlink escape)."""
+    try:
+        resolved = p.expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    # Path.is_relative_to was added in 3.9; we target 3.10+ per pyproject.
+    try:
+        return resolved == BROWSE_ROOT or resolved.is_relative_to(BROWSE_ROOT)
+    except AttributeError:  # pragma: no cover — defensive for older runtimes
+        try:
+            resolved.relative_to(BROWSE_ROOT)
+            return True
+        except ValueError:
+            return False
+
+
+def _safe_join(base: Path, user_input: str) -> Path | None:
+    """Resolve ``user_input`` against ``base`` and confirm the result stays under BROWSE_ROOT.
+
+    Returns None if the resolved path escapes the sandbox.
+    """
+    candidate = Path(user_input).expanduser()
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    return candidate if _within_root(candidate) else None
 
 _memory = MemoryStore()
 
@@ -261,7 +289,10 @@ def _handle_command(chat_id: str, sender: str, text: str) -> bool:
         send_message(chat_id, HELP_TEXT)
 
     elif cmd == "!reset":
-        cc.clear_history(PLATFORM, sender)
+        # Clear history for the currently active session so !reset actually
+        # affects what normal chat reads/writes.
+        sess = _active_session(sender)
+        cc.clear_history(PLATFORM, sender, session_name=sess.name)
         cc.clear_session(PLATFORM, sender)
         send_message(chat_id, "🔄 Conversation reset. Starting fresh!")
 
@@ -399,9 +430,10 @@ def _handle_command(chat_id: str, sender: str, text: str) -> bool:
 
     elif cmd == "!browse":
         if arg:
-            target = Path(arg).expanduser()
-            if not target.is_absolute():
-                target = BROWSE_ROOT / target
+            target = _safe_join(BROWSE_ROOT, arg)
+            if target is None:
+                send_message(chat_id, "❌ Path is outside the allowed browse root.")
+                return True
         else:
             target = _browse_cwd.get(sender, BROWSE_ROOT)
         if target.is_dir():
@@ -417,18 +449,23 @@ def _handle_command(chat_id: str, sender: str, text: str) -> bool:
                 idx = int(arg) - 1
                 items = _browse_items.get(sender, [])
                 if 0 <= idx < len(items) and items[idx].is_dir():
-                    send_message(chat_id, _format_browse(sender, items[idx]))
+                    # Items came from _format_browse which only lists paths inside BROWSE_ROOT,
+                    # but re-check defensively in case the listing pre-dated a config change.
+                    if not _within_root(items[idx]):
+                        send_message(chat_id, "❌ That entry is outside the allowed browse root.")
+                    else:
+                        send_message(chat_id, _format_browse(sender, items[idx]))
                 elif 0 <= idx < len(items):
                     send_message(chat_id, f"❌ #{arg} is a file, not a folder. Use !view {arg}")
                 else:
                     send_message(chat_id, f"❌ Invalid number. Use !browse to see the list.")
             except ValueError:
                 # Treat as path
-                target = Path(arg).expanduser()
-                if not target.is_absolute():
-                    cwd = _browse_cwd.get(sender, BROWSE_ROOT)
-                    target = cwd / arg
-                if target.is_dir():
+                cwd = _browse_cwd.get(sender, BROWSE_ROOT)
+                target = _safe_join(cwd, arg)
+                if target is None:
+                    send_message(chat_id, "❌ Path is outside the allowed browse root.")
+                elif target.is_dir():
                     send_message(chat_id, _format_browse(sender, target))
                 else:
                     send_message(chat_id, f"❌ Not a directory: {target}")
@@ -436,7 +473,7 @@ def _handle_command(chat_id: str, sender: str, text: str) -> bool:
     elif cmd == "!up":
         cwd = _browse_cwd.get(sender, BROWSE_ROOT)
         parent = cwd.parent
-        if parent.is_dir() and str(parent).startswith(str(BROWSE_ROOT.parent)):
+        if parent.is_dir() and _within_root(parent):
             send_message(chat_id, _format_browse(sender, parent))
         else:
             send_message(chat_id, "📂 Already at the top level.")
@@ -455,9 +492,15 @@ def _handle_command(chat_id: str, sender: str, text: str) -> bool:
             items = _browse_items.get(sender, [])
             if 0 <= idx < len(items) and items[idx].is_file():
                 fpath = items[idx]
+                if not _within_root(fpath):
+                    send_message(chat_id, "❌ That file is outside the allowed browse root.")
+                    return True
                 try:
                     content = fpath.read_text(errors="replace")[:3000]
-                    rel = fpath.relative_to(BROWSE_ROOT) if str(fpath).startswith(str(BROWSE_ROOT)) else fpath
+                    try:
+                        rel = fpath.resolve().relative_to(BROWSE_ROOT)
+                    except ValueError:
+                        rel = fpath
                     msg = f"📄 *{rel}*\n```\n{content}\n```"
                     send_message(chat_id, msg)
                 except Exception as e:
@@ -634,7 +677,11 @@ def _handle(chat_id: str, sender: str, text: str) -> None:
 
         model = _user_model.get(sender, cc.CLAUDE_MODEL)
         verbose = _verbose.get(sender, False)
-        history = cc.load_history(PLATFORM, sender)
+        # Use the user's active session so !new / !switch / !rename actually
+        # scope the conversation history. Without this, normal chat keeps
+        # writing to the unsuffixed global thread regardless of session.
+        active_sess = _active_session(sender)
+        history = cc.load_history(PLATFORM, sender, session_name=active_sess.name)
 
         # Use async path for streaming progress
         loop = asyncio.new_event_loop()
@@ -645,7 +692,7 @@ def _handle(chat_id: str, sender: str, text: str) -> None:
         finally:
             loop.close()
 
-        cc.save_turn(PLATFORM, sender, text, reply)
+        cc.save_turn(PLATFORM, sender, text, reply, session_name=active_sess.name)
         cc.track_usage(PLATFORM, sender, stats.get("input_tokens", 0), stats.get("output_tokens", 0))
 
         # Track tools used

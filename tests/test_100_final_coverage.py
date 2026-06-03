@@ -1,5 +1,6 @@
 """Final coverage push — targeting remaining uncovered lines across all modules."""
 from __future__ import annotations
+import pytest
 import asyncio
 import json
 import os
@@ -901,6 +902,7 @@ class TestMarkdownProtectUrlsInsideLink(unittest.TestCase):
 # qr_util.py — lines 91, 221
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.skip(reason="Hand-rolled QR / Reed-Solomon encoder removed in favor of the optional 'qrcode' dependency")
 class TestQrUtilEdgeCases(unittest.TestCase):
     def test_qr_version2_length_prefix(self):
         """Line 91: version > 1 uses 16-bit length prefix."""

@@ -1,7 +1,6 @@
 """
 Diagnostic doctor — check configuration, connectivity, and health.
 
-Inspired by openclaw's doctor/flows system. Runs a battery of checks
 to diagnose common issues and suggest fixes.
 """
 from __future__ import annotations

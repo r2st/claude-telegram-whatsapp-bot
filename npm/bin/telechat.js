@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { execSync, spawn } = require("child_process");
+const { execSync, spawnSync, spawn } = require("child_process");
 const { existsSync, writeFileSync } = require("fs");
 const path = require("path");
 const readline = require("readline");
@@ -107,6 +107,53 @@ function httpGet(url) {
       });
     }).on("error", () => resolve(null));
   });
+}
+
+// ─── QR code for web chat ─────────────────────────────────────────────────
+
+function getLocalIP() {
+  const os = require("os");
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === "IPv4" && !net.internal) return net.address;
+    }
+  }
+  return "localhost";
+}
+
+function printWebQR(port) {
+  // Reject anything that isn't a bare numeric port. The value reaches us from
+  // .env / user input, so even though it's "expected to be numeric" we must
+  // not splice it into a `python -c` script unvalidated.
+  const portStr = String(port);
+  if (!/^\d+$/.test(portStr) || Number(portStr) < 1 || Number(portStr) > 65535) {
+    console.log(`\n  (skipping QR: invalid WEB_CHAT_PORT="${portStr}")`);
+    return;
+  }
+  const ip = getLocalIP();
+  const url = `http://${ip}:${portStr}`;
+  try {
+    const python = findPython();
+    if (!python) { console.log(`\n  Open on phone: ${url}`); return; }
+    // Pass the port as argv rather than interpolating into source, so even
+    // a future regression in the regex above can't lead to code injection.
+    const script =
+      "import sys\n" +
+      "from telechat_pkg.qr_util import print_web_qr\n" +
+      "print_web_qr(sys.argv[1])\n";
+    const result = spawnSync(python, ["-c", script, portStr], {
+      encoding: "utf8",
+      timeout: 15000,
+    });
+    if (result.status === 0 && result.stdout && result.stdout.trim()) {
+      console.log(result.stdout.trimEnd());
+    } else {
+      console.log(`\n  Open on phone: ${url}`);
+    }
+  } catch {
+    console.log(`\n  Open on phone: ${url}`);
+  }
 }
 
 function ask(rl, question, fallback) {
@@ -468,12 +515,30 @@ async function setup() {
     console.log("    npm install -g @anthropic-ai/claude-code && claude auth login\n");
   }
 
-  // ── Write .env ──
-  const envContent = Object.entries(env)
-    .filter(([, v]) => v)
-    .map(([k, v]) => `${k}=${v}`)
-    .join("\n") + "\n";
+  // ── Claude Desktop bridge (optional) ──
+  console.log("\n── Claude Desktop bridge (optional) ──");
+  console.log("  Get Telegram notifications and remote control for your running");
+  console.log("  Claude Desktop sessions — reply, decide, and approve from your phone.");
+  console.log("  Enabling also installs a persistent background service (auto-start + restart).");
+  const enableBridge = (await ask(rl, "  Enable Claude Desktop bridge? (y/N): "))
+    .toLowerCase() === "y";
+  let wantApproval = false;
+  if (enableBridge) {
+    wantApproval = (await ask(rl,
+      "  Require Telegram approval for Bash/Write/Edit tool calls? (y/N): "
+    )).toLowerCase() === "y";
+    console.log("\n  For headless `claude --resume` to work, the bridge needs a");
+    console.log("  long-lived OAuth token. Run this in another Terminal:");
+    console.log("    claude setup-token");
+    console.log("  Then paste the sk-ant-oat01-... token here (or leave blank to skip):");
+    const oauthToken = await ask(rl, "  CLAUDE_CODE_OAUTH_TOKEN: ");
+    if (oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
+    else console.log("  ⚠ Skipped — set CLAUDE_CODE_OAUTH_TOKEN in .env later or replies will fail");
+    env._BRIDGE_ENABLE = "1";
+    env._BRIDGE_APPROVAL = wantApproval ? "1" : "0";
+  }
 
+  // ── Write .env ──
   if (existsSync(ENV_FILE)) {
     const overwrite = await ask(rl, "\n.env already exists. Overwrite? (y/N): ");
     if (overwrite.toLowerCase() !== "y") {
@@ -483,8 +548,32 @@ async function setup() {
     }
   }
 
-  writeFileSync(ENV_FILE, envContent);
+  // Strip internal flags before writing .env.
+  const bridgeEnable = env._BRIDGE_ENABLE === "1";
+  const bridgeApproval = env._BRIDGE_APPROVAL === "1";
+  delete env._BRIDGE_ENABLE;
+  delete env._BRIDGE_APPROVAL;
+  const finalContent = Object.entries(env)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `${k}=${v}`)
+    .join("\n") + "\n";
+  writeFileSync(ENV_FILE, finalContent);
   console.log(`\n✓ Wrote ${ENV_FILE}`);
+
+  if (bridgeEnable) {
+    console.log("\n── Installing Claude Desktop bridge ──");
+    if (!isPyPkgInstalled(python)) installPyPkg(python);
+    const bridgeArgs = ["-m", "telechat_pkg.main", "bridge", "install"];
+    if (bridgeApproval) bridgeArgs.push("--approval");
+    const r = spawnSync(python, bridgeArgs, { stdio: "inherit", env: process.env });
+    if (r.status === 0) {
+      console.log("  ✓ Bridge + persistent service installed. The bot is now running;");
+      console.log("    open Telegram and send /desktop to see your sessions.");
+    } else {
+      console.log("  ⚠ Bridge install failed — run `telechat bridge install` manually");
+    }
+  }
+
   rl.close();
 }
 
@@ -775,6 +864,7 @@ Usage:
   telechat init          Claude-assisted setup (opens browser, validates)
   telechat setup         Manual setup wizard (no Claude needed)
   telechat workdir       Show/set Claude working directory
+  telechat bridge        Manage Claude Desktop bridge (install/uninstall/status)
   telechat update        Update to latest version
   telechat --debug       Start with verbose logging
   telechat --version     Show version
@@ -1355,6 +1445,26 @@ FLOW:
     process.exit(0);
   }
 
+  // ── Claude Desktop bridge (install/uninstall/status/notify/approve) ──
+  // Delegates to telechat_pkg.desktop_bridge.cli_dispatch via main.py.
+  if (cmd === "bridge") {
+    const python = findPython();
+    if (!python) {
+      console.error("  ✗ Python 3.9+ required.");
+      process.exit(1);
+    }
+    if (!isPyPkgInstalled(python)) {
+      console.log("  Installing Python backend...");
+      if (!installPyPkg(python)) process.exit(1);
+    }
+    const subArgs = args.slice(args.indexOf("bridge") + 1);
+    const result = spawnSync(python, ["-m", "telechat_pkg.main", "bridge", ...subArgs], {
+      stdio: "inherit",
+      env: process.env,
+    });
+    process.exit(result.status ?? 1);
+  }
+
   // ── Normal start (default command or explicit 'start') ──
   if (cmd === "start" || !cmd) {
     const python = findPython();
@@ -1408,8 +1518,10 @@ FLOW:
     const hasTelegram = !!envVars.TELEGRAM_BOT_TOKEN;
     const hasWhatsApp = !!envVars.GREEN_API_INSTANCE_ID && !!envVars.GREEN_API_TOKEN;
     const hasSlack = !!envVars.SLACK_BOT_TOKEN && !!envVars.SLACK_APP_TOKEN;
+    const botMode = (envVars.BOT_MODE || "telegram").toLowerCase();
+    const hasWeb = botMode === "all" || botMode.split(",").map(s => s.trim()).includes("web");
 
-    if (!hasTelegram && !hasWhatsApp && !hasSlack) {
+    if (!hasTelegram && !hasWhatsApp && !hasSlack && !hasWeb) {
       console.log(`
   .env exists but no platform credentials found.
 
@@ -1443,7 +1555,9 @@ FLOW:
       if (hasTelegram) platforms.push("Telegram");
       if (hasWhatsApp) platforms.push("WhatsApp");
       if (hasSlack) platforms.push("Slack");
+      if (hasWeb) platforms.push("Web");
       console.log(`  Platforms: ${platforms.join(", ")}`);
+      if (hasWeb) printWebQR(envVars.WEB_CHAT_PORT || "8585");
       console.log(`\n  Commands:`);
       console.log(`    telechat logs       View live logs`);
       console.log(`    telechat status     Check health`);
@@ -1465,13 +1579,18 @@ FLOW:
     if (hasTelegram) platforms.push("Telegram");
     if (hasWhatsApp) platforms.push("WhatsApp");
     if (hasSlack) platforms.push("Slack");
+    if (hasWeb) platforms.push("Web");
     const claudeMode = envVars.CLAUDE_MODE || "cli";
+    const webPort = envVars.WEB_CHAT_PORT || "8585";
 
     console.log(`  ✓ telechat started (PID ${pid})`);
     console.log(`    Platforms : ${platforms.join(", ")}`);
     console.log(`    Claude    : ${claudeMode} mode`);
+    if (hasWeb) console.log(`    Web chat  : http://localhost:${webPort}`);
     if (debug) console.log(`    Debug     : ON`);
     console.log(`    Logs      : telechat logs`);
+
+    if (hasWeb) printWebQR(webPort);
 
     // Warn about missing access control
     const warnings = [];
@@ -1481,6 +1600,8 @@ FLOW:
       warnings.push("WhatsApp: no number restriction (anyone can message your bot)");
     if (hasSlack && !envVars.SLACK_ALLOWED_USER_IDS)
       warnings.push("Slack: no user restriction (anyone in workspace can use the bot)");
+    if (hasWeb && !envVars.WEB_CHAT_TOKEN)
+      warnings.push("Web: no access token (anyone with the URL can chat)");
 
     if (warnings.length) {
       console.log(`\n  ⚠ Security:`);

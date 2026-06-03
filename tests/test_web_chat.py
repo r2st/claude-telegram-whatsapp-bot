@@ -116,11 +116,54 @@ class TestWsHandler(unittest.TestCase):
         self.assertIn("auth_ok", types)
 
     def test_auth_fail(self):
-        msg = self._make_msg({"type": "auth", "token": "wrong"})
-        ws = self._run_ws([msg], auth_token="secret")
+        from telechat_pkg import web_chat
+        # Reset throttling state so prior tests can't lock out this attempt.
+        web_chat._auth_failures.clear()
+        with patch.object(web_chat, "_client_ip", return_value="1.2.3.4"):
+            msg = self._make_msg({"type": "auth", "token": "wrong"})
+            ws = self._run_ws([msg], auth_token="secret")
         calls = ws.send_json.call_args_list
         types = [c[0][0]["type"] for c in calls]
         self.assertIn("auth_fail", types)
+        web_chat._auth_failures.clear()
+
+    def test_auth_closes_after_max_failures(self):
+        """A single connection failing N times in a row is closed."""
+        from telechat_pkg import web_chat
+        web_chat._auth_failures.clear()
+        bad = self._make_msg({"type": "auth", "token": "wrong"})
+        # Send a couple more than the cap to confirm the handler stops
+        # processing once the connection-level limit is hit.
+        msgs = [bad] * (web_chat.WEB_AUTH_MAX_ATTEMPTS + 2)
+        with patch.object(web_chat, "_client_ip", return_value="2.2.2.2"):
+            ws = self._run_ws(msgs, auth_token="secret")
+        ws.close.assert_called()
+        types = [c[0][0]["type"] for c in ws.send_json.call_args_list]
+        # Should see at most WEB_AUTH_MAX_ATTEMPTS auth_fail frames before close.
+        self.assertLessEqual(
+            sum(1 for t in types if t == "auth_fail"),
+            web_chat.WEB_AUTH_MAX_ATTEMPTS,
+        )
+        web_chat._auth_failures.clear()
+
+    def test_ip_lockout_rejects_correct_token(self):
+        """Once the per-IP failure window is exceeded, even a *correct* token
+        is rejected — that's what makes brute-force untenable."""
+        from telechat_pkg import web_chat
+        import time as _t
+        web_chat._auth_failures.clear()
+        # Pre-seed the locked state for our deterministic IP.
+        web_chat._auth_failures["3.3.3.3"] = (
+            _t.time(), web_chat.WEB_AUTH_MAX_ATTEMPTS,
+        )
+        with patch.object(web_chat, "_client_ip", return_value="3.3.3.3"):
+            msg = self._make_msg({"type": "auth", "token": "secret"})
+            ws = self._run_ws([msg], auth_token="secret")
+        types = [c[0][0]["type"] for c in ws.send_json.call_args_list]
+        self.assertIn("auth_fail", types)
+        self.assertNotIn("auth_ok", types)
+        ws.close.assert_called()
+        web_chat._auth_failures.clear()
 
     def test_message_not_authenticated(self):
         msg = self._make_msg({"type": "message", "text": "hello"})
@@ -409,6 +452,10 @@ class TestRunWebChat(unittest.TestCase):
         from telechat_pkg.web_chat import run_web_chat_sync
         run_web_chat_sync()
         mock_run.assert_called_once()
+        # asyncio.run is mocked, so the coroutine it received was never
+        # awaited; close it explicitly to silence the RuntimeWarning.
+        coro = mock_run.call_args[0][0]
+        coro.close()
 
 
 class TestSendJsonWhenClosed(unittest.TestCase):

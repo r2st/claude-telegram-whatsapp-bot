@@ -296,8 +296,10 @@ class TestSessionBrowser(unittest.TestCase):
         sessions = self.browser.list_sessions("telegram", "123")
         alpha = next(s for s in sessions if s.name == "project-alpha")
         bugfix = next(s for s in sessions if s.name == "bugfix-session")
-        self.assertEqual(alpha.message_count, 5)
-        self.assertEqual(bugfix.message_count, 3)
+        # Each legacy history row migrates to a user+assistant pair, so
+        # 5 exchanges → 10 message rows (matches test_get_session_history below).
+        self.assertEqual(alpha.message_count, 10)
+        self.assertEqual(bugfix.message_count, 6)
 
     def test_get_session_history(self):
         history = self.browser.get_session_history("telegram", "123", "project-alpha")
@@ -308,7 +310,8 @@ class TestSessionBrowser(unittest.TestCase):
     def test_fork_session(self):
         result = self.browser.fork_session("telegram", "123", "project-alpha", "alpha-v2")
         self.assertTrue(result.success)
-        self.assertEqual(result.messages_copied, 5)
+        # 5 legacy exchanges → 10 conversation rows copied.
+        self.assertEqual(result.messages_copied, 10)
         self.assertEqual(result.new_session_name, "alpha-v2")
         # Verify fork exists
         sessions = self.browser.list_sessions("telegram", "123")

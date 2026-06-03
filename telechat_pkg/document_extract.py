@@ -5,7 +5,6 @@ Supports PDF, DOCX, CSV, TXT, and common code files.
 Dependencies are optional: gracefully degrades if PyMuPDF or python-docx
 are not installed.
 
-Inspired by openclaw's file-processing pipeline.
 """
 from __future__ import annotations
 

@@ -1,3 +1,4 @@
+import pytest
 """Final push: cover remaining lines for 100% target.
 
 Focuses on: qr_util print_web_qr ImportError path, link_understanding non-http,
@@ -35,6 +36,7 @@ def _run(coro):
 # qr_util.py — lines 28-32 (ImportError fallback), 91, 221
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.skip(reason="Hand-rolled QR / Reed-Solomon encoder removed in favor of the optional 'qrcode' dependency")
 class TestQrUtilImportError(unittest.TestCase):
     def test_print_web_qr_import_error_no_matrix(self):
         """Lines 28-32: qrcode ImportError + minimal returns None."""
@@ -826,6 +828,7 @@ class TestMainInitWizardPaths(unittest.TestCase):
             os.unlink(path)
 
 
+@pytest.mark.skip(reason="Hand-rolled QR / Reed-Solomon encoder removed in favor of the optional 'qrcode' dependency")
 class TestMainQrDuplicate(unittest.TestCase):
     def test_main_qr_encode_v3(self):
         """Cover version 3 of QR encoding (longer URL)."""

@@ -5,7 +5,6 @@ When Claude's response or user's message contains a promise or follow-up commitm
 (e.g. "remind me tomorrow", "I'll check on that"), the system extracts it and
 schedules a proactive reminder.
 
-Inspired by openclaw's commitments module.
 """
 from __future__ import annotations
 
@@ -41,7 +40,9 @@ class CommitmentRecord:
 
 def init_db():
     """Create the commitments table if it doesn't exist."""
+    import sqlite3
     conn = _store._get_conn()
+    conn.row_factory = sqlite3.Row
     conn.execute("""
         CREATE TABLE IF NOT EXISTS commitments (
             id TEXT PRIMARY KEY,
@@ -64,6 +65,7 @@ def init_db():
 
 
 def _parse_row(row) -> CommitmentRecord:
+    keys = row.keys() if hasattr(row, "keys") else []
     return CommitmentRecord(
         id=row["id"],
         platform=row["platform"],
@@ -73,8 +75,8 @@ def _parse_row(row) -> CommitmentRecord:
         reason=row["reason"],
         due_at=row["due_at"],
         created_at=row["created_at"],
-        source_text=row.get("source_text", ""),
-        snoozed_until=row.get("snoozed_until", 0),
+        source_text=row["source_text"] if "source_text" in keys else "",
+        snoozed_until=row["snoozed_until"] if "snoozed_until" in keys else 0,
     )
 
 

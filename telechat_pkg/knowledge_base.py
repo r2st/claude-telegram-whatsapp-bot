@@ -71,7 +71,11 @@ class SearchResult:
 class KnowledgeBase:
     def __init__(self, db_path: str | None = None):
         if db_path is None:
-            db_path = str(Path(__file__).parent / "bot.db")
+            # Share the canonical DB location with store.py so KB docs and
+            # chunks live in the same SQLite file as the rest of the bot,
+            # not in the installed package directory.
+            from . import store
+            db_path = store.DB_PATH
         self._db_path = db_path
         self._local = threading.local()
         self._init_schema()

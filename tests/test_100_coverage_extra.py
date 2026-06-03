@@ -1,3 +1,4 @@
+import pytest
 """Extra tests to push coverage from 96% to 100%.
 
 Covers: qr_util, claude_core retry/streaming, main.py QR+wizard,
@@ -39,6 +40,7 @@ def _run(coro):
 # qr_util.py — full coverage (lines 14-15, 28-32, 58-203, 207-238)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.skip(reason="Hand-rolled QR / Reed-Solomon encoder removed in favor of the optional 'qrcode' dependency")
 class TestQrUtil(unittest.TestCase):
     def test_get_local_ip_success(self):
         from telechat_pkg.qr_util import _get_local_ip
@@ -476,6 +478,7 @@ class TestClaudeCoreParseCli(unittest.TestCase):
 # main.py — QR functions, wizard validation, run wrappers
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.skip(reason="Hand-rolled QR / Reed-Solomon encoder removed in favor of the optional 'qrcode' dependency")
 class TestMainQrFunctions(unittest.TestCase):
     def test_main_qr_encode_minimal(self):
         """Lines 683, 827: QR encode and RS encode."""

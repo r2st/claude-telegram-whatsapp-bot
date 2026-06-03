@@ -400,6 +400,7 @@ async def ask_claude_sdk(
     system: str = CLAUDE_SYSTEM,
     add_dirs: str = CLAUDE_ADD_DIRS,
     timeout: int = CLAUDE_TIMEOUT,
+    perm_mode: str = CLAUDE_PERM_MODE,
     on_progress: Optional[callable] = None,
     on_text: Optional[callable] = None,
     is_cancelled: Optional[callable] = None,
@@ -419,11 +420,23 @@ async def ask_claude_sdk(
 
     full_prompt = _build_prompt(user_text, history)
 
+    # Map our CLI-style perm_mode values onto the SDK's accepted values.
+    # The SDK historically accepts: "default", "acceptEdits", "bypassPermissions".
+    # We translate "auto" → "default" so a user setting CLAUDE_CLI_PERMISSION_MODE=auto
+    # (the CLI's default) doesn't silently get escalated to bypassPermissions.
+    sdk_perm_mode = {
+        "auto": "default",
+        "default": "default",
+        "acceptEdits": "acceptEdits",
+        "plan": "default",
+        "bypassPermissions": "bypassPermissions",
+    }.get(perm_mode, "default")
+
     opts = ClaudeCodeOptions(
         model=model,
         system_prompt=system,
         cwd=CLAUDE_WORK_DIR,
-        permission_mode="bypassPermissions",
+        permission_mode=sdk_perm_mode,
         max_turns=50,
     )
     if add_dirs:

@@ -492,12 +492,19 @@ class TestCommandHelp:
 
 class TestCommandReset:
     def test_reset_clears_history(self):
+        # !reset must clear the *active session's* history, not the unsuffixed
+        # global thread — otherwise the reset is invisible to subsequent chat
+        # turns that load/save under the active session name.
+        mock_sess = MagicMock()
+        mock_sess.name = "default"
         with patch("telechat_pkg.whatsapp_bot.send_message") as mock_send, \
              patch("telechat_pkg.whatsapp_bot.cc.clear_history") as mock_clear_history, \
-             patch("telechat_pkg.whatsapp_bot.cc.clear_session") as mock_clear_session:
+             patch("telechat_pkg.whatsapp_bot.cc.clear_session") as mock_clear_session, \
+             patch("telechat_pkg.whatsapp_bot.cc._session_mgr") as mock_mgr:
+            mock_mgr.get_or_create_active.return_value = mock_sess
             result = _handle_command(CHAT_ID, SENDER, "!reset")
         assert result is True
-        mock_clear_history.assert_called_once_with(PLATFORM, SENDER)
+        mock_clear_history.assert_called_once_with(PLATFORM, SENDER, session_name="default")
         mock_clear_session.assert_called_once_with(PLATFORM, SENDER)
         mock_send.assert_called_once()
         assert "reset" in mock_send.call_args[0][1].lower()
@@ -989,7 +996,11 @@ class TestCommandBrowse:
                 _handle_command(CHAT_ID, SENDER, "!browse /nonexistent/path/xyz")
         finally:
             wb.BROWSE_ROOT = orig_root
-        assert "Not a directory" in mock_send.call_args[0][1]
+        # Absolute path outside the sandbox is now rejected by _safe_join,
+        # before any is_dir() check. (Previously the code would surface
+        # "Not a directory" which leaked filesystem-existence information.)
+        msg = mock_send.call_args[0][1]
+        assert "outside the allowed browse root" in msg or "Not a directory" in msg
 
     def test_browse_uses_stored_cwd(self, tmp_path):
         import telechat_pkg.whatsapp_bot as wb
@@ -1068,7 +1079,11 @@ class TestCommandCd:
     def test_cd_invalid_path(self):
         with patch("telechat_pkg.whatsapp_bot.send_message") as mock_send:
             _handle_command(CHAT_ID, SENDER, "!cd /nonexistent/path")
-        assert "Not a directory" in mock_send.call_args[0][1]
+        # !cd with an absolute path outside the sandbox is rejected as such
+        # by the sandbox check; non-absolute non-existent paths still surface
+        # "Not a directory".
+        msg = mock_send.call_args[0][1]
+        assert "outside the allowed browse root" in msg or "Not a directory" in msg
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1456,16 +1471,26 @@ class TestHandle:
         async def fake_ask(*args, **kwargs):
             return ("reply text", mock_stats)
 
+        # Normal chat must persist under the active session name; otherwise
+        # !new / !switch / !rename appear to work but normal turns keep
+        # writing to the unsuffixed global history.
+        mock_sess = MagicMock()
+        mock_sess.name = "default"
         with patch("telechat_pkg.whatsapp_bot.send_message"), \
              patch("telechat_pkg.whatsapp_bot.send_typing"), \
              patch("telechat_pkg.whatsapp_bot.cc.check_rate_limit", return_value=True), \
+             patch("telechat_pkg.whatsapp_bot.cc._session_mgr") as mock_mgr, \
              patch("telechat_pkg.whatsapp_bot.cc.load_history", return_value=[]) as mock_load, \
              patch("telechat_pkg.whatsapp_bot.cc.save_turn") as mock_save, \
              patch("telechat_pkg.whatsapp_bot.cc.track_usage"), \
              patch("telechat_pkg.whatsapp_bot.cc.track_tool_usage"), \
              patch("telechat_pkg.whatsapp_bot._ask_with_progress", side_effect=fake_ask):
+            mock_mgr.get_or_create_active.return_value = mock_sess
             _handle(CHAT_ID, SENDER, "input text")
-        mock_save.assert_called_once_with(PLATFORM, SENDER, "input text", "reply text")
+        mock_save.assert_called_once_with(
+            PLATFORM, SENDER, "input text", "reply text", session_name="default"
+        )
+        mock_load.assert_called_once_with(PLATFORM, SENDER, session_name="default")
 
     def test_handle_lock_released_after_error(self):
         async def fake_ask(*args, **kwargs):

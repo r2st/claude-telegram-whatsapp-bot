@@ -4,7 +4,6 @@ Conversation export — export chat history in multiple formats.
 Supports plain text, Markdown, HTML (self-contained with chat bubbles),
 and JSON export formats.
 
-Inspired by openclaw's conversation export system.
 """
 from __future__ import annotations
 

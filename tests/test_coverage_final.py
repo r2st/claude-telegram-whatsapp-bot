@@ -1,3 +1,4 @@
+import pytest
 """Final coverage push — tests for remaining uncovered lines.
 
 Targets: telegram_bot (session/budget/plan/schedule/kb/browse commands),
@@ -845,6 +846,7 @@ class TestStoreCacheEviction(unittest.TestCase):
 
 # ─── Main.py: QR code generation (lines 645-807) ────────────────────────
 
+@pytest.mark.skip(reason="Hand-rolled QR / Reed-Solomon encoder removed in favor of the optional 'qrcode' dependency")
 class TestMainQRCodeGen(unittest.TestCase):
     def test_qr_encode_minimal_short(self):
         from telechat_pkg.main import _qr_encode_minimal

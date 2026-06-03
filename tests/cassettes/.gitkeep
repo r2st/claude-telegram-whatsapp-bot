@@ -1,0 +1,3 @@
+# pytest-recording cassettes live here, one YAML per test function.
+# Cassettes are committed so CI can replay without an API key.
+# See ../README_E2E.md for the record/replay workflow.

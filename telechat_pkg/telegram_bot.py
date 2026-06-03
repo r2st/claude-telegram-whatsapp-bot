@@ -461,16 +461,26 @@ _response_store: dict[str, dict] = {}  # response_id → {text, uid, prompt, pag
 _response_counter = itertools.count(1)
 
 RESPONSE_PAGE_SIZE = 3000  # chars per page
+_RETRY_STORE_MAX = 200  # cap on transient retry_* entries
 
 
 def _store_response(uid: int, prompt: str, text: str) -> str:
     """Store a long response and return its ID for pagination."""
     rid = f"r{next(_response_counter)}"
     _response_store[rid] = {"text": text, "uid": uid, "prompt": prompt}
-    # Keep only last 50 responses in memory
+    # Keep only last 50 paginated responses in memory.
+    # Skip retry_* entries: those are tiny prompt stashes awaiting user action,
+    # and deleting them in-flight breaks the Retry button.
     if len(_response_store) > 50:
-        oldest = list(_response_store.keys())[0]
-        del _response_store[oldest]
+        for k in list(_response_store.keys()):
+            if not k.startswith("retry_"):
+                del _response_store[k]
+                break
+    # Cap retry_* entries separately (FIFO eviction)
+    retry_keys = [k for k in _response_store if k.startswith("retry_")]
+    if len(retry_keys) > _RETRY_STORE_MAX:
+        for k in retry_keys[: len(retry_keys) - _RETRY_STORE_MAX]:
+            _response_store.pop(k, None)
     return rid
 
 
@@ -905,7 +915,9 @@ async def cmd_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Create a new named session. Usage: /new <name>"""
     uid = update.effective_user.id
     name = " ".join(ctx.args).strip() if ctx.args else f"session-{int(time.time()) % 10000}"
-    name = re.sub(r"[^a-zA-Z0-9_-]", "-", name)[:20]
+    name = re.sub(r"[^a-zA-Z0-9_-]", "-", name)[:20].strip("-")
+    if not name:
+        name = f"session-{int(time.time()) % 10000}"
 
     sess = cc._session_mgr.create(PLATFORM, str(uid), name)
     await update.message.reply_text(
@@ -963,7 +975,10 @@ async def cmd_rename(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await update.message.reply_text("Usage: /rename <new-name>")
         return
-    new_name = re.sub(r"[^a-zA-Z0-9_-]", "-", " ".join(ctx.args))[:20]
+    new_name = re.sub(r"[^a-zA-Z0-9_-]", "-", " ".join(ctx.args))[:20].strip("-")
+    if not new_name:
+        await update.message.reply_text("❌ Name must contain at least one letter, digit, `_`, or `-`.", parse_mode="Markdown")
+        return
     sess = _active_session(uid)
     result = cc._session_mgr.rename(PLATFORM, str(uid), sess.name, new_name)
     if result:
@@ -1133,7 +1148,13 @@ async def cmd_browse(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     args_text = " ".join(ctx.args) if ctx.args else ""
     if args_text:
-        target = BROWSE_ROOT / args_text
+        target = (BROWSE_ROOT / args_text).resolve()
+        # Reject path traversal — target must stay inside BROWSE_ROOT
+        try:
+            target.relative_to(BROWSE_ROOT.resolve())
+        except ValueError:
+            await update.message.reply_text("⛔ Access denied.")
+            return
         if not target.exists() or not target.is_dir():
             await update.message.reply_text(f"Directory not found: `{args_text}`", parse_mode="Markdown")
             return
@@ -1209,12 +1230,16 @@ async def _handle_browse_callback(q, uid: int):
             return
 
         try:
-            lines = file_path.read_text(errors="replace").splitlines()[:50]
-            content = "\n".join(lines)
-            if len(content) > 3500:
-                content = content[:3500] + "\n…(truncated)"
-            rel = file_path.relative_to(BROWSE_ROOT)
-            text = f"📄 `{rel}` (first 50 lines):\n```\n{content}\n```"
+            stat = file_path.stat()
+            if stat.st_size > 1_000_000:
+                text = f"📄 `{file_path.relative_to(BROWSE_ROOT)}` is too large ({stat.st_size:,} bytes) to preview."
+            else:
+                lines = file_path.read_text(errors="replace").splitlines()[:50]
+                content = "\n".join(lines)
+                if len(content) > 3500:
+                    content = content[:3500] + "\n…(truncated)"
+                rel = file_path.relative_to(BROWSE_ROOT)
+                text = f"📄 `{rel}` (first 50 lines):\n```\n{content}\n```"
         except Exception as e:
             text = f"Error reading file: {e}"
 
@@ -1568,9 +1593,12 @@ async def cmd_permissions(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_verbose(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     args = ctx.args
-    if args and args[0] in ("0", "1", "2"):
-        _user_verbose[uid] = int(args[0])
-        await update.message.reply_text(f"Verbosity set to {args[0]}.")
+    if args:
+        if args[0] in ("0", "1", "2"):
+            _user_verbose[uid] = int(args[0])
+            await update.message.reply_text(f"Verbosity set to {args[0]}.")
+            return
+        await update.message.reply_text("Invalid level. Use 0, 1, or 2.")
         return
     cur = _verbose(uid)
     btns = [
@@ -1599,11 +1627,20 @@ async def cmd_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
     uid = q.from_user.id
     if not _allowed(uid):
+        await q.answer()
         return
 
+    # Claude Desktop bridge gets first refusal — its callback_data uses "bridge:" prefix.
+    try:
+        from . import desktop_bridge
+        if await desktop_bridge.try_handle_callback(update, ctx):
+            return
+    except Exception as _bridge_exc:
+        log.warning("desktop_bridge callback failed: %s", _bridge_exc)
+
+    await q.answer()
     data = q.data  # e.g. "tg:model:sonnet"
     parts = data.split(":", 2)
     if len(parts) < 3:
@@ -1612,7 +1649,10 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Handle cancel button (value is task_id)
     if kind == "cancel":
-        task_id = int(value)
+        try:
+            task_id = int(value)
+        except ValueError:
+            return
         task = _task_registry.get(task_id)
         if task and task.uid == uid:
             task.cancel()
@@ -1717,15 +1757,18 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pg_parts = value.split(":")
         if len(pg_parts) < 2:
             return
-        rid, page_num = pg_parts[0], int(pg_parts[1])
+        try:
+            rid, page_num = pg_parts[0], int(pg_parts[1])
+        except ValueError:
+            return
         resp = _response_store.get(rid)
         if not resp or resp["uid"] != uid:
             await q.edit_message_text("Response expired.", reply_markup=None)
             return
 
         text = resp["text"]
-        total_pages = (len(text) + RESPONSE_PAGE_SIZE - 1) // RESPONSE_PAGE_SIZE
-        page_num = min(page_num, total_pages - 1)
+        total_pages = max(1, (len(text) + RESPONSE_PAGE_SIZE - 1) // RESPONSE_PAGE_SIZE)
+        page_num = max(0, min(page_num, total_pages - 1))
         start = page_num * RESPONSE_PAGE_SIZE
         page_text = text[start:start + RESPONSE_PAGE_SIZE]
 
@@ -2412,6 +2455,12 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not voice:
         return
 
+    # Reject excessively large audio uploads (25 MB matches OpenAI Whisper limit)
+    fsize = getattr(voice, "file_size", None)
+    if isinstance(fsize, int) and fsize > 25 * 1024 * 1024:
+        await update.message.reply_text("Audio file too large (max 25 MB).")
+        return
+
     # Download voice file
     file = await ctx.bot.get_file(voice.file_id)
     raw = bytes(await file.download_as_bytearray())
@@ -2744,6 +2793,16 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text or ""
     if not user_text.strip():
         return
+
+    # Claude Desktop bridge: route replies to session cards / current-session messages
+    # to a live `claude --resume` and post the result back. If handled, skip the
+    # normal chat flow.
+    try:
+        from . import desktop_bridge
+        if await desktop_bridge.try_handle_text_message(update, ctx):
+            return
+    except Exception as _bridge_exc:
+        log.warning("desktop_bridge text routing failed: %s", _bridge_exc)
 
     # Link understanding moved to _run_task (after placeholder is shown)
 
@@ -3222,10 +3281,11 @@ async def cmd_browse_web(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if action == "screenshot":
             result = await agent.screenshot(url)
             if result.success and result.screenshot_path:
-                await update.message.reply_photo(
-                    open(result.screenshot_path, "rb"),
-                    caption=f"{result.title}\n{result.url}\n({result.duration:.1f}s)",
-                )
+                with open(result.screenshot_path, "rb") as fh:
+                    await update.message.reply_photo(
+                        fh,
+                        caption=f"{result.title}\n{result.url}\n({result.duration:.1f}s)",
+                    )
                 await placeholder.delete()
             else:
                 await placeholder.edit_text(f"❌ {result.error}")
@@ -3465,6 +3525,20 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("doctor",      cmd_doctor))
     app.add_handler(CommandHandler("export",      cmd_export))
     app.add_handler(CommandHandler("compact",     cmd_compact))
+
+    # ── Claude Desktop bridge ──
+    try:
+        from . import desktop_bridge as _bridge
+        _bridge.register(app)
+        async def _bridge_cb_wrap(update, ctx):
+            if not _allowed(update.callback_query.from_user.id):
+                await update.callback_query.answer()
+                return
+            await _bridge.try_handle_callback(update, ctx)
+        app.add_handler(CallbackQueryHandler(_bridge_cb_wrap, pattern=r"^bridge:"))
+    except Exception as _bridge_exc:
+        log.warning("desktop_bridge registration failed: %s", _bridge_exc)
+
     app.add_handler(CallbackQueryHandler(handle_callback, pattern=r"^tg:"))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO,              handle_photo))
@@ -3474,6 +3548,9 @@ def build_app() -> Application:
 
 
 BOT_COMMANDS = [
+    BotCommand("desktop", "Running Claude Desktop sessions"),
+    BotCommand("recent", "Resume a recent Claude session"),
+    BotCommand("follow", "Live-mirror a session to Telegram"),
     BotCommand("settings", "Model, engine, permissions, verbosity"),
     BotCommand("sessions", "View and switch sessions"),
     BotCommand("new", "Create a new session"),

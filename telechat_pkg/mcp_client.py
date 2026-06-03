@@ -30,6 +30,53 @@ log = logging.getLogger(__name__)
 MCP_ENABLED = os.getenv("MCP_ENABLED", "false").lower() in ("1", "true", "yes")
 MCP_CONFIG_FILE = os.getenv("MCP_CONFIG_FILE", "")
 
+# Defense in depth: even though MCP_CONFIG_FILE is typically operator-controlled,
+# treat its contents as untrusted (it may be checked into a shared repo, written
+# by another tool, or fetched from an LLM). Reject server commands not on the
+# allowlist unless MCP_ALLOW_ANY_COMMAND=1 is explicitly set.
+#
+# Defaults cover the runtimes Anthropic's published MCP servers use today.
+_MCP_DEFAULT_ALLOWED = {"npx", "node", "python", "python3", "uvx", "uv", "deno"}
+_user_allowed = {
+    s.strip() for s in os.getenv("MCP_ALLOWED_COMMANDS", "").split(",") if s.strip()
+}
+MCP_ALLOWED_COMMANDS = _MCP_DEFAULT_ALLOWED | _user_allowed
+MCP_ALLOW_ANY_COMMAND = os.getenv("MCP_ALLOW_ANY_COMMAND", "0").lower() in ("1", "true", "yes", "on")
+
+
+def _is_command_allowed(command: str) -> bool:
+    """True if ``command`` is on the allowlist (or any-command mode is on).
+
+    Reads the override env var each call so tests (and operators flipping it
+    at runtime) get the current value, not whatever was set at import time.
+
+    The check compares the executable's basename so absolute paths like
+    ``/usr/local/bin/npx`` match the entry ``npx``.
+    """
+    allow_any = (
+        MCP_ALLOW_ANY_COMMAND
+        or os.getenv("MCP_ALLOW_ANY_COMMAND", "0").lower() in ("1", "true", "yes", "on")
+    )
+    if allow_any:
+        return True
+    if not command:
+        return False
+    base = os.path.basename(command)
+    return base in MCP_ALLOWED_COMMANDS
+
+
+def _telechat_version() -> str:
+    """Return the package version, falling back to ``unknown`` on import errors.
+
+    Used for the MCP ``initialize`` handshake so the value tracks pyproject.toml
+    automatically.
+    """
+    try:
+        from . import __version__
+        return __version__
+    except Exception:  # pragma: no cover — defensive
+        return "unknown"
+
 
 @dataclass
 class MCPTool:
@@ -71,10 +118,24 @@ class MCPManager:
                 log.error("Failed to load MCP config: %s", e)
 
     def add_server(self, name: str, config: dict):
-        """Register an MCP server configuration."""
+        """Register an MCP server configuration.
+
+        Refuses to register a server whose ``command`` is not on the
+        MCP_ALLOWED_COMMANDS allowlist. This is a defense-in-depth check:
+        an attacker who can write to MCP_CONFIG_FILE should not also gain
+        arbitrary local code execution at MCP-connect time.
+        """
+        command = config.get("command", "")
+        if not _is_command_allowed(command):
+            log.error(
+                "Refusing to register MCP server %r: command %r not in allowlist "
+                "(%s). Set MCP_ALLOWED_COMMANDS or MCP_ALLOW_ANY_COMMAND=1 to override.",
+                name, command, sorted(MCP_ALLOWED_COMMANDS),
+            )
+            return
         server = MCPServer(
             name=name,
-            command=config.get("command", ""),
+            command=command,
             args=config.get("args", []),
             env=config.get("env", {}),
         )
@@ -117,7 +178,7 @@ class MCPManager:
                 "params": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {},
-                    "clientInfo": {"name": "telechat", "version": "1.6.0"},
+                    "clientInfo": {"name": "telechat", "version": _telechat_version()},
                 },
             }) + "\n"
             proc.stdin.write(init_msg.encode())

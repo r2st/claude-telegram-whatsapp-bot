@@ -591,10 +591,12 @@ class TestSigintHandler:
         import main
         main._sigint_count = 0
 
-    def test_first_call_exits_with_0(self):
-        with patch("os._exit") as mock_exit:
+    def test_first_call_raises_keyboard_interrupt(self):
+        # First SIGINT now raises KeyboardInterrupt so the asyncio loop can
+        # unwind cleanly and flush the DB writer thread, instead of calling
+        # os._exit(0) which skipped that cleanup.
+        with pytest.raises(KeyboardInterrupt):
             _sigint_handler(None, None)
-            mock_exit.assert_called_once_with(0)
 
     def test_second_call_exits_with_1(self):
         import main
@@ -604,14 +606,14 @@ class TestSigintHandler:
             mock_exit.assert_called_once_with(1)
 
     def test_first_call_prints_shutting_down(self, capsys):
-        with patch("os._exit"):
+        with pytest.raises(KeyboardInterrupt):
             _sigint_handler(None, None)
         out = capsys.readouterr().out
         assert "Shutting down" in out
 
     def test_increments_counter(self):
         import main
-        with patch("os._exit"):
+        with pytest.raises(KeyboardInterrupt):
             _sigint_handler(None, None)
         assert main._sigint_count == 1
 
@@ -1299,19 +1301,24 @@ class TestCmdStartErrorHandling:
     """Tests for error handling in _cmd_start's asyncio.run wrapper."""
 
     def test_keyboard_interrupt_calls_os_exit_0(self, monkeypatch):
-        """KeyboardInterrupt is caught and results in os._exit(0)."""
+        """KeyboardInterrupt is caught and results in sys.exit(0)."""
         import subprocess
         exit_calls = []
+
+        def fake_exit(code):
+            exit_calls.append(code)
+            raise SystemExit(code)
 
         with patch("dotenv.load_dotenv"), \
              patch("main._find_env_file", return_value="/fake/.env"), \
              patch("subprocess.check_output",
                    side_effect=subprocess.CalledProcessError(1, "pgrep")), \
-             patch("asyncio.run", side_effect=KeyboardInterrupt()), \
-             patch("os._exit", side_effect=lambda code: exit_calls.append(code)):
+             patch("asyncio.run", side_effect=KeyboardInterrupt()):
             monkeypatch.setenv("BOT_MODE", "telegram")
+            monkeypatch.setattr(sys, "exit", fake_exit)
             from main import _cmd_start
-            _cmd_start()
+            with pytest.raises(SystemExit):
+                _cmd_start()
 
         assert 0 in exit_calls
 

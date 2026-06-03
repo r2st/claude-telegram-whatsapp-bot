@@ -124,7 +124,10 @@ def parse_schedule_request(text: str) -> dict | None:
 class AutoScheduler:
     def __init__(self, db_path: str | None = None):
         if db_path is None:
-            db_path = str(Path(__file__).parent / "bot.db")
+            # Share the canonical DB location with store.py instead of
+            # writing scheduler state into the installed package dir.
+            from . import store
+            db_path = store.DB_PATH
         self._db_path = db_path
         self._local = threading.local()
         self._running = False

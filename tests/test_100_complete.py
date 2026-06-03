@@ -2,6 +2,7 @@
 
 Systematically covers all 179 remaining lines across 10 modules.
 """
+import pytest
 import asyncio
 import csv
 import io
@@ -37,6 +38,7 @@ def _run(coro):
 # qr_util.py — lines 28-32 (ImportError path), 91 (pad bit), 221 (gf_mul 0)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.skip(reason="Hand-rolled QR / Reed-Solomon encoder removed in favor of the optional 'qrcode' dependency")
 class TestQrUtilComplete(unittest.TestCase):
     def test_print_web_qr_import_error_path(self):
         """Lines 28-32: qrcode ImportError, _qr_encode_minimal returns None."""
@@ -511,6 +513,7 @@ class TestMainSecurityWarnings(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
 
 
+@pytest.mark.skip(reason="Hand-rolled QR / Reed-Solomon encoder removed in favor of the optional 'qrcode' dependency")
 class TestMainQrPrint(unittest.TestCase):
     def test_print_qr_setup_warning(self):
         """Lines 576-577: QR print during init wizard."""

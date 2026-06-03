@@ -17,7 +17,26 @@ import os
 
 log = logging.getLogger(__name__)
 
-DB_PATH = os.getenv("DB_PATH", str(Path(__file__).parent / "bot.db"))
+def _default_db_path() -> str:
+    """Resolve the canonical default DB location.
+
+    Priority: $DB_PATH → $TELECHAT_HOME/bot.db → ~/.telechat/bot.db.
+
+    Never the installed package directory — that would write user data into
+    site-packages on pip installs (often unwritable, lost on upgrade).
+    """
+    explicit = os.getenv("DB_PATH")
+    if explicit:
+        return explicit
+    home = os.getenv("TELECHAT_HOME") or str(Path.home() / ".telechat")
+    try:
+        Path(home).mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return str(Path(home) / "bot.db")
+
+
+DB_PATH = _default_db_path()
 
 RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "20"))
 RATE_LIMIT_WINDOW   = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
@@ -87,6 +106,26 @@ def _enqueue_write(sql: str, params: tuple):
     conn = _get_conn()
     conn.execute(sql, params)
     conn.commit()
+
+
+def flush_writes(timeout: float = 2.0) -> bool:
+    """Block until the background write queue is drained.
+
+    Used by the shutdown path so Ctrl-C doesn't lose queued conversation turns.
+    Returns True if the queue drained within ``timeout``, False otherwise.
+    """
+    if _write_queue is None:
+        return True
+    import time as _time
+    deadline = _time.monotonic() + max(0.0, timeout)
+    while _time.monotonic() < deadline:
+        if _write_queue.empty():
+            # Give the writer thread one extra tick to commit the current batch.
+            _time.sleep(0.05)
+            if _write_queue.empty():
+                return True
+        _time.sleep(0.05)
+    return _write_queue.empty()
 
 
 # ─── History cache (avoid repeated DB reads for same user) ──────────────────────
@@ -236,6 +275,14 @@ def init_db() -> None:
     conn.commit()
 
     SessionManager.init_schema(conn)
+
+    # Desktop bridge tables (no-op if module not imported yet — late import below).
+    try:
+        from . import desktop_bridge
+        desktop_bridge.init_bridge_schema(conn)
+        conn.commit()
+    except Exception:
+        pass
 
 
 def load_history(platform: str, user_id: str, limit: int = 20, session_name: str = "") -> list[dict]:
@@ -452,11 +499,20 @@ class UserSession:
 
 
 class SessionManager:
-    """Manages multiple named sessions per user, persisted to SQLite."""
+    """Manages multiple named sessions per user, persisted to SQLite.
+
+    Thread-safe: all mutations of in-memory state (``_cache``, ``_active``)
+    happen under ``_lock`` so Telegram async handlers, WhatsApp/Slack worker
+    threads, and the web chat task can all share a single manager instance
+    without racing.
+    """
 
     def __init__(self):
         self._cache: dict[str, list[UserSession]] = {}
         self._active: dict[str, str] = {}
+        # RLock so a public method can call another public method (e.g.
+        # archive() → switch_to_name()) without deadlocking.
+        self._lock = threading.RLock()
 
     def _key(self, platform: str, user_id: str) -> str:
         return f"{platform}:{user_id}"
@@ -550,260 +606,278 @@ class SessionManager:
         return row[0] if row else ""
 
     def _ensure_loaded(self, platform: str, user_id: str) -> list[UserSession]:
-        key = self._key(platform, user_id)
-        if key not in self._cache:
-            self._cache[key] = self._load_sessions(platform, user_id)
-            active_name = self._load_active_name(platform, user_id)
-            if active_name:
-                self._active[key] = active_name
-        return self._cache[key]
+        with self._lock:
+            key = self._key(platform, user_id)
+            if key not in self._cache:
+                self._cache[key] = self._load_sessions(platform, user_id)
+                active_name = self._load_active_name(platform, user_id)
+                if active_name:
+                    self._active[key] = active_name
+            return self._cache[key]
 
     def get_or_create_active(self, platform: str, user_id: str) -> UserSession:
-        sessions = self._ensure_loaded(platform, user_id)
-        key = self._key(platform, user_id)
-        active_name = self._active.get(key, "")
+        with self._lock:
+            sessions = self._ensure_loaded(platform, user_id)
+            key = self._key(platform, user_id)
+            active_name = self._active.get(key, "")
 
-        if sessions and active_name:
-            for s in sessions:
-                if s.name == active_name:
-                    return s
+            if sessions and active_name:
+                for s in sessions:
+                    if s.name == active_name:
+                        return s
+                if sessions:
+                    self._active[key] = sessions[0].name
+                    self._save_active(platform, user_id, sessions[0].name)
+                    return sessions[0]
+
             if sessions:
                 self._active[key] = sessions[0].name
                 self._save_active(platform, user_id, sessions[0].name)
                 return sessions[0]
 
-        if sessions:
-            self._active[key] = sessions[0].name
-            self._save_active(platform, user_id, sessions[0].name)
-            return sessions[0]
-
-        sess = UserSession("default", platform, user_id)
-        sessions.append(sess)
-        self._save_session(sess)
-        self._active[key] = "default"
-        self._save_active(platform, user_id, "default")
-        return sess
+            sess = UserSession("default", platform, user_id)
+            sessions.append(sess)
+            self._save_session(sess)
+            self._active[key] = "default"
+            self._save_active(platform, user_id, "default")
+            return sess
 
     def get_all(self, platform: str, user_id: str, include_archived: bool = False) -> list[UserSession]:
-        sessions = self._ensure_loaded(platform, user_id)
-        if include_archived:
-            return sessions
-        return [s for s in sessions if not s.archived]
+        with self._lock:
+            sessions = self._ensure_loaded(platform, user_id)
+            if include_archived:
+                return sessions
+            return [s for s in sessions if not s.archived]
 
     def get_active_index(self, platform: str, user_id: str) -> int:
-        sessions = self.get_all(platform, user_id)
-        key = self._key(platform, user_id)
-        active_name = self._active.get(key, "")
-        for i, s in enumerate(sessions):
-            if s.name == active_name:
-                return i
-        return 0
+        with self._lock:
+            sessions = self.get_all(platform, user_id)
+            key = self._key(platform, user_id)
+            active_name = self._active.get(key, "")
+            for i, s in enumerate(sessions):
+                if s.name == active_name:
+                    return i
+            return 0
 
     def create(self, platform: str, user_id: str, name: str) -> UserSession:
-        key = self._key(platform, user_id)
-        sessions = self._ensure_loaded(platform, user_id)
+        with self._lock:
+            key = self._key(platform, user_id)
+            sessions = self._ensure_loaded(platform, user_id)
 
-        active_sessions = [s for s in sessions if not s.archived]
-        if len(active_sessions) >= _MAX_SESSIONS:
-            evictable = sorted(
-                (s for s in active_sessions if not s.pinned and not s.is_busy),
-                key=lambda s: s.last_active,
-            )
-            if evictable:
-                self._archive_session(evictable[0])
+            active_sessions = [s for s in sessions if not s.archived]
+            if len(active_sessions) >= _MAX_SESSIONS:
+                evictable = sorted(
+                    (s for s in active_sessions if not s.pinned and not s.is_busy),
+                    key=lambda s: s.last_active,
+                )
+                if evictable:
+                    self._archive_session(evictable[0])
 
-        sess = UserSession(name, platform, user_id)
-        sessions.append(sess)
-        self._save_session(sess)
-        self._active[key] = name
-        self._save_active(platform, user_id, name)
-        return sess
+            sess = UserSession(name, platform, user_id)
+            sessions.append(sess)
+            self._save_session(sess)
+            self._active[key] = name
+            self._save_active(platform, user_id, name)
+            return sess
 
     def switch_to(self, platform: str, user_id: str, index: int) -> UserSession | None:
-        sessions = self.get_all(platform, user_id)
-        if 0 <= index < len(sessions):
-            key = self._key(platform, user_id)
-            self._active[key] = sessions[index].name
-            self._save_active(platform, user_id, sessions[index].name)
-            return sessions[index]
-        return None
+        with self._lock:
+            sessions = self.get_all(platform, user_id)
+            if 0 <= index < len(sessions):
+                key = self._key(platform, user_id)
+                self._active[key] = sessions[index].name
+                self._save_active(platform, user_id, sessions[index].name)
+                return sessions[index]
+            return None
 
     def switch_to_name(self, platform: str, user_id: str, name: str) -> UserSession | None:
-        sessions = self._ensure_loaded(platform, user_id)
-        for s in sessions:
-            if s.name == name:
-                key = self._key(platform, user_id)
-                self._active[key] = name
-                self._save_active(platform, user_id, name)
-                if s.archived:
-                    s.archived = False
-                    self._save_session(s)
-                return s
-        return None
+        with self._lock:
+            sessions = self._ensure_loaded(platform, user_id)
+            for s in sessions:
+                if s.name == name:
+                    key = self._key(platform, user_id)
+                    self._active[key] = name
+                    self._save_active(platform, user_id, name)
+                    if s.archived:
+                        s.archived = False
+                        self._save_session(s)
+                    return s
+            return None
 
     def rename(self, platform: str, user_id: str, old_name: str, new_name: str) -> UserSession | None:
-        sessions = self._ensure_loaded(platform, user_id)
-        sess = next((s for s in sessions if s.name == old_name), None)
-        if not sess:
-            return None
-        if any(s.name == new_name for s in sessions):
-            return None
+        with self._lock:
+            sessions = self._ensure_loaded(platform, user_id)
+            sess = next((s for s in sessions if s.name == old_name), None)
+            if not sess:
+                return None
+            if any(s.name == new_name for s in sessions):
+                return None
 
-        old_uid = f"{user_id}:{old_name}" if old_name else user_id
-        new_uid = f"{user_id}:{new_name}"
-        conn = _get_conn()
-        conn.execute(
-            "UPDATE conversations SET user_id=? WHERE platform=? AND user_id=?",
-            (new_uid, platform, old_uid),
-        )
-        conn.execute(
-            "UPDATE user_sessions SET name=? WHERE id=?",
-            (new_name, sess.db_id),
-        )
-        conn.commit()
+            old_uid = f"{user_id}:{old_name}" if old_name else user_id
+            new_uid = f"{user_id}:{new_name}"
+            conn = _get_conn()
+            conn.execute(
+                "UPDATE conversations SET user_id=? WHERE platform=? AND user_id=?",
+                (new_uid, platform, old_uid),
+            )
+            conn.execute(
+                "UPDATE user_sessions SET name=? WHERE id=?",
+                (new_name, sess.db_id),
+            )
+            conn.commit()
 
-        key = self._key(platform, user_id)
-        if self._active.get(key) == old_name:
-            self._active[key] = new_name
-            self._save_active(platform, user_id, new_name)
+            key = self._key(platform, user_id)
+            if self._active.get(key) == old_name:
+                self._active[key] = new_name
+                self._save_active(platform, user_id, new_name)
 
-        sess.name = new_name
-        _invalidate_history(platform, old_uid)
-        return sess
+            sess.name = new_name
+            _invalidate_history(platform, old_uid)
+            return sess
 
     def set_title(self, platform: str, user_id: str, name: str, title: str) -> UserSession | None:
-        sessions = self._ensure_loaded(platform, user_id)
-        sess = next((s for s in sessions if s.name == name), None)
-        if not sess:
-            return None
-        sess.title = title.strip()[:100]
-        self._save_session(sess)
-        return sess
+        with self._lock:
+            sessions = self._ensure_loaded(platform, user_id)
+            sess = next((s for s in sessions if s.name == name), None)
+            if not sess:
+                return None
+            sess.title = title.strip()[:100]
+            self._save_session(sess)
+            return sess
 
     def pin(self, platform: str, user_id: str, name: str, pinned: bool = True) -> UserSession | None:
-        sessions = self._ensure_loaded(platform, user_id)
-        sess = next((s for s in sessions if s.name == name), None)
-        if not sess:
-            return None
-        sess.pinned = pinned
-        self._save_session(sess)
-        return sess
+        with self._lock:
+            sessions = self._ensure_loaded(platform, user_id)
+            sess = next((s for s in sessions if s.name == name), None)
+            if not sess:
+                return None
+            sess.pinned = pinned
+            self._save_session(sess)
+            return sess
 
     def _archive_session(self, sess: UserSession) -> None:
         sess.archived = True
         self._save_session(sess)
 
     def archive(self, platform: str, user_id: str, name: str) -> UserSession | None:
-        sessions = self._ensure_loaded(platform, user_id)
-        sess = next((s for s in sessions if s.name == name), None)
-        if not sess or sess.is_busy:
-            return None
-        self._archive_session(sess)
+        with self._lock:
+            sessions = self._ensure_loaded(platform, user_id)
+            sess = next((s for s in sessions if s.name == name), None)
+            if not sess or sess.is_busy:
+                return None
+            self._archive_session(sess)
 
-        key = self._key(platform, user_id)
-        if self._active.get(key) == name:
-            active_sessions = [s for s in sessions if not s.archived]
-            if active_sessions:
-                self._active[key] = active_sessions[0].name
-                self._save_active(platform, user_id, active_sessions[0].name)
-            else:
-                default = UserSession("default", platform, user_id)
-                sessions.append(default)
-                self._save_session(default)
-                self._active[key] = "default"
-                self._save_active(platform, user_id, "default")
-        return sess
+            key = self._key(platform, user_id)
+            if self._active.get(key) == name:
+                active_sessions = [s for s in sessions if not s.archived]
+                if active_sessions:
+                    self._active[key] = active_sessions[0].name
+                    self._save_active(platform, user_id, active_sessions[0].name)
+                else:
+                    default = UserSession("default", platform, user_id)
+                    sessions.append(default)
+                    self._save_session(default)
+                    self._active[key] = "default"
+                    self._save_active(platform, user_id, "default")
+            return sess
 
     def unarchive(self, platform: str, user_id: str, name: str) -> UserSession | None:
-        return self.switch_to_name(platform, user_id, name)
+        with self._lock:
+            return self.switch_to_name(platform, user_id, name)
 
     def delete(self, platform: str, user_id: str, index: int) -> bool:
-        sessions = self.get_all(platform, user_id)
-        if not sessions or index < 0 or index >= len(sessions):
-            return False
-        return self.delete_by_name(platform, user_id, sessions[index].name)
+        with self._lock:
+            sessions = self.get_all(platform, user_id)
+            if not sessions or index < 0 or index >= len(sessions):
+                return False
+            return self.delete_by_name(platform, user_id, sessions[index].name)
 
     def delete_by_name(self, platform: str, user_id: str, name: str) -> bool:
-        key = self._key(platform, user_id)
-        sessions = self._ensure_loaded(platform, user_id)
-        sess = next((s for s in sessions if s.name == name), None)
-        if not sess or sess.is_busy:
-            return False
+        with self._lock:
+            key = self._key(platform, user_id)
+            sessions = self._ensure_loaded(platform, user_id)
+            sess = next((s for s in sessions if s.name == name), None)
+            if not sess or sess.is_busy:
+                return False
 
-        effective_uid = f"{user_id}:{name}" if name else user_id
-        conn = _get_conn()
-        conn.execute(
-            "DELETE FROM conversations WHERE platform=? AND user_id=?",
-            (platform, effective_uid),
-        )
-        if sess.db_id:
-            conn.execute("DELETE FROM user_sessions WHERE id=?", (sess.db_id,))
-        conn.commit()
-        _invalidate_history(platform, effective_uid)
+            effective_uid = f"{user_id}:{name}" if name else user_id
+            conn = _get_conn()
+            conn.execute(
+                "DELETE FROM conversations WHERE platform=? AND user_id=?",
+                (platform, effective_uid),
+            )
+            if sess.db_id:
+                conn.execute("DELETE FROM user_sessions WHERE id=?", (sess.db_id,))
+            conn.commit()
+            _invalidate_history(platform, effective_uid)
 
-        sessions.remove(sess)
+            sessions.remove(sess)
 
-        if self._active.get(key) == name:
-            active_sessions = [s for s in sessions if not s.archived]
-            if active_sessions:
-                self._active[key] = active_sessions[0].name
-                self._save_active(platform, user_id, active_sessions[0].name)
-            else:
-                default = UserSession("default", platform, user_id)
-                sessions.append(default)
-                self._save_session(default)
-                self._active[key] = "default"
-                self._save_active(platform, user_id, "default")
-        return True
+            if self._active.get(key) == name:
+                active_sessions = [s for s in sessions if not s.archived]
+                if active_sessions:
+                    self._active[key] = active_sessions[0].name
+                    self._save_active(platform, user_id, active_sessions[0].name)
+                else:
+                    default = UserSession("default", platform, user_id)
+                    sessions.append(default)
+                    self._save_session(default)
+                    self._active[key] = "default"
+                    self._save_active(platform, user_id, "default")
+            return True
 
     def search(self, platform: str, user_id: str, query: str) -> list[UserSession]:
-        sessions = self._ensure_loaded(platform, user_id)
-        q = query.lower()
-        # First pass: match by name/title (no DB hit)
-        name_matched = set()
-        results = []
-        for s in sessions:
-            if q in s.name.lower() or q in s.title.lower():
-                results.append(s)
-                name_matched.add(s.name)
+        with self._lock:
+            sessions = self._ensure_loaded(platform, user_id)
+            q = query.lower()
+            # First pass: match by name/title (no DB hit)
+            name_matched = set()
+            results = []
+            for s in sessions:
+                if q in s.name.lower() or q in s.title.lower():
+                    results.append(s)
+                    name_matched.add(s.name)
 
-        # Second pass: single query for content matches across all remaining sessions
-        remaining = [s for s in sessions if s.name not in name_matched]
-        if remaining:
-            uids = [f"{user_id}:{s.name}" if s.name else user_id for s in remaining]
-            placeholders = ",".join("?" for _ in uids)
-            conn = _get_conn()
-            rows = conn.execute(
-                f"SELECT DISTINCT user_id FROM conversations WHERE platform=? AND user_id IN ({placeholders}) AND content LIKE ?",
-                [platform, *uids, f"%{query}%"],
-            ).fetchall()
-            matched_uids = {r[0] for r in rows}
-            uid_to_sess = {(f"{user_id}:{s.name}" if s.name else user_id): s for s in remaining}
-            for uid_val in matched_uids:
-                if uid_val in uid_to_sess:
-                    results.append(uid_to_sess[uid_val])
-        return results
+            # Second pass: single query for content matches across all remaining sessions
+            remaining = [s for s in sessions if s.name not in name_matched]
+            if remaining:
+                uids = [f"{user_id}:{s.name}" if s.name else user_id for s in remaining]
+                placeholders = ",".join("?" for _ in uids)
+                conn = _get_conn()
+                rows = conn.execute(
+                    f"SELECT DISTINCT user_id FROM conversations WHERE platform=? AND user_id IN ({placeholders}) AND content LIKE ?",
+                    [platform, *uids, f"%{query}%"],
+                ).fetchall()
+                matched_uids = {r[0] for r in rows}
+                uid_to_sess = {(f"{user_id}:{s.name}" if s.name else user_id): s for s in remaining}
+                for uid_val in matched_uids:
+                    if uid_val in uid_to_sess:
+                        results.append(uid_to_sess[uid_val])
+            return results
 
     def auto_archive_idle(self, platform: str, user_id: str) -> list[str]:
-        sessions = self._ensure_loaded(platform, user_id)
-        cutoff = time.time() - (_SESSION_IDLE_DAYS * 86400)
-        archived = []
-        for s in sessions:
-            if not s.archived and not s.pinned and not s.is_busy and s.last_active < cutoff:
-                self._archive_session(s)
-                archived.append(s.name)
-        return archived
+        with self._lock:
+            sessions = self._ensure_loaded(platform, user_id)
+            cutoff = time.time() - (_SESSION_IDLE_DAYS * 86400)
+            archived = []
+            for s in sessions:
+                if not s.archived and not s.pinned and not s.is_busy and s.last_active < cutoff:
+                    self._archive_session(s)
+                    archived.append(s.name)
+            return archived
 
     def touch_active(self, platform: str, user_id: str) -> None:
-        sess = self.get_or_create_active(platform, user_id)
-        sess.touch()
-        self._save_session(sess)
+        with self._lock:
+            sess = self.get_or_create_active(platform, user_id)
+            sess.touch()
+            self._save_session(sess)
 
     def clear_active(self, platform: str, user_id: str):
-        sess = self.get_or_create_active(platform, user_id)
-        sess.claude_session_id = None
-        sess.message_count = 0
-        self._save_session(sess)
+        with self._lock:
+            sess = self.get_or_create_active(platform, user_id)
+            sess.claude_session_id = None
+            sess.message_count = 0
+            self._save_session(sess)
 
 
 _session_mgr = SessionManager()

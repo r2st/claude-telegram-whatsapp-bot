@@ -3442,9 +3442,13 @@ class TestSessionManagerFinalCoverage:
     """Cover line 52: SessionBrowser default db_path."""
 
     def test_session_browser_default_path(self):
+        """SessionBrowser defaults to the canonical store.DB_PATH location."""
+        from telechat_pkg import store
         from telechat_pkg.session_manager import SessionBrowser
         sb = SessionBrowser()
-        assert sb._db_path.endswith("bot.db")
+        # Must share the canonical DB path with the rest of the bot so
+        # session browsing reflects the real conversation history.
+        assert sb._db_path == store.DB_PATH
 
 
 class TestStoreFinalCoverage:
@@ -4125,11 +4129,13 @@ class TestLastMileCostBudget:
     """Cover lines 62,123,138: default path and None-row returns."""
 
     def test_default_db_path_init(self):
-        """Line 62: BudgetManager uses default path when None."""
+        """BudgetManager defaults to the canonical store.DB_PATH location."""
+        from telechat_pkg import store
         from telechat_pkg.cost_budget import BudgetManager
-        # Directly instantiate — will use default path and create schema
+        # Directly instantiate — must share the canonical DB path with the
+        # rest of the bot rather than writing into site-packages/bot.db.
         mgr = BudgetManager(db_path=None)
-        assert mgr._db_path.endswith("bot.db")
+        assert mgr._db_path == store.DB_PATH
 
     def test_get_daily_cost_none_row(self, tmp_path):
         """Line 123: fetchone returns None → (0.0, 0)."""
@@ -4704,6 +4710,10 @@ class TestWebChatRunSync:
             except KeyboardInterrupt:
                 pass
             mock_run.assert_called_once()
+            # Close the unawaited coroutine so it doesn't trigger
+            # RuntimeWarning: coroutine 'run_web_chat' was never awaited.
+            coro = mock_run.call_args[0][0]
+            coro.close()
 
 
 class TestCostBudgetNoRows:

@@ -572,7 +572,73 @@ def _cmd_init() -> None:
             for w in warnings:
                 print(f"    • {w}")
 
+        if has_web:
+            from .qr_util import print_web_qr
+            print_web_qr(web_port)
+
         print("\n  Run 'telechat' or 'telechat start' to launch the bot.")
+
+
+def _get_local_ip() -> str:
+    """Get the machine's LAN IP address."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "localhost"
+
+
+def _print_web_qr(port: str) -> None:
+    """Print a terminal QR code for the web chat URL.
+
+    Uses the optional ``qrcode`` dependency. If it isn't installed, we just
+    print the URL and a one-line install hint — we no longer ship a hand-rolled
+    Reed–Solomon encoder for this single feature.
+    """
+    ip = _get_local_ip()
+    url = f"http://{ip}:{port}"
+
+    try:
+        import qrcode  # type: ignore
+    except ImportError:
+        print(f"\n  Open on your phone: {url}")
+        print("  (Install 'qrcode' for a scannable QR: pip install qrcode)")
+        return
+
+    qr = qrcode.QRCode(
+        box_size=1, border=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+    )
+    qr.add_data(url)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+
+    print(f"\n  ── Scan to open on your phone ──\n")
+    _render_qr_terminal(matrix)
+    print(f"\n  {url}")
+
+
+def _render_qr_terminal(matrix: list[list[bool]]) -> None:
+    """Render a QR matrix using Unicode half-block characters (2 rows per line)."""
+    rows = len(matrix)
+    for y in range(0, rows, 2):
+        line = "  "
+        for x in range(len(matrix[0])):
+            top = matrix[y][x]
+            bot = matrix[y + 1][x] if y + 1 < rows else False
+            if top and bot:
+                line += "█"      # full block (both dark)
+            elif top and not bot:
+                line += "▀"      # upper half block
+            elif not top and bot:
+                line += "▄"      # lower half block
+            else:
+                line += " "           # both light
+        print(line)
 
 
 def _parse_platforms(mode: str) -> set[str]:
@@ -581,6 +647,7 @@ def _parse_platforms(mode: str) -> set[str]:
     if mode in aliases:
         return aliases[mode]
     return {p.strip() for p in mode.split(",") if p.strip()}
+
 
 
 # ─── Start command (heavy setup deferred here) ───────────────────────────────
@@ -622,7 +689,7 @@ def _cmd_start() -> None:
 
     # ── Parse BOT_MODE ────────────────────────────────────────────────────
     _raw_mode = os.getenv("BOT_MODE", "telegram").lower().strip()
-    _ALIASES = {"both": {"telegram", "whatsapp"}, "all": {"telegram", "whatsapp", "slack"}}
+    _ALIASES = {"both": {"telegram", "whatsapp"}, "all": {"telegram", "whatsapp", "slack", "web"}}
 
     if _raw_mode in _ALIASES:
         PLATFORMS: set[str] = _ALIASES[_raw_mode]
@@ -667,7 +734,14 @@ def _cmd_start() -> None:
     except (subprocess.CalledProcessError, ValueError):
         pass
     try:
-        out = subprocess.check_output(["lsof", "-ti", ":8484"], text=True).strip()
+        # Use the configured health port so we don't kill an unrelated
+        # service on :8484 when HEALTH_PORT has been overridden. Reading
+        # the env directly (instead of importing health) keeps this safe
+        # in test contexts where main is imported outside the package.
+        _health_port = int(os.getenv("HEALTH_PORT", "8484"))
+        out = subprocess.check_output(
+            ["lsof", "-ti", f":{_health_port}"], text=True
+        ).strip()
         for line in out.splitlines():
             pid = int(line.strip())
             if pid != my_pid:
@@ -730,7 +804,12 @@ def _cmd_start() -> None:
         asyncio.run(_main())
     except KeyboardInterrupt:
         print("\nShutting down…")
-        os._exit(0)
+        try:
+            from . import store
+            store.flush_writes(timeout=3.0)
+        except Exception:  # noqa: BLE001
+            pass
+        sys.exit(0)
     except RuntimeError as e:
         # Missing token or similar misconfiguration — clean message, no traceback
         msg = str(e)
@@ -747,12 +826,22 @@ _sigint_count = 0
 
 
 def _sigint_handler(sig, frame):
+    """Handle Ctrl-C.
+
+    The first SIGINT raises KeyboardInterrupt so the running event loop unwinds
+    cleanly (writer thread drains, aiohttp runners clean up). A second SIGINT
+    forces an immediate hard exit in case something is wedged.
+    """
     global _sigint_count
     _sigint_count += 1
     if _sigint_count == 1:
-        print("\nShutting down…")
-        os._exit(0)
+        print("\nShutting down… (press Ctrl-C again to force quit)")
+        # Raising in a signal handler interrupts the running asyncio.run()
+        # and lets the KeyboardInterrupt path above run flush_writes() and
+        # any aiohttp runner cleanup.
+        raise KeyboardInterrupt
     else:
+        # Second Ctrl-C — give up on graceful shutdown.
         os._exit(1)
 
 
@@ -770,6 +859,11 @@ def cli_entry():
 
     if cmd == "init":
         _cmd_init()
+    elif cmd == "bridge":
+        # Claude Desktop bridge: install/uninstall hooks, or hook entrypoints
+        # (notify / approve). All persistence is in telechat's own bot.db.
+        from .desktop_bridge import cli_dispatch as _bridge_cli
+        sys.exit(_bridge_cli(args[1:]))
     elif cmd in ("start", "run"):
         # Pre-flight: no usable config → guidance, not a traceback
         env = _read_env(_find_env_file())
@@ -781,14 +875,21 @@ def cli_entry():
         print("Usage: telechat [command]")
         print()
         print("Commands:")
-        print("  init     Interactive setup wizard (creates/updates .env)")
-        print("  start    Start the bot (default)")
-        print("  help     Show this help")
+        print("  init                          Interactive setup wizard (creates/updates .env)")
+        print("  start                         Start the bot (default)")
+        print("  bridge install [--approval]   Full Claude Desktop bridge setup:")
+        print("                                  hooks + persistent service + checks")
+        print("  bridge uninstall              Remove bridge hooks")
+        print("  bridge status                 Show running Claude Desktop sessions")
+        print("  bridge service <install|uninstall|status>   Manage the persistent service")
+        print("  help                          Show this help")
         print()
         print("Examples:")
-        print("  telechat init          # configure platforms & credentials")
-        print("  telechat               # start the bot")
-        print("  telechat start         # same as above")
+        print("  telechat init                       # configure platforms & credentials")
+        print("  telechat                            # start the bot")
+        print("  telechat bridge install             # enable bridge + persistent service")
+        print("  telechat bridge install --approval  # also gate Bash/Write/Edit on Telegram approval")
+        print("  telechat bridge install --no-service  # hooks only, skip the launchd service")
     elif cmd == "--version":
         try:
             from importlib.metadata import version

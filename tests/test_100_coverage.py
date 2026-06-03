@@ -2,6 +2,7 @@
 
 Organized by module with line numbers in docstrings.
 """
+import pytest
 import asyncio
 import csv
 import io
@@ -555,6 +556,7 @@ class TestClaudeCoreLines(unittest.TestCase):
 # main.py — QR code, validation, runtime
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.skip(reason="Hand-rolled QR / Reed-Solomon encoder removed in favor of the optional 'qrcode' dependency")
 class TestMainQRLines(unittest.TestCase):
     def test_qr_encode_version2(self):
         """Lines 673, 682, 748-757, 826: version 2+ QR code path."""
