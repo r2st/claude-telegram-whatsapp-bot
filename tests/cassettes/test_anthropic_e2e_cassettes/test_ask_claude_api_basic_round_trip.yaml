@@ -1,0 +1,110 @@
+interactions:
+- request:
+    body: '{"max_tokens":20,"messages":[{"role":"user","content":"Reply with the single
+      word HELLO and nothing else."}],"model":"claude-haiku-4-5-20251001","system":"You
+      are a terse test bot. Reply with exactly what the user asks for."}'
+    headers:
+      Accept:
+      - application/json
+      Accept-Encoding:
+      - gzip, deflate, br, zstd
+      Connection:
+      - keep-alive
+      Content-Length:
+      - '225'
+      Content-Type:
+      - application/json
+      Host:
+      - api.anthropic.com
+      X-Stainless-Async:
+      - 'false'
+      anthropic-version:
+      - '2023-06-01'
+      user-agent:
+      - '[REDACTED]'
+      x-api-key:
+      - '[REDACTED]'
+      x-stainless-arch:
+      - '[REDACTED]'
+      x-stainless-lang:
+      - '[REDACTED]'
+      x-stainless-os:
+      - '[REDACTED]'
+      x-stainless-package-version:
+      - '[REDACTED]'
+      x-stainless-read-timeout:
+      - '600'
+      x-stainless-retry-count:
+      - '0'
+      x-stainless-runtime:
+      - '[REDACTED]'
+      x-stainless-runtime-version:
+      - '[REDACTED]'
+      x-stainless-timeout:
+      - '600'
+    method: POST
+    uri: https://api.anthropic.com/v1/messages
+  response:
+    body:
+      string: '{"model":"claude-haiku-4-5-20251001","id":"msg_01Y7UQ99cXxA3UEiDrfXuHkQ","type":"message","role":"assistant","content":[{"type":"text","text":"HELLO"}],"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"usage":{"input_tokens":35,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":5,"service_tier":"standard","inference_geo":"not_available"}}'
+    headers:
+      CF-RAY:
+      - '[REDACTED]'
+      Connection:
+      - keep-alive
+      Content-Security-Policy:
+      - default-src 'none'; frame-ancestors 'none'
+      Content-Type:
+      - application/json
+      Date:
+      - Thu, 04 Jun 2026 04:35:50 GMT
+      Server:
+      - '[REDACTED]'
+      Transfer-Encoding:
+      - chunked
+      X-Robots-Tag:
+      - none
+      anthropic-organization-id:
+      - '[REDACTED]'
+      anthropic-ratelimit-input-tokens-limit:
+      - '4000000'
+      anthropic-ratelimit-input-tokens-remaining:
+      - '4000000'
+      anthropic-ratelimit-input-tokens-reset:
+      - '2026-06-04T04:35:50Z'
+      anthropic-ratelimit-output-tokens-limit:
+      - '800000'
+      anthropic-ratelimit-output-tokens-remaining:
+      - '800000'
+      anthropic-ratelimit-output-tokens-reset:
+      - '2026-06-04T04:35:50Z'
+      anthropic-ratelimit-requests-limit:
+      - '4000'
+      anthropic-ratelimit-requests-remaining:
+      - '3999'
+      anthropic-ratelimit-requests-reset:
+      - '2026-06-04T04:35:50Z'
+      anthropic-ratelimit-tokens-limit:
+      - '4800000'
+      anthropic-ratelimit-tokens-remaining:
+      - '4800000'
+      anthropic-ratelimit-tokens-reset:
+      - '2026-06-04T04:35:50Z'
+      cf-cache-status:
+      - DYNAMIC
+      content-length:
+      - '461'
+      request-id:
+      - '[REDACTED]'
+      set-cookie:
+      - '[REDACTED]'
+      strict-transport-security:
+      - max-age=31536000; includeSubDomains; preload
+      traceresponse:
+      - '[REDACTED]'
+      vary:
+      - Accept-Encoding
+    status:
+      code: 200
+      message: OK
+version: 1

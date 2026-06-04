@@ -70,6 +70,7 @@ _SENSITIVE_RESPONSE_HEADERS = {
     "anthropic-organization-id",
     "cf-ray",
     "x-cloud-trace-context",
+    "traceresponse",
     "via",
     "server",
 }
@@ -169,7 +170,7 @@ def test_ask_claude_api_basic_round_trip():
     text, stats = ask_claude_api(
         "Reply with the single word HELLO and nothing else.",
         history=[],
-        model="claude-3-5-haiku-20241022",
+        model="claude-haiku-4-5-20251001",
         system="You are a terse test bot. Reply with exactly what the user asks for.",
         max_tokens=20,
     )
@@ -194,7 +195,7 @@ def test_ask_claude_api_respects_history():
     text, _ = ask_claude_api(
         "What is my name? Answer with just the name.",
         history=history,
-        model="claude-3-5-haiku-20241022",
+        model="claude-haiku-4-5-20251001",
         system="Answer concisely.",
         max_tokens=20,
     )
@@ -215,7 +216,7 @@ async def test_ask_claude_api_async_streams_text():
     text, stats = await ask_claude_api_async(
         "Count from 1 to 3 separated by commas.",
         history=[],
-        model="claude-3-5-haiku-20241022",
+        model="claude-haiku-4-5-20251001",
         system="Be terse.",
         max_tokens=30,
         on_text=on_text,
