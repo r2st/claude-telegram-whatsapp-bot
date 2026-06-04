@@ -43,10 +43,16 @@ def tmp_db(tmp_path):
 @pytest.fixture
 def store_with_db(tmp_db, monkeypatch):
     """Initialize the store module with a temp database."""
-    monkeypatch.setattr("telechat_pkg.store.DB_PATH", tmp_db)
     from telechat_pkg import store
+    # Drop any thread-local connection left bound to a previous test's DB_PATH,
+    # otherwise init_db() reuses a stale connection to another database and
+    # never WAL-initializes tmp_db — leaving it vulnerable to the concurrent
+    # "database is locked" race that made this suite flaky.
+    store._reset_conn_state()
+    monkeypatch.setattr("telechat_pkg.store.DB_PATH", tmp_db)
     store.init_db()
-    return store
+    yield store
+    store._reset_conn_state()
 
 
 @pytest.fixture

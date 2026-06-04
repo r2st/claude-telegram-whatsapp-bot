@@ -65,6 +65,32 @@ def _is_command_allowed(command: str) -> bool:
     return base in MCP_ALLOWED_COMMANDS
 
 
+# Environment variables safe to forward to an MCP subprocess. Everything else
+# in the parent environment (ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, cloud creds,
+# …) is withheld: an MCP server is a separate program and has no business seeing
+# the bot's secrets. A server that genuinely needs a variable must declare it in
+# its config `env` block, which is merged on top of this safe base.
+_MCP_SAFE_ENV_PASSTHROUGH = (
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
+    "TZ", "TMPDIR", "TEMP", "TMP", "TERM",
+    # Windows infrastructure
+    "SYSTEMROOT", "SYSTEMDRIVE", "PATHEXT", "WINDIR", "COMSPEC",
+)
+
+
+def _build_child_env(server_env: Optional[dict[str, str]]) -> dict[str, str]:
+    """Build a minimal, scrubbed environment for an MCP subprocess.
+
+    Only infrastructure variables (PATH, HOME, locale, temp dirs) are inherited
+    from the parent process; secrets are NOT forwarded. The server-supplied
+    ``env`` is merged on top, so a server can both add its own variables and
+    override an inherited one.
+    """
+    env = {k: os.environ[k] for k in _MCP_SAFE_ENV_PASSTHROUGH if k in os.environ}
+    env.update(server_env or {})
+    return env
+
+
 def _telechat_version() -> str:
     """Return the package version, falling back to ``unknown`` on import errors.
 
@@ -158,8 +184,10 @@ class MCPManager:
 
         server.status = "connecting"
         try:
-            # Use stdio transport to connect to MCP server
-            env = {**os.environ, **server.env}
+            # Use stdio transport to connect to MCP server. The child env is
+            # scrubbed to infrastructure vars only — the bot's secrets are not
+            # forwarded to a third-party MCP server (see _build_child_env).
+            env = _build_child_env(server.env)
             proc = await asyncio.create_subprocess_exec(
                 server.command, *server.args,
                 stdin=asyncio.subprocess.PIPE,

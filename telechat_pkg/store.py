@@ -49,11 +49,39 @@ _local = threading.local()
 def _get_conn() -> sqlite3.Connection:
     """Get a thread-local SQLite connection (reused across calls)."""
     if not hasattr(_local, "conn") or _local.conn is None:
-        _local.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        _local.conn.execute("PRAGMA journal_mode=WAL")
-        _local.conn.execute("PRAGMA synchronous=NORMAL")
-        _local.conn.execute("PRAGMA cache_size=-8000")  # 8MB cache
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30.0)
+        # Wait for the lock instead of erroring when several threads open a
+        # brand-new database at once: switching journal_mode to WAL needs a
+        # brief exclusive lock, and without a busy timeout the losers raise
+        # "database is locked". Set this *before* the journal_mode pragma so it
+        # covers the switch itself.
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-8000")  # 8MB cache
+        # Publish only once fully initialized, so a mid-setup failure doesn't
+        # leave a half-configured connection cached on this thread.
+        _local.conn = conn
     return _local.conn
+
+
+def _reset_conn_state() -> None:
+    """Drop cached thread-local connection state (test-isolation helper).
+
+    The thread-local connection caches the ``DB_PATH`` in effect when it was
+    first opened. Tests that point ``DB_PATH`` at a temp database must clear the
+    cache, or ``_get_conn()`` (and therefore ``init_db()``) keeps using a stale
+    connection to a previous database. Replacing the ``threading.local`` object
+    drops every thread's cached handle so the next ``_get_conn()`` reconnects
+    against the current ``DB_PATH``.
+    """
+    global _local
+    try:
+        if getattr(_local, "conn", None) is not None:
+            _local.conn.close()
+    except Exception:
+        pass
+    _local = threading.local()
 
 
 # ─── Thread-safe write queue (non-blocking DB writes) ─────────────────────────
@@ -621,19 +649,18 @@ class SessionManager:
             key = self._key(platform, user_id)
             active_name = self._active.get(key, "")
 
-            if sessions and active_name:
-                for s in sessions:
+            # Never hand back an archived session: prefer a live one with the
+            # active name, then fall back to the first live session.
+            live = [s for s in sessions if not s.archived]
+            if active_name:
+                for s in live:
                     if s.name == active_name:
                         return s
-                if sessions:
-                    self._active[key] = sessions[0].name
-                    self._save_active(platform, user_id, sessions[0].name)
-                    return sessions[0]
 
-            if sessions:
-                self._active[key] = sessions[0].name
-                self._save_active(platform, user_id, sessions[0].name)
-                return sessions[0]
+            if live:
+                self._active[key] = live[0].name
+                self._save_active(platform, user_id, live[0].name)
+                return live[0]
 
             sess = UserSession("default", platform, user_id)
             sessions.append(sess)
@@ -759,6 +786,30 @@ class SessionManager:
         sess.archived = True
         self._save_session(sess)
 
+    def _activate_replacement(
+        self, platform: str, user_id: str, sessions: list[UserSession], key: str
+    ) -> None:
+        """Point the active pointer at a live session after the current active
+        one was archived/deleted: the first remaining un-archived session, or a
+        fresh ``"default"`` if none remain.
+
+        Note: the companion fix lives in ``get_or_create_active``, which never
+        returns an archived session — so even though archiving the sole
+        ``"default"`` transiently leaves an archived + a fresh ``"default"`` in
+        the cache (they collapse to one row on the next DB reload), the active
+        pointer can never resolve to the archived copy.
+        """
+        live = [s for s in sessions if not s.archived]
+        if live:
+            self._active[key] = live[0].name
+            self._save_active(platform, user_id, live[0].name)
+            return
+        default = UserSession("default", platform, user_id)
+        sessions.append(default)
+        self._save_session(default)
+        self._active[key] = "default"
+        self._save_active(platform, user_id, "default")
+
     def archive(self, platform: str, user_id: str, name: str) -> UserSession | None:
         with self._lock:
             sessions = self._ensure_loaded(platform, user_id)
@@ -769,16 +820,7 @@ class SessionManager:
 
             key = self._key(platform, user_id)
             if self._active.get(key) == name:
-                active_sessions = [s for s in sessions if not s.archived]
-                if active_sessions:
-                    self._active[key] = active_sessions[0].name
-                    self._save_active(platform, user_id, active_sessions[0].name)
-                else:
-                    default = UserSession("default", platform, user_id)
-                    sessions.append(default)
-                    self._save_session(default)
-                    self._active[key] = "default"
-                    self._save_active(platform, user_id, "default")
+                self._activate_replacement(platform, user_id, sessions, key)
             return sess
 
     def unarchive(self, platform: str, user_id: str, name: str) -> UserSession | None:
@@ -814,16 +856,7 @@ class SessionManager:
             sessions.remove(sess)
 
             if self._active.get(key) == name:
-                active_sessions = [s for s in sessions if not s.archived]
-                if active_sessions:
-                    self._active[key] = active_sessions[0].name
-                    self._save_active(platform, user_id, active_sessions[0].name)
-                else:
-                    default = UserSession("default", platform, user_id)
-                    sessions.append(default)
-                    self._save_session(default)
-                    self._active[key] = "default"
-                    self._save_active(platform, user_id, "default")
+                self._activate_replacement(platform, user_id, sessions, key)
             return True
 
     def search(self, platform: str, user_id: str, query: str) -> list[UserSession]:

@@ -30,7 +30,9 @@ def _ts_to_str(ts: float) -> str:
     """Convert Unix timestamp to readable string."""
     try:
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-    except (OSError, ValueError):
+    except (OSError, ValueError, OverflowError):
+        # OverflowError: a timestamp too large for the platform C time_t
+        # (e.g. 10**30) raises this on macOS rather than ValueError.
         return "unknown"
 
 
