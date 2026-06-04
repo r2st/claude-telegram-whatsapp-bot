@@ -1,0 +1,83 @@
+# Files and directories that should never enter the Docker build context.
+# Mirrors .gitignore where relevant + image-specific exclusions.
+# Ordered loosely by likely-blast-radius (secrets first).
+
+# Secrets — never ship these
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+
+# Runtime data — generated at run-time, must not be baked in
+*.db
+*.db-shm
+*.db-wal
+bot.err
+bot.log
+*.pid
+.watchdog_state.json
+coder_projects.json
+
+# VCS
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# Python build / test artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+dist/
+build/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.benchmarks/
+.tox/
+.nox/
+
+# Type / lint caches
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Tests — only needed for `pytest`, not for the running bot
+tests/
+
+# Plugin/agent coordination scaffolding — not needed in image
+agents/
+AGENTS.md
+
+# Docs / review artifacts — not needed in image
+docs/
+CODE_REVIEW.md
+*.md
+!README.md
+
+# IDE / OS metadata
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Node (the npm/ wrapper directory contains node artifacts)
+node_modules/
+npm/node_modules/
+
+# Local dev overrides
+docker-compose.override.yml
+.dockerignore
+Dockerfile.local

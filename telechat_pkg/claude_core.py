@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import subprocess
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from . import store as _store
 
@@ -122,9 +122,9 @@ async def ask_claude_async(
     add_dirs: str = CLAUDE_ADD_DIRS,
     perm_mode: str = CLAUDE_PERM_MODE,
     timeout: int = CLAUDE_TIMEOUT,
-    on_progress: Optional[callable] = None,
-    on_text: Optional[callable] = None,
-    is_cancelled: Optional[callable] = None,
+    on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None,
+    on_text: Optional[Callable[[str], Awaitable[None]]] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
     platform: str = "",
     user_id: str = "",
     resume_session_id: str = "",
@@ -355,8 +355,8 @@ async def ask_claude_api_async(
     model: str = CLAUDE_API_MODEL,
     system: str = CLAUDE_SYSTEM,
     max_tokens: int = CLAUDE_MAX_TOKENS,
-    on_text: Optional[callable] = None,
-    is_cancelled: Optional[callable] = None,
+    on_text: Optional[Callable[[str], Awaitable[None]]] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> tuple[str, dict]:
     """Async Claude API call with streaming."""
     client = _get_async_api_client()
@@ -401,9 +401,9 @@ async def ask_claude_sdk(
     add_dirs: str = CLAUDE_ADD_DIRS,
     timeout: int = CLAUDE_TIMEOUT,
     perm_mode: str = CLAUDE_PERM_MODE,
-    on_progress: Optional[callable] = None,
-    on_text: Optional[callable] = None,
-    is_cancelled: Optional[callable] = None,
+    on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None,
+    on_text: Optional[Callable[[str], Awaitable[None]]] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> tuple[str, dict]:
     """Async Claude Code SDK call with streaming progress."""
     try:
