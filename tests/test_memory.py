@@ -469,3 +469,296 @@ class TestLikeFallback:
         with unittest.mock.patch.object(store, "_has_fts", return_value=False):
             results = store.recall("tg", "u1", "item", limit=3)
         assert len(results) <= 3
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 10. get() by id  (ticket 0016)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestGetById:
+    def test_get_returns_memory(self, store):
+        mem = store.remember("tg", "u1", "fetch me", tags=["a"], importance=0.7)
+        got = store.get("tg", "u1", mem.id)
+        assert got is not None
+        assert got.id == mem.id
+        assert got.content == "fetch me"
+        assert got.tags == ["a"]
+        assert got.importance == 0.7
+
+    def test_get_missing_returns_none(self, store):
+        assert store.get("tg", "u1", "no-such-id") is None
+
+    def test_get_wrong_platform_returns_none(self, store):
+        mem = store.remember("tg", "u1", "x")
+        assert store.get("slack", "u1", mem.id) is None
+
+    def test_get_wrong_user_returns_none(self, store):
+        mem = store.remember("tg", "u1", "x")
+        assert store.get("tg", "u2", mem.id) is None
+
+    def test_get_with_metadata(self, store):
+        mem = store.remember("tg", "u1", "meta", metadata={"src": "chat"})
+        got = store.get("tg", "u1", mem.id)
+        assert got.metadata == {"src": "chat"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 11. FTS index build / sync semantics  (ticket 0016)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestFTSIndexBuild:
+    def test_fts_table_exists(self, store):
+        # _has_fts probes the virtual table built in _init_schema.
+        assert store._has_fts() is True
+
+    def test_fts_reflects_updates(self, store):
+        # The AFTER UPDATE trigger should re-index changed content.
+        mem = store.remember("tg", "u1", "old keyword apple")
+        store.update("tg", "u1", mem.id, content="new keyword banana")
+        assert store.recall("tg", "u1", "banana")
+        assert store.recall("tg", "u1", "apple") == []
+
+    def test_fts_reflects_deletes(self, store):
+        # The AFTER DELETE trigger removes rows from the index.
+        mem = store.remember("tg", "u1", "deletable cherry")
+        store.forget("tg", "u1", mem.id)
+        assert store.recall("tg", "u1", "cherry") == []
+
+    def test_has_fts_cached(self, store):
+        # Second call uses the cached _fts_available attribute (no re-probe).
+        assert store._has_fts() is True
+        assert store._has_fts() is True
+        assert store._fts_available is True
+
+    def test_recall_fts_operational_error_falls_back_to_like(self, store):
+        # When the FTS MATCH query itself raises OperationalError, recall
+        # falls through to the LIKE branch (lines 273-274).
+        store.remember("tg", "u1", "fallback target word")
+        real_conn = store._conn()
+
+        class FlakyConn:
+            def execute(self, sql, *a, **k):
+                if "memories_fts" in sql and "MATCH" in sql:
+                    raise sqlite3.OperationalError("fts blew up")
+                return real_conn.execute(sql, *a, **k)
+
+        with unittest.mock.patch.object(store, "_conn", return_value=FlakyConn()):
+            results = store.recall("tg", "u1", "target")
+        assert any("target" in r.content for r in results)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 12. Schema upgrade — metadata column ALTER  (ticket 0016)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSchemaUpgrade:
+    def test_metadata_column_added_on_legacy_schema(self, tmp_path):
+        # Simulate an old DB whose memories table predates the metadata column.
+        db = str(tmp_path / "legacy.db")
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            """CREATE TABLE memories (
+                id TEXT PRIMARY KEY, platform TEXT NOT NULL, user_id TEXT NOT NULL,
+                content TEXT NOT NULL, tags TEXT, importance REAL NOT NULL DEFAULT 0.5,
+                created_at REAL NOT NULL, updated_at REAL NOT NULL);"""
+        )
+        conn.commit()
+        conn.close()
+
+        # Constructing the store should ALTER in the metadata column.
+        store = MemoryStore(db)
+        cols = {r[1] for r in store._conn().execute("PRAGMA table_info(memories)")}
+        assert "metadata" in cols
+        # And it remains fully usable.
+        mem = store.remember("tg", "u1", "post-upgrade", metadata={"k": "v"})
+        assert store.get("tg", "u1", mem.id).metadata == {"k": "v"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 13. Export / Import  (ticket 0016)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestExportImport:
+    def test_export_all_shape(self, store):
+        store.remember("tg", "u1", "first export", tags=["a"], importance=0.6,
+                       metadata={"n": 1})
+        store.remember("tg", "u1", "second export")
+        exported = store.export_all("tg", "u1")
+        assert len(exported) == 2
+        first = exported[0]
+        assert first["content"] == "first export"
+        assert first["tags"] == ["a"]
+        assert first["importance"] == 0.6
+        assert first["metadata"] == {"n": 1}
+        assert "created_at" in first
+
+    def test_export_ordered_by_created_at_asc(self, store):
+        store.remember("tg", "u1", "older")
+        time.sleep(0.01)
+        store.remember("tg", "u1", "newer")
+        exported = store.export_all("tg", "u1")
+        assert exported[0]["content"] == "older"
+        assert exported[1]["content"] == "newer"
+
+    def test_export_filters_by_tag(self, store):
+        store.remember("tg", "u1", "work item", tags=["work"])
+        store.remember("tg", "u1", "home item", tags=["home"])
+        exported = store.export_all("tg", "u1", tags=["work"])
+        assert len(exported) == 1
+        assert exported[0]["content"] == "work item"
+
+    def test_export_empty_user(self, store):
+        assert store.export_all("tg", "nobody") == []
+
+    def test_export_no_tags_no_metadata_defaults(self, store):
+        store.remember("tg", "u1", "bare")
+        exported = store.export_all("tg", "u1")
+        assert exported[0]["tags"] == []
+        assert exported[0]["metadata"] == {}
+
+    def test_import_all_basic(self, store):
+        entries = [
+            {"content": "imported one", "tags": ["x"], "importance": 0.9},
+            {"content": "imported two", "metadata": {"src": "file"}},
+        ]
+        result = store.import_all("tg", "u1", entries)
+        assert result == {"imported": 2, "skipped": 0}
+        mems = store.list_memories("tg", "u1")
+        assert len(mems) == 2
+
+    def test_import_skips_empty_content(self, store):
+        entries = [
+            {"content": "keep this"},
+            {"content": "   "},
+            {"content": ""},
+            {},  # no content key at all
+        ]
+        result = store.import_all("tg", "u1", entries)
+        assert result == {"imported": 1, "skipped": 3}
+
+    def test_import_clamps_importance(self, store):
+        result = store.import_all("tg", "u1", [{"content": "x", "importance": 5.0}])
+        assert result["imported"] == 1
+        mem = store.list_memories("tg", "u1")[0]
+        assert mem.importance == 1.0
+
+    def test_import_preserves_created_at(self, store):
+        result = store.import_all(
+            "tg", "u1", [{"content": "dated", "created_at": 12345.0}]
+        )
+        assert result["imported"] == 1
+        exported = store.export_all("tg", "u1")
+        assert exported[0]["created_at"] == 12345.0
+
+    def test_export_then_import_roundtrip(self, store):
+        store.remember("tg", "u1", "round trip", tags=["t"], importance=0.7,
+                       metadata={"a": 1})
+        dump = store.export_all("tg", "u1")
+        store.import_all("tg", "u2", dump)
+        restored = store.list_memories("tg", "u2")
+        assert len(restored) == 1
+        assert restored[0].content == "round trip"
+        assert restored[0].tags == ["t"]
+        assert restored[0].importance == 0.7
+        assert restored[0].metadata == {"a": 1}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 14. AI-powered extraction  (ticket 0016)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestExtractMemories:
+    @pytest.mark.asyncio
+    async def test_empty_text_returns_empty(self):
+        from telechat_pkg.memory import extract_memories
+        assert await extract_memories("   ") == []
+
+    @pytest.mark.asyncio
+    async def test_no_api_key_returns_raw_fallback(self, monkeypatch):
+        from telechat_pkg import memory
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        out = await memory.extract_memories("remember I like tea")
+        assert len(out) == 1
+        assert out[0]["content"] == "remember I like tea"
+        assert out[0]["tags"] == ["session"]
+        assert out[0]["importance"] == 0.5
+
+    @pytest.mark.asyncio
+    async def test_long_text_truncated_in_fallback(self, monkeypatch):
+        from telechat_pkg import memory
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        out = await memory.extract_memories("y" * 1000)
+        assert len(out[0]["content"]) == 500
+
+    @pytest.mark.asyncio
+    async def test_successful_api_extraction(self, monkeypatch):
+        from telechat_pkg import memory
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+        class FakeResp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"content": [{"text": '[{"content":"likes go","tags":["lang"],"importance":0.8}]'}]}
+
+        class FakeClient:
+            async def post(self, *a, **k):
+                return FakeResp()
+
+        monkeypatch.setattr(memory, "_get_httpx_client", lambda: FakeClient())
+        out = await memory.extract_memories("user said they like Go")
+        assert out == [{"content": "likes go", "tags": ["lang"], "importance": 0.8}]
+
+    @pytest.mark.asyncio
+    async def test_api_error_falls_back_to_raw(self, monkeypatch):
+        from telechat_pkg import memory
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+        class FakeClient:
+            async def post(self, *a, **k):
+                raise RuntimeError("network down")
+
+        monkeypatch.setattr(memory, "_get_httpx_client", lambda: FakeClient())
+        out = await memory.extract_memories("conversation text here")
+        assert len(out) == 1
+        assert out[0]["content"] == "conversation text here"
+        assert out[0]["tags"] == ["session"]
+
+    def test_get_httpx_client_is_cached(self, monkeypatch):
+        from telechat_pkg import memory
+        memory._httpx_client = None
+        sentinel = object()
+        fake_httpx = unittest.mock.MagicMock()
+        fake_httpx.AsyncClient.return_value = sentinel
+        monkeypatch.setitem(__import__("sys").modules, "httpx", fake_httpx)
+        try:
+            c1 = memory._get_httpx_client()
+            c2 = memory._get_httpx_client()
+            assert c1 is sentinel
+            assert c1 is c2
+            fake_httpx.AsyncClient.assert_called_once()
+        finally:
+            memory._httpx_client = None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 15. Default DB path (shares store.DB_PATH)  (ticket 0016)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestDefaultDBPath:
+    def test_none_db_path_uses_store(self, monkeypatch, tmp_path):
+        from telechat_pkg import store
+        p = str(tmp_path / "shared.db")
+        monkeypatch.setattr(store, "DB_PATH", p)
+        mem_store = MemoryStore()
+        assert mem_store._db_path == p
+        # Usable end to end against that path.
+        m = mem_store.remember("tg", "u1", "shared path mem")
+        assert mem_store.get("tg", "u1", m.id) is not None
