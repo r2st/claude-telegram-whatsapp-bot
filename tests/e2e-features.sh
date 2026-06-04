@@ -133,13 +133,24 @@ reply, stats = cc.ask_claude_sync(
     timeout=60,
 )
 assert reply, "empty reply"
-assert not reply.startswith("[Error]"), f"claude error: {reply[:120]}"
-assert not reply.startswith("[Timeout]"), "claude timed out"
-assert "PONG" in reply.upper(), f"unexpected reply: {reply[:120]!r}"
-print("PASS")
+low = reply.lower()
+if "401" in reply or "invalid authentication" in low or "failed to authenticate" in low:
+    # CLI present but not signed in / no valid credentials — not a code defect.
+    print("SKIP: claude CLI not authenticated")
+else:
+    assert not reply.startswith("[Error]"), f"claude error: {reply[:120]}"
+    assert not reply.startswith("[Timeout]"), "claude timed out"
+    assert "PONG" in reply.upper(), f"unexpected reply: {reply[:120]!r}"
+    print("PASS")
 PY
 )"
-  printf '%s' "$out" | grep -q '^PASS' && ok "real Claude CLI round-trip returns expected reply" || { bad "Claude brain round-trip"; printf '%s\n' "$out" | tail -5 | sed 's/^/      /'; }
+  if printf '%s' "$out" | grep -q '^PASS'; then
+    ok "real Claude CLI round-trip returns expected reply"
+  elif printf '%s' "$out" | grep -q '^SKIP'; then
+    skip "Claude brain round-trip — claude CLI not authenticated"
+  else
+    bad "Claude brain round-trip"; printf '%s\n' "$out" | tail -5 | sed 's/^/      /'
+  fi
 fi
 
 # ── 4b. Coding agent (project store + real end-to-end file creation) ─────────
@@ -173,7 +184,7 @@ prompt = coder.build_task_prompt(
     "No other files.",
     "$PROJ",
 )
-reply, stats = asyncio.get_event_loop().run_until_complete(
+reply, stats = asyncio.run(
     cc.ask_claude_async(
         prompt, [],
         system=coder.CODER_SYSTEM,
@@ -182,10 +193,18 @@ reply, stats = asyncio.get_event_loop().run_until_complete(
         work_dir="$PROJ",
     )
 )
-print("reply:", (reply or "")[:80].replace(chr(10), " "))
+reply = reply or ""
+low = reply.lower()
+if "401" in reply or "invalid authentication" in low or "failed to authenticate" in low:
+    # CLI present but not signed in / no valid credentials — not a code defect.
+    print("SKIP: claude CLI not authenticated")
+else:
+    print("reply:", reply[:80].replace(chr(10), " "))
 PY
 )"
-  if [ -f "$PROJ/DONE.txt" ] && grep -q "READY" "$PROJ/DONE.txt"; then
+  if printf '%s' "$out" | grep -q '^SKIP'; then
+    skip "end-to-end coding run — claude CLI not authenticated"
+  elif [ -f "$PROJ/DONE.txt" ] && grep -q "READY" "$PROJ/DONE.txt"; then
     ok "agent created DONE.txt with correct content in the project dir"
   else
     bad "coding agent did not produce the expected file"
