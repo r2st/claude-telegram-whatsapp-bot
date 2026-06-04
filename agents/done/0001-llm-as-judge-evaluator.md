@@ -3,9 +3,9 @@ id: 0001
 title: LLM-as-judge evaluator
 role: builder
 priority: P1
-owner:
-started:
-status: inbox
+owner: opus-features
+started: 2026-06-03
+status: done
 depends_on: []
 touches:
   - telechat_pkg/evaluator.py
@@ -52,3 +52,14 @@ gap and feeds the self-improving loop.
 Use Haiku for the judge to keep cost down. Judge prompt should ask for
 a 1–5 score per dimension + a one-line justification — log the
 justification so we can audit later.
+
+## Outcome — 2026-06-03
+
+Shipped `telechat_pkg/evaluator.py`: `judge_response()` (Haiku via injectable
+`claude_fn`, degrades to no-op without an API key), `JUDGE_SAMPLE_RATE` (env,
+default 0.1) sampling, robust JSON parsing with score clamping. Scores persist to
+the existing `quality_scores` table (no migration needed — dimensions stored as
+`judge_helpfulness/accuracy/tone/composite`, justification in metadata). Wired
+into the Telegram response path via `_evaluate_quality`; new `/quality` command
+surfaces binary + judge averages. `tests/test_evaluator.py` 29 tests, evaluator.py
+100% coverage; full suite green modulo the 3 known cassette errors (0006).

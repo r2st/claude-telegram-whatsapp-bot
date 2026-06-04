@@ -3,9 +3,9 @@ id: 0004
 title: Auto-update mechanism (check PyPI / npm for new versions)
 role: builder
 priority: P2
-owner:
-started:
-status: inbox
+owner: opus-features
+started: 2026-06-03
+status: done
 depends_on: []
 touches:
   - telechat_pkg/updater.py
@@ -52,3 +52,14 @@ self-improving architecture pushing improvements often, this matters.
 Don't auto-restart in the same process — emit an event, let the
 operator (or watchdog policy) decide. Respect existing circuit-breaker
 patterns; don't hammer registries on retry.
+
+## Outcome — 2026-06-03
+
+Shipped `telechat_pkg/updater.py`: `check_for_updates()` compares the installed
+version (importlib.metadata → pyproject fallback) against PyPI (`telechatai`) and
+npm (`telechat`) via injectable fetchers; `is_newer` ignores pre-release suffixes.
+Emits a `system.update_available` event (sync-safe publish), caches status for
+`/health` (additive `update` key), and `start_background_check()` runs a boot +
+interval daemon (wired into `main._cmd_start`). `apply_update` is gated behind
+`UPDATE_AUTO_APPLY` (default off) and never restarts the process.
+`tests/test_updater.py` 34 tests, updater.py 100% coverage.

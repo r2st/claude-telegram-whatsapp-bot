@@ -3,9 +3,9 @@ id: 0003
 title: Prompt self-optimization (A/B test system prompts)
 role: builder
 priority: P2
-owner:
-started:
-status: inbox
+owner: opus-features
+started: 2026-06-03
+status: done
 depends_on: [0001]
 touches:
   - telechat_pkg/prompt_optimizer.py
@@ -53,3 +53,15 @@ Depends on 0001 (LLM-as-judge) for the scoring signal. Start with
 2 variants (current + one alternate) before going wider. Lock variant
 IDs in conversation memory so a single conversation stays on one
 variant for coherence.
+
+## Outcome — 2026-06-03
+
+Shipped `telechat_pkg/prompt_optimizer.py`: `prompt_variants` /
+`prompt_assignments` / `prompt_variant_scores` tables (module-owned), weighted
+`assign_variant` with sticky per-conversation routing, `record_score` +
+`variant_stats` aggregation, `maybe_promote` (bump winners / retire losers past
+`min_samples` and `margin`), and `force_promote`. Integrated into Telegram behind
+`PROMPT_OPTIMIZER_ENABLED` (default off): `_select_system_prompt` routes to a
+variant, `_evaluate_quality` attributes the binary composite back to it, and the
+new `/prompts` admin command lists/add/promote. Depends on 0001 (judge scores feed
+the same per-variant signal). `tests/test_prompt_optimizer.py` 18 tests, 100% cov.

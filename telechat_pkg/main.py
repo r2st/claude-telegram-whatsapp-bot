@@ -709,6 +709,14 @@ def _cmd_start() -> None:
         from . import health
         health.start_health_server()
 
+        # Auto-update checker: notify (and optionally self-upgrade) when a newer
+        # telechat is published. Runs off-thread; never blocks startup.
+        try:
+            from . import updater
+            updater.start_background_check()
+        except Exception as _upd_exc:  # pragma: no cover - defensive
+            log.debug("update checker not started: %s", _upd_exc)
+
         platforms = ", ".join(sorted(PLATFORMS))
         print(f"telechat — {platforms}")
         if _debug:

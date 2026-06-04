@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -80,6 +81,9 @@ AUTO_MEMORY_ENABLED = os.getenv("AUTO_MEMORY", "true").lower() in ("1", "true", 
 AUTO_MEMORY_MIN_LENGTH = int(os.getenv("AUTO_MEMORY_MIN_LENGTH", "100"))
 COST_BUDGET_ENABLED = os.getenv("COST_BUDGET_ENABLED", "true").lower() in ("1", "true", "yes")
 SMART_ROUTING_ENABLED = os.getenv("SMART_ROUTING_ENABLED", "true").lower() in ("1", "true", "yes")
+# Prompt A/B optimization is opt-in: off by default so the static system prompt
+# is used unless an operator explicitly turns on variant routing.
+PROMPT_OPTIMIZER_ENABLED = os.getenv("PROMPT_OPTIMIZER_ENABLED", "false").lower() in ("1", "true", "yes")
 
 # ─── Settings panel icons ────────────────────────────────────────────────────────
 
@@ -630,6 +634,24 @@ def _active_session(uid: int) -> "cc.UserSession":
     return cc._session_mgr.get_or_create_active(PLATFORM, str(uid))
 
 
+def _select_system_prompt(uid: str, conv_key: str) -> str:
+    """Assemble the system prompt: A/B variant base (if the optimizer is on) plus
+    the user's learned style hint. Falls back to the static system prompt."""
+    base = cc.CLAUDE_SYSTEM
+    if PROMPT_OPTIMIZER_ENABLED:
+        try:
+            from . import prompt_optimizer as po
+            base = po.assign_variant(conv_key, baseline_text=cc.CLAUDE_SYSTEM).text
+        except Exception:
+            log.debug("prompt variant selection failed", exc_info=True)
+    try:
+        from . import preferences
+        hint = preferences.prompt_hint(uid)
+    except Exception:
+        hint = ""
+    return f"{base}\n\n{hint}" if hint else base
+
+
 async def _ask(uid: int, text: str, tracker: TaskSession | None = None, session: "cc.UserSession | None" = None) -> tuple[str, dict]:
     sess = session or cc._session_mgr.get_or_create_active(PLATFORM, str(uid))
     history = cc.load_history(PLATFORM, str(uid), session_name=sess.name)
@@ -669,9 +691,13 @@ async def _ask(uid: int, text: str, tracker: TaskSession | None = None, session:
     def _is_cancelled() -> bool:
         return tracker.cancelled if tracker else False
 
+    # ── System prompt: A/B variant (0003) + style preferences (0002) ──
+    conv_key = f"{uid}:{sess.name}"
+    system_prompt = _select_system_prompt(str(uid), conv_key)
+
     if engine == "api":
         return await cc.ask_claude_api_async(
-            text, history, system=cc.CLAUDE_SYSTEM,
+            text, history, system=system_prompt,
             model=route_model_api(text) if SMART_ROUTING_ENABLED else cc.CLAUDE_API_MODEL,
             on_text=_on_text, is_cancelled=_is_cancelled,
         )
@@ -680,7 +706,7 @@ async def _ask(uid: int, text: str, tracker: TaskSession | None = None, session:
         result = await cc.ask_claude_sdk(
             text, history,
             model=selected_model,
-            system=cc.CLAUDE_SYSTEM,
+            system=system_prompt,
             add_dirs=cc.CLAUDE_ADD_DIRS,
             timeout=cc.CLAUDE_TIMEOUT,
             on_progress=_on_progress,
@@ -697,7 +723,7 @@ async def _ask(uid: int, text: str, tracker: TaskSession | None = None, session:
     result = await cc.ask_claude_async(
         text, history,
         model=selected_model,
-        system=cc.CLAUDE_SYSTEM,
+        system=system_prompt,
         add_dirs=cc.CLAUDE_ADD_DIRS,
         perm_mode=_perm(uid),
         timeout=cc.CLAUDE_TIMEOUT,
@@ -1506,6 +1532,142 @@ async def cmd_usage(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Output tokens: `{u['output']:,}`",
         parse_mode="Markdown",
     )
+
+
+def _evaluate_quality(uid: str, user_text: str, reply: str, stats: dict, conv_key: str = "") -> None:
+    """Score a completed response: binary checks inline, sampled LLM judge
+    off-thread, and (when the optimizer is on) attribute the score to the active
+    prompt variant. Never raises into the chat path."""
+    composite = None
+    try:
+        from . import feedback
+        scores = feedback.evaluate_response(user_text, reply, stats)
+        composite = scores["composite"]
+        feedback.save_quality_score(PLATFORM, uid, "composite", composite, reply[:200])
+    except Exception:
+        log.debug("binary quality eval failed", exc_info=True)
+    # Attribute the binary composite to the conversation's prompt variant.
+    if PROMPT_OPTIMIZER_ENABLED and conv_key and composite is not None:
+        try:
+            from . import prompt_optimizer as po
+            variant = po.assign_variant(conv_key, baseline_text=cc.CLAUDE_SYSTEM)
+            po.record_score(variant.id, composite)
+            po.maybe_promote()
+        except Exception:
+            log.debug("variant scoring failed", exc_info=True)
+    try:
+        from . import evaluator
+        if evaluator.JUDGE_SAMPLE_RATE > 0:
+            # The judge may call the network — keep it off the event loop.
+            threading.Thread(
+                target=evaluator.maybe_judge,
+                args=(PLATFORM, uid, user_text, reply),
+                daemon=True,
+            ).start()
+    except Exception:
+        log.debug("judge dispatch failed", exc_info=True)
+
+
+async def cmd_quality(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = str(update.effective_user.id)
+    from . import feedback, evaluator
+    binary = feedback.get_quality_trend(PLATFORM, uid, "composite", 50)
+    lines = ["*Response quality (Telegram)*", ""]
+    if binary:
+        lines.append(f"Binary composite (last {len(binary)}): `{round(sum(binary) / len(binary), 2)}`")
+    else:
+        lines.append("Binary composite: _no samples yet_")
+    judged = evaluator.get_judge_averages(PLATFORM, uid)
+    lines.append("")
+    if judged:
+        lines.append("*LLM-as-judge averages (1.0 = best):*")
+        lines.append(f"Helpfulness: `{judged['judge_helpfulness']}`")
+        lines.append(f"Accuracy: `{judged['judge_accuracy']}`")
+        lines.append(f"Tone: `{judged['judge_tone']}`")
+        lines.append(f"Composite: `{judged['judge_composite']}`")
+    else:
+        lines.append(f"LLM-as-judge: _no judged samples yet_ (sampling {evaluator.JUDGE_SAMPLE_RATE:.0%})")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_prefer(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """`/prefer <dimension> <value>` — set an explicit style preference."""
+    from . import preferences
+    uid = str(update.effective_user.id)
+    arg = " ".join(ctx.args) if ctx.args else ""
+    parsed = preferences.parse_prefer_command(arg)
+    if not parsed:
+        dims = "\n".join(f"  `{d}`: {', '.join(vs)}" for d, vs in preferences.DIMENSIONS.items())
+        await update.message.reply_text(
+            "Usage: `/prefer <dimension> <value>`\n\n*Dimensions:*\n" + dims +
+            "\n\nExample: `/prefer length short`",
+            parse_mode="Markdown",
+        )
+        return
+    dimension, value = parsed
+    # Explicit command is a strong signal — weight it so one /prefer takes effect.
+    preferences.record_signal(uid, dimension, value, weight=3.0)
+    await update.message.reply_text(
+        f"Got it — I'll prefer *{value}* for *{dimension}*.", parse_mode="Markdown"
+    )
+
+
+async def cmd_feedback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """`/feedback <text>` — store feedback and mine it for style preferences."""
+    from . import feedback, preferences
+    uid = str(update.effective_user.id)
+    text = " ".join(ctx.args) if ctx.args else ""
+    if not text.strip():
+        await update.message.reply_text(
+            "Usage: `/feedback <your feedback>`\n"
+            "e.g. `/feedback please be shorter and use code blocks`",
+            parse_mode="Markdown",
+        )
+        return
+    feedback.save_feedback(PLATFORM, uid, text_feedback=text)
+    recorded = preferences.record_text_feedback(uid, text)
+    if recorded:
+        noted = ", ".join(f"{d}→{v}" for d, v in recorded)
+        await update.message.reply_text(f"Thanks — noted your preferences ({noted}).")
+    else:
+        await update.message.reply_text("Thanks for the feedback — logged it.")
+
+
+async def cmd_prompts(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """`/prompts` — list A/B prompt variants and their scores.
+
+    Subcommands:
+      `/prompts add <text>`       — add a candidate variant
+      `/prompts promote <id>`     — force a variant to baseline
+    """
+    from . import prompt_optimizer as po
+    args = ctx.args or []
+    if args and args[0] == "add" and len(args) > 1:
+        vid = po.add_variant(" ".join(args[1:]))
+        await update.message.reply_text(f"Added variant `{vid}`.", parse_mode="Markdown")
+        return
+    if args and args[0] == "promote" and len(args) > 1:
+        ok = po.force_promote(args[1])
+        await update.message.reply_text(
+            f"Promoted `{args[1]}` to baseline." if ok else f"Unknown variant `{args[1]}`.",
+            parse_mode="Markdown",
+        )
+        return
+    variants = po.list_variants()
+    if not variants:
+        await update.message.reply_text(
+            "No prompt variants yet. "
+            + ("Optimizer is ON." if PROMPT_OPTIMIZER_ENABLED else "Optimizer is OFF (set `PROMPT_OPTIMIZER_ENABLED=1`).")
+        )
+        return
+    lines = [f"*Prompt variants* (optimizer {'ON' if PROMPT_OPTIMIZER_ENABLED else 'OFF'})", ""]
+    for v in variants:
+        s = po.variant_stats(v.id)
+        lines.append(
+            f"`{v.id}` [{v.status}] w={v.traffic_weight:g} "
+            f"avg={s['avg']} n={s['count']}\n  _{v.text[:60]}_"
+        )
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_watchdog(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2674,6 +2836,10 @@ async def _run_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, uid: int, us
         cc.track_tool_usage(PLATFORM, str(uid), stats.get("tools_used", []))
         cc.track_cost(PLATFORM, str(uid), stats.get("input_tokens", 0), stats.get("output_tokens", 0), stats.get("cost_usd", 0))
 
+        # ── Quality evaluation: binary checks + sampled LLM-as-judge ─────
+        if not is_timeout and not is_error:
+            _evaluate_quality(str(uid), user_text, reply, stats, conv_key=f"{uid}:{sess.name}")
+
         # ── Auto Memory Extraction (Feature 1) ──────────────────────────
         if not is_timeout and not is_error and AUTO_MEMORY_ENABLED:
             asyncio.create_task(_auto_extract_memories(uid, user_text, reply))
@@ -3492,6 +3658,10 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("permissions", cmd_permissions))
     app.add_handler(CommandHandler("settings",    cmd_settings))
     app.add_handler(CommandHandler("usage",       cmd_usage))
+    app.add_handler(CommandHandler("quality",     cmd_quality))
+    app.add_handler(CommandHandler("prefer",      cmd_prefer))
+    app.add_handler(CommandHandler("feedback",    cmd_feedback))
+    app.add_handler(CommandHandler("prompts",     cmd_prompts))
     app.add_handler(CommandHandler("watchdog",    cmd_watchdog))
     app.add_handler(CommandHandler("id",          cmd_id))
     app.add_handler(CommandHandler("remember",    cmd_remember))

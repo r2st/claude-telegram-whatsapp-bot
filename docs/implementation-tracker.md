@@ -33,10 +33,10 @@
 
 | Feature | Status | Module | Notes |
 |---------|--------|--------|-------|
-| LLM-as-judge evaluator | Planned | `evaluator.py` | Sample 10% of responses for quality scoring |
-| User preference learning | Planned | `preferences.py` | Track style/length/format preferences |
-| Prompt self-optimization | Planned | `prompt_optimizer.py` | A/B test system prompts |
-| Auto-update mechanism | Planned | `updater.py` | Check PyPI/npm for new versions |
+| LLM-as-judge evaluator | Done | `evaluator.py` | Sample 10% of responses, judge on helpfulness/accuracy/tone, surface in `/quality` |
+| User preference learning | Done | `preferences.py` | Confidence-weighted length/format/tone prefs, decay, `/prefer` + `/feedback`, injected into system prompt |
+| Prompt self-optimization | Done | `prompt_optimizer.py` | Weighted A/B variants, sticky per-conversation routing, score aggregation + auto-promote, `/prompts` (opt-in via `PROMPT_OPTIMIZER_ENABLED`) |
+| Auto-update mechanism | Done | `updater.py` | PyPI+npm version check on boot/cron, event + `/health` surface, opt-in auto-apply |
 
 ## Phase 3: Resilience (Later)
 

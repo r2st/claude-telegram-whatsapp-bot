@@ -75,7 +75,7 @@ def get_health() -> dict:
     all_healthy = all(c["healthy"] for c in _component_status.values()) if _component_status else True
     uptime = int(time.time() - _start_time)
 
-    return {
+    result = {
         "status": "healthy" if all_healthy else "degraded",
         "uptime_seconds": uptime,
         "components": {
@@ -88,6 +88,17 @@ def get_health() -> dict:
             for name, comp in _component_status.items()
         },
     }
+
+    # Surface the cached auto-update status if a check has run (no network here).
+    try:
+        from .updater import get_last_status
+        update_status = get_last_status()
+        if update_status:
+            result["update"] = update_status
+    except Exception:  # pragma: no cover - defensive, updater is optional
+        pass
+
+    return result
 
 
 # ─── HTTP Health endpoint ────────────────────────────────────────────────────
