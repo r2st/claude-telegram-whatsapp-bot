@@ -7,6 +7,13 @@ owner:
 started:
 status: inbox
 depends_on: []
+touches:
+  - telechat_pkg/preferences.py
+  - telechat_pkg/claude_core.py
+  - telechat_pkg/feedback.py
+  - telechat_pkg/telegram_bot.py
+  - telechat_pkg/whatsapp_bot.py
+  - tests/test_preferences.py
 ---
 
 ## Goal

@@ -29,11 +29,17 @@ fi
 
 # Extract `touches:` list from a ticket's YAML frontmatter.
 # Treats `touches: []` (or empty) as no declarations.
+# Scoped strictly to the frontmatter block (between the first two `---`
+# lines) so that body markdown like `## Acceptance criteria` checkbox
+# bullets aren't mistaken for touches entries.
 extract_touches() {
   awk '
+    /^---$/ && fm { exit }                              # second --- = end of frontmatter
+    /^---$/       { fm = 1; next }                      # first --- = start
+    !fm           { next }
     /^touches:[[:space:]]*\[\][[:space:]]*$/ { exit }
     /^touches:[[:space:]]*$/                 { in_=1; next }
-    /^[a-z_]+:/ && in_                       { exit }
+    /^[a-z_]+:/ && in_                       { in_=0 }
     in_ && /^[[:space:]]*-[[:space:]]+/      { sub(/^[[:space:]]*-[[:space:]]+/, ""); print }
   ' "$1"
 }

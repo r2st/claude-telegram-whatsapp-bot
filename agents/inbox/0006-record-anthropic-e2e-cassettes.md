@@ -7,6 +7,11 @@ owner:
 started:
 status: inbox
 depends_on: []
+touches:
+  - tests/cassettes/test_anthropic_e2e_cassettes/
+  # Note: this is a directory ref — actual file count depends on which tests
+  # record. Globs aren't supported by check-overlap.sh yet (ADR 0002 future
+  # work); the dir path serves as advisory only.
 ---
 
 ## Goal

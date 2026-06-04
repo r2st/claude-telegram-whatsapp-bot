@@ -7,6 +7,11 @@ owner:
 started:
 status: inbox
 depends_on: []
+touches:
+  - telechat_pkg/updater.py
+  - telechat_pkg/health.py
+  - telechat_pkg/event_bus.py
+  - tests/test_updater.py
 ---
 
 ## Goal

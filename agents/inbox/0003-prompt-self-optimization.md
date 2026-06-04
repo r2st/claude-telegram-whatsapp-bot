@@ -7,6 +7,12 @@ owner:
 started:
 status: inbox
 depends_on: [0001]
+touches:
+  - telechat_pkg/prompt_optimizer.py
+  - telechat_pkg/claude_core.py
+  - telechat_pkg/telegram_bot.py
+  - tests/test_prompt_optimizer.py
+# evaluator.py is read-only from this ticket (created by 0001) — not listed.
 ---
 
 ## Goal
