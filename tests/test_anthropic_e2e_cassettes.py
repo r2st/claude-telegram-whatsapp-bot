@@ -46,6 +46,22 @@ import pytest
 pytest.importorskip("vcr")
 pytest.importorskip("anthropic")
 
+# vcrpy 8.x's aiohttp stub subclasses ``aiohttp.streams.AsyncStreamReaderMixin``,
+# which aiohttp 3.14 removed. These tests drive the Anthropic SDK over httpx, so
+# vcr's aiohttp patcher is never exercised — but it is imported when vcr patches,
+# and the missing attribute makes that import explode. A no-op shim lets the
+# unused aiohttp stub import cleanly without pinning either dependency.
+try:
+    import aiohttp.streams as _aiohttp_streams
+
+    if not hasattr(_aiohttp_streams, "AsyncStreamReaderMixin"):
+        class AsyncStreamReaderMixin:  # pragma: no cover - compatibility shim
+            pass
+
+        _aiohttp_streams.AsyncStreamReaderMixin = AsyncStreamReaderMixin
+except ImportError:  # pragma: no cover - aiohttp not installed → vcr skips it
+    pass
+
 
 # ─── VCR configuration shared by every test in this file ───────────────────
 
