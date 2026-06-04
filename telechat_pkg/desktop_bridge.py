@@ -629,28 +629,38 @@ def list_running_sessions() -> list[dict]:
 
 _WATCHER_STARTED = False
 _WATCH_POLL_SECS = 4
-_prev_running_sids = None  # module-level baseline for lifecycle diffing
+_prev_running_procs = None  # pid -> session info; baseline for lifecycle diffing
+
+
+def _session_label(s: dict) -> str:
+    """Human label for a lifecycle ping: project name + short session id (best-effort)."""
+    proj = Path(s["cwd"]).name if s.get("cwd") else "(unknown)"
+    sid = s.get("sid") or ""
+    return f"`{proj}`" + (f"  `[{sid[:8]}]`" if sid else "")
 
 
 def _watch_lifecycle() -> None:
-    """Ping Telegram when Desktop sessions start or exit."""
-    global _prev_running_sids
+    """Ping Telegram when Desktop sessions start or exit.
+
+    Diff on process id (pid), not on the recovered session id. Sessions started
+    without ``--resume`` have no sid on their command line, so we recover one from
+    the most-recently-modified transcript in their cwd — but that recovered id flips
+    between concurrent sessions sharing a project dir (mtime ordering swaps as each
+    writes), which produced a flood of phantom start/end pings. The pid is stable for
+    the life of the process, so it is the correct identity for lifecycle events.
+    """
+    global _prev_running_procs
+    cur = {s["pid"]: s for s in list_running_sessions() if s.get("pid")}
     if not lifecycle_on():
         # Keep the baseline fresh so toggling on later doesn't dump a backlog.
-        _prev_running_sids = {s["sid"] for s in list_running_sessions() if s["sid"]}
+        _prev_running_procs = cur
         return
-    cur = {}
-    for s in list_running_sessions():
-        if s["sid"]:
-            cur[s["sid"]] = s
-    cur_ids = set(cur)
-    if _prev_running_sids is not None:
-        for sid in cur_ids - _prev_running_sids:
-            proj = Path(cur[sid]["cwd"]).name if cur[sid]["cwd"] else "(unknown)"
-            _tg_send(f"🟢 *Session started* — `{proj}`  `[{sid[:8]}]`")
-        for sid in _prev_running_sids - cur_ids:
-            _tg_send(f"⚪ *Session ended* — `[{sid[:8]}]`")
-    _prev_running_sids = cur_ids
+    if _prev_running_procs is not None:
+        for pid in cur.keys() - _prev_running_procs.keys():
+            _tg_send(f"🟢 *Session started* — {_session_label(cur[pid])}")
+        for pid in _prev_running_procs.keys() - cur.keys():
+            _tg_send(f"⚪ *Session ended* — {_session_label(_prev_running_procs[pid])}")
+    _prev_running_procs = cur
 
 
 def _watch_follows() -> None:
