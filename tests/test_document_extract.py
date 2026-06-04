@@ -155,8 +155,10 @@ def _make_docx(tmp_path, name, paragraphs=(), table_rows=None):
 
 
 class TestPdfExtraction:
-    def test_pymupdf_not_installed_returns_error_result(self):
-        # fitz is genuinely absent in this env: the real not-installed path.
+    def test_pymupdf_not_installed_returns_error_result(self, hide_module):
+        # Simulate PyMuPDF being absent so the test is deterministic whether or
+        # not the optional dep is installed in the running environment.
+        hide_module("fitz")
         result = extract_pdf("anything.pdf")
         assert result.format == "pdf"
         assert result.text == ""
@@ -557,14 +559,17 @@ class TestAvailableFormats:
         # python-docx is installed in this env.
         assert "docx" in available_formats()
 
-    def test_pdf_absent_when_fitz_missing(self):
-        # fitz is genuinely not installed here.
+    def test_pdf_absent_when_fitz_missing(self, hide_module):
+        # Simulate fitz missing so this holds regardless of the env's optional deps.
+        hide_module("fitz")
         assert "pdf" not in available_formats()
 
     def test_pdf_listed_when_fitz_present(self, fake_fitz):
         assert "pdf" in available_formats()
 
-    def test_check_deps_reports_docx_true_fitz_false(self):
+    def test_check_deps_reports_docx_true_fitz_false(self, hide_module):
+        # docx stays installed; fitz is simulated absent for determinism.
+        hide_module("fitz")
         deps = de._check_deps()
         assert deps["docx"] is True
         assert deps["fitz"] is False
