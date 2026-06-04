@@ -27,23 +27,31 @@ for every kind of context so you don't have to grep.
 
 ## Coordination rules (read this)
 
-1. **Claim before you build.** Move the ticket file from `agents/inbox/`
-   to `agents/tasks/` and set `owner:` + `started:` in its frontmatter.
-   Don't start work on something nobody owns.
-2. **One ticket per agent at a time.** If you find yourself "while I'm
+1. **Declare what you'll touch.** Every ticket frontmatter has a
+   `touches:` list naming the files the ticket will modify. Reads don't
+   count; new file creation does. See `agents/_template.md` and ADR 0002.
+2. **Check for overlap before you claim.** Run `agents/check-overlap.sh
+   <NNNN>` to scan `agents/tasks/*.md` for any active claim on the same
+   paths. If clean, proceed. If conflicting: wait, coordinate via the
+   ticket bodies, or pick a different ticket.
+3. **Claim before you build.** `git pull` first, then move the ticket
+   file from `agents/inbox/` to `agents/tasks/` and set `owner:` +
+   `started:` + `status: in-progress` in its frontmatter. Don't start
+   work on something nobody owns.
+4. **One ticket per agent at a time.** If you find yourself "while I'm
    here…" write a new ticket file in `agents/inbox/` instead.
-3. **Update the ticket as you go.** It's the single source of truth for
+5. **Update the ticket as you go.** It's the single source of truth for
    what's done and what's blocked. Other agents read it.
-4. **When done, move it to `agents/done/`** with a 2–3 line outcome
+6. **When done, move it to `agents/done/`** with a 2–3 line outcome
    summary at the bottom (what shipped, where the code lives, test
    evidence).
-5. **Big decisions get an ADR.** Anything another agent might
+7. **Big decisions get an ADR.** Anything another agent might
    second-guess (schema change, dependency add, architectural shift) →
    `docs/decisions/NNNN-short-title.md`.
-6. **Don't break the test suite.** ~99% coverage today. Run `pytest -q`
+8. **Don't break the test suite.** ~99% coverage today. Run `pytest -q`
    before moving a ticket to `done/`. If a test must change, say why in
    the outcome summary.
-7. **Keep `docs/implementation-tracker.md` in sync.** When you finish a
+9. **Keep `docs/implementation-tracker.md` in sync.** When you finish a
    ticket that maps to a feature row, flip its status there too.
 
 ## Ticket lifecycle
@@ -51,7 +59,8 @@ for every kind of context so you don't have to grep.
 ```
 agents/inbox/   ← drop new tickets here; unclaimed
        │
-       │  agent claims: set owner + started, git mv
+       │  agent: git pull && agents/check-overlap.sh <NNNN>
+       │         set owner + started + status, git mv
        ▼
 agents/tasks/   ← in progress; only one ticket per agent
        │

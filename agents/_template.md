@@ -7,6 +7,10 @@ owner:               # leave blank until claimed
 started:             # YYYY-MM-DD, set when claimed
 status: inbox        # inbox | in-progress | blocked | done
 depends_on: []       # list of ticket IDs that must finish first
+touches:             # files this ticket will modify (reads don't count).
+                     # Used by agents/check-overlap.sh — see ADR 0002.
+  - path/to/file
+  - tests/test_module.py
 ---
 
 ## Goal
@@ -27,9 +31,9 @@ justify this in 1–2 lines, the ticket may not be worth doing.
 
 ## Likely files / surfaces touched
 
-- `telechat_pkg/<module>.py`
-- `tests/test_<module>.py`
-- `docs/<doc>.md` (if behavior changes)
+See `touches:` in frontmatter. Add prose here only for surfaces that are
+hard to enumerate as file paths (e.g. "the entire `_get_conn` machinery
+in store.py" rather than just the line range).
 
 ## Notes
 

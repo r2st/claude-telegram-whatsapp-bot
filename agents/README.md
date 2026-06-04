@@ -18,17 +18,40 @@ cp agents/_template.md agents/inbox/NNNN-short-slug.md
 ```
 
 NNNN = next 4-digit ID (look at the highest existing one across
-inbox/tasks/done and add 1). Keep slugs short and kebab-cased.
+inbox/tasks/done and add 1). Keep slugs short and kebab-cased. Fill in
+the `touches:` list in frontmatter — every file the ticket will
+modify, one per line. Reads don't count; new file creation does.
 
 ## Claiming a ticket
 
 ```bash
+# 1. Sync first so tasks/ is current
+git pull
+
+# 2. Check for file overlap with other in-progress claims
+agents/check-overlap.sh NNNN
+#    exit 0: clean, proceed
+#    exit 1: conflict reported OR ticket missing touches:
+#    exit 2: ticket not found
+
+# 3. If clean: move it and update frontmatter
 git mv agents/inbox/NNNN-slug.md agents/tasks/
 # Edit frontmatter:
 #   owner: <your-agent-name>
 #   started: <YYYY-MM-DD>
 #   status: in-progress
 ```
+
+On conflict, three responses:
+
+1. **Wait** for the holding ticket to move to `agents/done/`.
+2. **Coordinate** — post a note in both ticket bodies and proceed only
+   if both owners agree on serialization.
+3. **Pick another ticket** from `agents/inbox/`.
+
+See ADR 0002 (`docs/decisions/0002-touches-field-coordination.md`) for
+rationale, limitations (no globs yet, advisory not enforced), and how
+to handle pre-existing tickets without a `touches:` field.
 
 ## Finishing a ticket
 
