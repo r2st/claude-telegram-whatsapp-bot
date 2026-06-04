@@ -19,7 +19,7 @@ for every kind of context so you don't have to grep.
 | Self-improving system design       | `docs/self-improving-design.md`          |
 | Feature implementation status      | `docs/implementation-tracker.md`         |
 | Telegram-specific features         | `docs/advanced-telegram-features.md`     |
-| Code review notes                  | `CODE_REVIEW.md`                         |
+| Code review notes                  | `docs/CODE_REVIEW.md`                    |
 | App code                           | `telechat_pkg/`                          |
 | Tests                              | `tests/` (3000+ tests, ~99% coverage)    |
 | Scripts                            | `scripts/`                               |

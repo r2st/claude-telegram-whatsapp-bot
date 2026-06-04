@@ -3,9 +3,9 @@ id: 0022
 title: Move CODE_REVIEW.md from repo root into docs/
 role: builder
 priority: P2
-owner:
-started:
-status: inbox
+owner: claude-opus-4-7
+started: 2026-06-03
+status: done
 depends_on: []
 touches:
   - CODE_REVIEW.md
@@ -25,10 +25,10 @@ CODE_REVIEW.md sits at the repo root (507 lines after ticket 0020's annotations)
 
 ## Acceptance criteria
 
-- [ ] `CODE_REVIEW.md` moved to `docs/CODE_REVIEW.md` via `git mv` (preserves blame/history)
-- [ ] `AGENTS.md` "Where things live" table updated: `Code review notes | docs/CODE_REVIEW.md`
-- [ ] No other in-tree references broken (verified: `grep -rn 'CODE_REVIEW.md' --include='*.md' --include='*.py' --include='*.sh' --include='*.toml' --include='Dockerfile' .` shows only annotations within the review itself + done tickets, which are immutable but accept stale links per protocol)
-- [ ] `agents/check-overlap.sh 0022` reports clean
+- [x] `CODE_REVIEW.md` moved to `docs/CODE_REVIEW.md` via `git mv` (preserves blame/history)
+- [x] `AGENTS.md` "Where things live" table updated: `Code review notes | docs/CODE_REVIEW.md`
+- [x] No active in-tree references broken — only `AGENTS.md` (updated above) referenced the path; done tickets reference it but are immutable per protocol (acceptable stale links)
+- [x] `agents/check-overlap.sh 0022` reported clean before the claim
 
 ## Likely files / surfaces touched
 
@@ -41,3 +41,9 @@ See `touches:` above.
 **Done tickets reference `CODE_REVIEW.md` at the root.** Tickets 0007, 0012, 0017, 0019, 0020, 0021 all cite it. Those are immutable per protocol — the references will become stale but readable. The new path is one level deeper; a reader following the breadcrumb gets a 404 in their editor's quick-open. Acceptable cost for the cleaner root.
 
 Annotations inside CODE_REVIEW.md (the `**[RESOLVED ...]**` markers from ticket 0020) reference ticket numbers and commit SHAs — no path references. The move doesn't invalidate them.
+
+## Outcome — 2026-06-03
+
+`git mv CODE_REVIEW.md docs/CODE_REVIEW.md` preserves blame. `AGENTS.md` "Where things live" entry updated from `CODE_REVIEW.md` → `docs/CODE_REVIEW.md`. No active code or tests referenced the path, only the AGENTS.md table. Root markdown is now just `README.md`, `LICENSE`, `AGENTS.md`, `MANIFEST.in` — the small set genuinely meant to be first-read at the repo top. CODE_REVIEW.md co-located with its peers in docs/.
+
+Footnote: this ticket file got swept into the other agent's commit `d521b52` (0006 cassettes) while staged in tasks/ with empty frontmatter — protocol violation but harmless. I claimed it (owner/started/in-progress) before doing the actual work; the missing pre-claim moment is captured here so a future audit doesn't have to wonder.
