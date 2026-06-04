@@ -3,6 +3,8 @@
 Reviewed: 2026-05-20. Scope: `/Users/dev/projects/claudeplus/telechat` (telechatai 1.1.5).
 No code was modified; this is a read-only review.
 
+> **Note 2026-06-03:** Items fixed since the original review are annotated inline as **[RESOLVED ...]**, **[PARTIALLY RESOLVED ...]**, or **[OUT OF DATE: ...]** markers. Current version is **1.2.0** (not 1.1.5 as reviewed). Other findings are presumed still valid — this is not a full review refresh. See `agents/done/` and git log for context. — ticket 0020.
+
 ---
 
 ## 1. Project overview
@@ -42,6 +44,8 @@ process selected via `BOT_MODE`.
 
 **[CRITICAL]** `telechat_pkg/session_manager.py:85,99,131,160,175,196` — Queries a non-existent `history` table.
 `store.py` defines `conversations(platform,user_id,role,content,ts)`, **not** `history(platform,user_id,user_text,bot_reply,timestamp,session_name,cost_usd)`. Every `SessionBrowser` method (`list_sessions`, `get_session_history`, `fork_session`, `search_sessions`) will raise `sqlite3.OperationalError: no such table: history` the first time it's called. This is a wholly broken module.
+
+**[RESOLVED 2026-06-03]** `_ensure_schema` now `CREATE TABLE IF NOT EXISTS user_sessions/conversations/active_sessions` on first connection (`session_manager.py:75-118`), and an idempotent legacy-history migration ports old `history`-table rows into the new shape (`session_manager.py:120-178`). Module is wired into `telegram_bot.py:2949-2950` and exercised by 13 tests in `test_new_features.py::TestSessionBrowser` — all passing.
 
 **[CRITICAL]** `telechat_pkg/store.py:46-56` — Thread-local SQLite connections opened with
 `check_same_thread=False` but the background writer thread (`_db_writer`) and request threads both call
@@ -283,9 +287,13 @@ internal exception text to end-users (could include file paths, tokens in URLs, 
 commands, settings panel, file browser, voice handling, image gen, video gen, music gen, polls, scheduling,
 memory commands, session commands, coder integration, cost budget UI, etc. Should be split per-command-group.
 
+**[NUMBER UPDATED 2026-06-03]** File is now **3604 lines** (grew slightly). The split work itself is still pending — no ticket claimed yet at time of this annotation.
+
 **[HIGH]** `telechat_pkg/main.py` is **1083 lines** including ~250 lines of a hand-rolled QR encoder and
 Reed–Solomon implementation (`_qr_encode_minimal`, `_rs_encode`) — duplicated against the `qrcode` library
 which is already optionally imported (`main.py:601`) and also against `qr_util.py`. Pick one.
+
+**[RESOLVED 2026-06-03 by ticket 0017]** Hand-rolled Reed–Solomon + QR encoder was removed before this branch (qr_util.py docstring confirms). The remaining ~60-line tail of dead `_get_local_ip` / `_print_web_qr` / `_render_qr_terminal` duplicates was deleted in ticket 0017 (commit `828f934`). `main.py` is now **844 lines**.
 
 **[MEDIUM]** `claude_core.py` `ask_claude_async` (lines 116-288) duplicates a 50-line stream-reading block
 for the retry path (lines 252-286). Same logic, different variable names. Extract a helper.
@@ -367,6 +375,8 @@ omits `aiohttp` — wait, actually it lists it. They're in sync at present. Howe
   `PyMuPDF`, `python-docx`, `playwright`) but **none** are declared as `[project.optional-dependencies]` extras
   in `pyproject.toml`. Users discover requirements via runtime ImportError messages.
 
+  **[RESOLVED 2026-06-03]** Extras now declared: `qr`, `sdk`, `docs`, `browser`, `httpx`, `mcp`, `dev`, `all` (`pyproject.toml:37-64`). `pip install telechatai[all]` works as the documented full install.
+
 **[MEDIUM]** `pyproject.toml:25-32` — All deps use `>=` with no upper bound. `python-telegram-bot>=21.6`,
 `anthropic>=0.99.0`, `slack-bolt>=1.21.0` — any major version bump (e.g. python-telegram-bot v22 broke API)
 will break builds. Add `<NEXT_MAJOR` caps for libraries with frequent breaking releases.
@@ -375,8 +385,12 @@ will break builds. Add `<NEXT_MAJOR` caps for libraries with frequent breaking r
 **repo root**, not inside `telechat_pkg/`. The glob will not match and the install-time scripts won't ship in
 the wheel. Verify the sdist with `python -m build --sdist && tar tf dist/*.tar.gz`.
 
+**[RESOLVED 2026-06-03]** The non-matching `scripts/*` glob was removed; pyproject's package-data now lists only `["*.html"]` with an explanatory comment above it (`pyproject.toml:77-81`).
+
 **[LOW]** `version = "1.1.5"` in pyproject vs `clientInfo: {"version": "1.6.0"}` hardcoded at
 `mcp_client.py:120` — version drift.
+
+**[RESOLVED 2026-06-03]** Both ends of the drift are fixed. Pyproject is now `1.2.0`. mcp_client.py no longer hardcodes a string — line 181 now calls `_telechat_version()` (single source of truth).
 
 **[LOW]** `tests/` is not declared as a package and is not excluded — `setuptools.packages.find` `include`
 already limits to `telechat_pkg*` so this is fine. ✓
@@ -453,6 +467,8 @@ live in `~/.telechat/`. (`coder.py:36` resolves the canonical path correctly; th
     pragmas.
 12. Validate `MCP_CONFIG_FILE` contents: enforce an allow-list of commands or require an explicit
     `MCP_ALLOW_EXEC=true` env flag with a startup warning.
+
+    **[PARTIALLY RESOLVED 2026-06-03]** `MCP_ALLOWED_COMMANDS` allowlist exists (`mcp_client.py:41-65`) and `add_server()` refuses to register a server whose command isn't on it. **Remaining gap** (tracked in ticket 0019): env passed to the subprocess is still `{**os.environ, **server.env}` with no scrubbing, and the allowlist matches on command *basename* only — a poisoned PATH or planted binary redirects `npx`/`python3` to attacker code. Tests in `tests/test_mcp_client.py` (committed by other agent) pin the *current unsafe* behavior; the safe behavior is the bug-fix delta tracked by 0019.
 13. Tighten the `pgrep -f telechat_pkg.main` shutdown (`main.py:930`) to match exact process names or to
     check UID. Prefer a PID file in `~/.telechat/telechat.pid`.
 14. Split `telegram_bot.py` (3527 lines) into `telegram/{commands,settings,browser,memory,sessions,media}.py`.
@@ -470,6 +486,8 @@ live in `~/.telechat/`. (`coder.py:36` resolves the canonical path correctly; th
     so failures are visible.
 19. Move the hand-rolled QR encoder (`main.py:637-846`) out of `main.py` into `qr_util.py`, or drop it and
     require `qrcode` (already optional).
+
+    **[RESOLVED 2026-06-03 by ticket 0017]** Hand-rolled QR + Reed–Solomon was already removed before this branch (qr_util.py docstring). The remaining ~60-line tail of orphan helper duplicates in main.py was deleted in ticket 0017 (commit `828f934`). Closes both halves of #19.
 20. Fix `Optional[callable]` type hints in `claude_core.py` to `Optional[Callable[..., Awaitable[None]]]`.
 21. Add a `pyproject.toml` `[tool.ruff]` / `[tool.mypy]` block and run in CI. Current code passes neither
     cleanly.
