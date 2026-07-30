@@ -36,7 +36,12 @@ jobs:
         run: docker run --rm telechat:ci telechat --version
 
       - name: Validate docker-compose.yml
-        run: docker compose config --quiet
+        # `env_file: .env` is deliberately required — the bot needs tokens, and a
+        # silent start with no configuration would be worse than a loud failure —
+        # so the validation needs a stub the way a real user needs a real one.
+        run: |
+          touch .env
+          docker compose config --quiet
 
   pytest:
     name: pytest (${{ matrix.python-version }})
