@@ -12,6 +12,7 @@ import queue
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -461,7 +462,9 @@ class TestAskClaudeAPI:
     def test_success(self):
         mock_resp = MagicMock()
         mock_resp.content = [MagicMock(text="API answer")]
-        mock_resp.usage = MagicMock(input_tokens=20, output_tokens=10)
+        # A bare MagicMock would auto-create cache_read_input_tokens as another
+        # mock; spec it to the fields a real usage object carries.
+        mock_resp.usage = SimpleNamespace(input_tokens=20, output_tokens=10)
 
         mock_client = MagicMock()
         mock_client.messages.create.return_value = mock_resp
@@ -471,6 +474,10 @@ class TestAskClaudeAPI:
             reply, stats = cc.ask_claude_api("test", [])
             assert reply == "API answer"
             assert stats["input_tokens"] == 20
+            # Item 16: the API reports tokens and no cost, so the turn used to be
+            # recorded at $0.00 and the budget guard summed a column of zeroes.
+            assert stats["cost_usd"] > 0
+            assert stats["cost_estimated"] is True
 
     def test_no_anthropic(self):
         import sys

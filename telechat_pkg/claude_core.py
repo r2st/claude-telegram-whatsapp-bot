@@ -13,6 +13,7 @@ import os
 import subprocess
 from typing import Awaitable, Callable, Optional
 
+from . import models
 from . import store as _store
 
 from .store import (  # noqa: F401 — re-export for backward compat
@@ -65,7 +66,7 @@ CLAUDE_WORK_DIR   = os.getenv("CLAUDE_CLI_WORK_DIR", os.path.expanduser("~"))
 CLAUDE_TIMEOUT    = int(os.getenv("CLAUDE_TIMEOUT", "180"))
 CLAUDE_MODE       = os.getenv("CLAUDE_MODE", "cli")   # cli | api | sdk
 CLAUDE_API_KEY    = os.getenv("ANTHROPIC_API_KEY", "")
-CLAUDE_API_MODEL  = os.getenv("CLAUDE_API_MODEL", "claude-sonnet-4-20250514")
+CLAUDE_API_MODEL  = os.getenv("CLAUDE_API_MODEL", models.DEFAULT_API_MODEL)
 CLAUDE_MAX_TOKENS = int(os.getenv("MAX_TOKENS", "4096"))
 CLAUDE_PERM_MODE  = os.getenv("CLAUDE_CLI_PERMISSION_MODE", "auto")
 
@@ -318,6 +319,38 @@ def _get_async_api_client():
 
 # ─── Claude API (sync) ──────────────────────────────────────────────────────────
 
+def _add_estimated_cost(stats: dict, model: str, usage) -> None:
+    """Fill in ``cost_usd`` from token counts, because the API doesn't report it.
+
+    Only the CLI path returns a real cost (the stream's ``total_cost_usd``). The
+    API path returns tokens and nothing else, so before this every API-mode turn
+    was recorded at $0.00: `/usage` showed a false cost and `BudgetManager`
+    summed a column of zeroes, meaning daily and monthly caps never tripped no
+    matter how much was spent.
+
+    ``cost_estimated`` marks the figure as computed rather than reported, so the
+    two can be told apart wherever cost is displayed.
+    """
+    def _tokens(name: str) -> int:
+        # `usage` field names and types vary across anthropic SDK versions and
+        # across the Bedrock/Vertex client wrappers. A cost *estimate* must never
+        # be the thing that fails a user's message, so anything non-numeric
+        # counts as zero rather than raising out of the chat path.
+        value = getattr(usage, name, 0)
+        return value if isinstance(value, int) and value > 0 else 0
+
+    cache_read = _tokens("cache_read_input_tokens")
+    stats["cost_usd"] = models.estimate_cost(
+        model,
+        input_tokens=_tokens("input_tokens"),
+        output_tokens=_tokens("output_tokens"),
+        cache_read_tokens=cache_read,
+    )
+    stats["cost_estimated"] = True
+    if cache_read:
+        stats["cache_read_tokens"] = cache_read
+
+
 def ask_claude_api(
     user_text: str,
     history: list[dict],
@@ -343,6 +376,7 @@ def ask_claude_api(
         "output_tokens": resp.usage.output_tokens,
         "tools_used": [],
     }
+    _add_estimated_cost(stats, model, resp.usage)
     return text, stats
 
 
@@ -385,6 +419,7 @@ async def ask_claude_api_async(
         final = await stream.get_final_message()
         stats["input_tokens"] = final.usage.input_tokens
         stats["output_tokens"] = final.usage.output_tokens
+        _add_estimated_cost(stats, model, final.usage)
 
     result_text = "".join(result_parts)
     return result_text or "(no response)", stats

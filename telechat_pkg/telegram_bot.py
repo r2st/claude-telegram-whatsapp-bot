@@ -2888,7 +2888,10 @@ async def _run_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, uid: int, us
             reply = f"{summary}\n\n{reply}"
         if v >= 2 and stats.get("input_tokens"):
             cost = stats.get("cost_usd", 0)
-            cost_str = f" · ${cost:.4f}" if cost else ""
+            # "~" marks a figure we computed from tokens rather than one the
+            # backend reported — API mode has no cost in its response.
+            approx = "~" if stats.get("cost_estimated") else ""
+            cost_str = f" · {approx}${cost:.4f}" if cost else ""
             reply += f"\n\n_({stats['input_tokens']}→{stats['output_tokens']} tokens{cost_str})_"
 
         await _send_paginated(update, uid, user_text, reply, placeholder=placeholder)
@@ -3218,9 +3221,24 @@ async def cmd_budget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{daily_bar}\n\n"
         f"Month: ${report.monthly_cost:.3f} / ${report.monthly_limit:.2f} ({report.monthly_requests} reqs)\n"
         f"{monthly_bar}\n\n"
+        f"{_cost_basis_note()}"
         f"Use `/budget daily 5.0` or `/budget monthly 50.0` to adjust.",
         parse_mode=ParseMode.MARKDOWN,
     )
+
+
+def _cost_basis_note() -> str:
+    """One line saying where the budget's cost figures came from.
+
+    In API mode the backend reports tokens but no cost, so the figures are
+    computed from a local pricing table (telechat_pkg/models.py) and can drift
+    from the invoice — tier discounts and partner-platform rates aren't modelled.
+    Saying so matters for a spend guard: a user who sets a cap should know
+    whether it is enforcing against measured or estimated spend.
+    """
+    if cc.CLAUDE_MODE == "api":
+        return "_Costs are estimated from token counts at list prices._\n\n"
+    return ""
 
 
 def _progress_bar(pct: float, width: int = 20) -> str:

@@ -403,12 +403,17 @@ async def _handle_chat(
                 stats.get("input_tokens", 0),
                 stats.get("output_tokens", 0),
             )
-            if stats.get("cost_usd"):
+            # Record the turn whenever we have token counts, not only when the
+            # backend reported a cost. Gating on a truthy cost_usd meant every
+            # API-mode web turn was skipped entirely (the API returns tokens and
+            # no cost), so those turns never reached cost_tracking and the budget
+            # caps couldn't see them at all.
+            if stats.get("input_tokens") or stats.get("output_tokens") or stats.get("cost_usd"):
                 cc.track_cost(
                     PLATFORM, user_id,
                     stats.get("input_tokens", 0),
                     stats.get("output_tokens", 0),
-                    stats["cost_usd"],
+                    stats.get("cost_usd", 0),
                 )
 
         if not collected_text:
