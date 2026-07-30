@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from . import models
+
 log = logging.getLogger(__name__)
 
 EXTRACTION_PROMPT = (
@@ -476,7 +478,7 @@ async def extract_memories(text: str) -> list[dict]:
                 "content-type": "application/json",
             },
             json={
-                "model": "claude-haiku-4-5-20251001",
+                "model": models.HAIKU,
                 "max_tokens": 1024,
                 "system": EXTRACTION_PROMPT,
                 "messages": [{"role": "user", "content": trimmed}],

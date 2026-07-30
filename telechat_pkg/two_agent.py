@@ -23,10 +23,12 @@ import time
 from dataclasses import dataclass, field
 from typing import AsyncGenerator, Optional
 
+from . import models
+
 log = logging.getLogger(__name__)
 
-PLANNER_MODEL = os.getenv("PLANNER_MODEL", "claude-haiku-4-5-20251001")
-EXECUTOR_MODEL = os.getenv("EXECUTOR_MODEL", "claude-sonnet-4-20250514")
+PLANNER_MODEL = os.getenv("PLANNER_MODEL", models.HAIKU)
+EXECUTOR_MODEL = os.getenv("EXECUTOR_MODEL", models.SONNET)
 MAX_STEPS = int(os.getenv("TWO_AGENT_MAX_STEPS", "10"))
 TWO_AGENT_ENABLED = os.getenv("TWO_AGENT_ENABLED", "true").lower() in ("1", "true", "yes")
 COMPLEXITY_THRESHOLD = int(os.getenv("TWO_AGENT_THRESHOLD", "100"))

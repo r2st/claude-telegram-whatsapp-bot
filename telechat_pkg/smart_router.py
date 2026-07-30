@@ -17,6 +17,8 @@ import logging
 import os
 import re
 
+from . import models
+
 log = logging.getLogger(__name__)
 
 # Complexity thresholds (adjustable via env)
@@ -110,8 +112,8 @@ def route_model_api(text: str) -> str:
     """Return the best API model identifier for the given query text."""
     model = route_model(text)
     api_models = {
-        "haiku": os.getenv("SMART_ROUTE_HAIKU_API", "claude-haiku-4-5-20251001"),
-        "sonnet": os.getenv("SMART_ROUTE_SONNET_API", "claude-sonnet-4-20250514"),
-        "opus": os.getenv("SMART_ROUTE_OPUS_API", "claude-opus-4-20250514"),
+        "haiku": os.getenv("SMART_ROUTE_HAIKU_API", models.HAIKU),
+        "sonnet": os.getenv("SMART_ROUTE_SONNET_API", models.SONNET),
+        "opus": os.getenv("SMART_ROUTE_OPUS_API", models.OPUS),
     }
     return api_models.get(model, api_models["sonnet"])

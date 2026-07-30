@@ -216,7 +216,8 @@ WHATSAPP_ALLOWED_NUMBERS=919876543210   # your number without the +
 |----------|---------|-------------|
 | `CLAUDE_MODE` | `cli` | `cli` or `api` |
 | `ANTHROPIC_API_KEY` | — | Required for API mode |
-| `CLAUDE_MODEL` | `claude-sonnet-4-20250514` | API mode model |
+| `CLAUDE_MODEL` | `claude-sonnet-5` | API mode model |
+| `MODEL_HAIKU` / `MODEL_SONNET` / `MODEL_OPUS` | current IDs | Model tier overrides (smart routing, planner, memory, judge) |
 | `SYSTEM_PROMPT` | _(generic)_ | Your personal instructions to Claude |
 | `CLAUDE_CLI_WORK_DIR` | `~` | Working directory for CLI |
 | `CLAUDE_CLI_ADD_DIRS` | — | Comma-separated extra dirs Claude can access |

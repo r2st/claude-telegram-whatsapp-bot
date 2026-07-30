@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from . import claude_core as cc
+from . import models
 from . import feedback
 
 log = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ log = logging.getLogger(__name__)
 # Fraction of responses to judge. Kept low because each judge call costs tokens.
 JUDGE_SAMPLE_RATE = float(os.getenv("JUDGE_SAMPLE_RATE", "0.1"))
 # Haiku keeps the judge cheap. Override via env if a newer Haiku ships.
-JUDGE_MODEL = os.getenv("JUDGE_MODEL", "claude-haiku-4-5")
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", models.HAIKU)
 
 DIMENSIONS = ("helpfulness", "accuracy", "tone")
 
