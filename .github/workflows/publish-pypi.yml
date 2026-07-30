@@ -30,9 +30,30 @@ jobs:
       - name: Run all e2e tests
         run: bash tests/run-all.sh
 
+  pytest-gate:
+    name: Python Test Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,all]"
+
+      # The shell e2e suite is self-skipping by design (it skips when platforms
+      # are unconfigured, and the destructive lifecycle test is opt-in), so on
+      # its own it can go green having checked almost nothing. This gate is what
+      # actually holds a release to the Python suite.
+      - name: Run pytest
+        run: pytest -q
+
   publish:
     name: Build & Publish
-    needs: [e2e-gate]
+    needs: [e2e-gate, pytest-gate]
     runs-on: ubuntu-latest
     environment: pypi-release
     steps:

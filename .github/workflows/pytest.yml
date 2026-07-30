@@ -1,0 +1,58 @@
+name: Python Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The versions pyproject.toml advertises via requires-python. 3.9 is
+        # included deliberately: whatsapp_bot.py carries a comment claiming the
+        # project targets 3.10+, which contradicts requires-python = ">=3.9",
+        # and only a matrix settles which of the two is wrong.
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package with dev + optional extras
+        # The suite imports the optional feature modules (PyMuPDF, playwright,
+        # httpx, jsonschema, …), so `all` is required — with only the core
+        # dependencies a large part of it silently skips.
+        run: pip install -e ".[dev,all]"
+
+      - name: Run pytest
+        run: pytest -q
+
+  coverage:
+    name: coverage floor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package with dev + optional extras
+        run: pip install -e ".[dev,all]"
+
+      - name: Run pytest with coverage
+        # The floor is deliberately below the current figure (84% at the time of
+        # writing) so ordinary churn doesn't fail the build, but it does stop
+        # coverage sliding: AGENTS.md used to claim ~99% while the real number
+        # was 84%, which is exactly the kind of drift an unenforced number
+        # invites. Raise this as desktop_bridge.py gets its harness (item 17).
+        run: pytest -q --cov=telechat_pkg --cov-report=term-missing --cov-fail-under=80
