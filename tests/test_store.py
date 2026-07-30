@@ -245,8 +245,11 @@ class TestWriterShutdown:
 
 class TestEnqueueWrite:
     def test_enqueue_without_queue_writes_synchronously(self, fresh_store):
-        # No queue -> sync write path. init_db() starts a writer, so drop it.
-        fresh_store.flush_writes(timeout=2.0)
+        # No queue -> sync write path. init_db() starts a writer, so stop it
+        # *before* dropping the queue: shutdown_writer signals the thread
+        # through that queue, so nulling it first strands the writer alive and
+        # it leaks into the following tests, where it drains their queues.
+        fresh_store.shutdown_writer(timeout=2.0)
         fresh_store._write_queue = None
         fresh_store._enqueue_write(
             "INSERT OR IGNORE INTO conversations (platform,user_id,role,content,ts) "
@@ -262,9 +265,50 @@ class TestEnqueueWrite:
     def test_enqueue_full_queue_falls_back_to_sync(self, fresh_store, monkeypatch):
         # A queue that stays full past the timeout still falls back to a sync
         # write rather than losing the row. Short timeout so the test is quick.
+        #
+        # The writer must *look* alive, so _enqueue_op takes the blocking path,
+        # while nothing actually drains the queue. Leaving the real writer
+        # running instead let it consume the filler item, so room appeared
+        # inside the timeout and the write went async — the row then arrived
+        # after the assertion below had already read the table.
         monkeypatch.setattr(fresh_store, "_WRITE_QUEUE_TIMEOUT", 0.05)
-        fresh_store._write_queue = _queue_mod.Queue(maxsize=1)
-        fresh_store._write_queue.put(("noop", ()))  # fill it
+        fresh_store.shutdown_writer(timeout=2.0)
+
+        class _AliveButIdle:
+            """_enqueue_op only asks the writer whether it is alive."""
+
+            @staticmethod
+            def is_alive():
+                return True
+
+        class _AlwaysFullQueue:
+            """Never accepts a write, and never yields one to a reader.
+
+            A real bounded Queue isn't enough here: a writer thread leaked by an
+            earlier test module also reads the module-level queue, and draining
+            the filler item would make room and send the write down the async
+            path — which is what the ordering test below covers instead.
+            """
+
+            def put(self, item, timeout=None):
+                if timeout:
+                    time.sleep(timeout)
+                raise _queue_mod.Full()
+
+            def put_nowait(self, item):
+                raise _queue_mod.Full()
+
+            def get(self, timeout=None):
+                raise _queue_mod.Empty()
+
+            def get_nowait(self):
+                raise _queue_mod.Empty()
+
+            def empty(self):
+                return True
+
+        monkeypatch.setattr(fresh_store, "_writer_thread", _AliveButIdle())
+        monkeypatch.setattr(fresh_store, "_write_queue", _AlwaysFullQueue())
         fresh_store._enqueue_write(
             "INSERT OR IGNORE INTO conversations (platform,user_id,role,content,ts) "
             "VALUES (?,?,?,?,?)",
