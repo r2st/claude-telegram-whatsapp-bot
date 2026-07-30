@@ -17,6 +17,7 @@ neither leaks into nor is polluted by other tests or modules.
 """
 
 import queue as _queue_mod
+import sqlite3
 import sys
 import threading
 import time
@@ -46,6 +47,7 @@ def fresh_store(tmp_path):
     store._writer_thread = None
     store._write_queue = None
     store._history_cache.clear()
+    store._pending_writes.clear()
     store._rate_state.clear()
     store.init_db()
 
@@ -57,6 +59,7 @@ def fresh_store(tmp_path):
     except Exception:
         pass
     store._reset_conn_state()
+    store._pending_writes.clear()
     store._writer_thread = None
     store._write_queue = None
     store.DB_PATH = orig_db
@@ -90,6 +93,11 @@ class TestWriterThread:
 
     def test_ensure_writer_restarts_dead_thread(self, fresh_store):
         fresh_store._ensure_writer()
+        # Stop the real writer before swapping the global: overwriting
+        # _writer_thread while it is alive orphans the thread, and an orphan
+        # keeps polling the *module-level* queue — so it drains queues that
+        # later tests install and expect to stay untouched.
+        assert fresh_store.shutdown_writer(timeout=3.0) is True
         # Simulate a dead writer thread.
         dead = threading.Thread(target=lambda: None)
         dead.start()
@@ -109,6 +117,33 @@ class TestWriterThread:
         contents = [m["content"] for m in hist]
         assert "hello" in contents
         assert "hi there" in contents
+
+    def test_writer_reopens_when_db_path_moves(self, fresh_store, tmp_path):
+        # The writer opens its connection on the first op and caches it for the
+        # life of the thread. If DB_PATH is repointed afterwards, that cached
+        # handle still addresses the *old* file — so every queued write lands in
+        # a database nothing reads any more, while callers see no error at all.
+        # replace_history/clear_history go through the queue, so this is total
+        # silent loss for them, not just a stale row or two.
+        fresh_store._ensure_writer()
+        fresh_store.save_turn("tg", "moved", "first", "reply")
+        assert fresh_store.flush_writes(timeout=3.0) is True
+
+        second_db = str(tmp_path / "moved.db")
+        fresh_store.DB_PATH = second_db
+        fresh_store._reset_conn_state()
+        fresh_store.init_db()
+
+        fresh_store.replace_history("tg", "moved", [{"role": "user", "content": "after"}])
+        assert fresh_store.flush_writes(timeout=3.0) is True
+        time.sleep(0.2)
+        assert [m["content"] for m in fresh_store.load_history("tg", "moved")] == ["after"]
+
+        # And it really is the new file that holds it.
+        rows = sqlite3.connect(second_db).execute(
+            "SELECT content FROM conversations WHERE user_id=?", ("moved",)
+        ).fetchall()
+        assert [r[0] for r in rows] == ["after"]
 
     def test_writer_batches_multiple_ops(self, fresh_store):
         fresh_store._ensure_writer()
@@ -405,6 +440,38 @@ class TestFlushWrites:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+class _GatedQueue(_queue_mod.Queue):
+    """A real write queue that yields nothing to a writer until :meth:`open`.
+
+    Tests that pin down the *in-flight* window — the gap between an op being
+    enqueued and the writer committing it — need that window to stay open for
+    as long as they say. A plain Queue can't guarantee that: any live writer
+    thread reads the module-level queue global, so one left behind by another
+    test (or another test module) would drain the op immediately and close the
+    window before the assertion ran. Gating the *read* side keeps the op parked
+    no matter how many writers are polling.
+    """
+
+    def __init__(self, maxsize: int = 0):
+        super().__init__(maxsize=maxsize)
+        self._gate = threading.Event()
+
+    def open(self):
+        self._gate.set()
+
+    def get(self, block=True, timeout=None):
+        # Burn the writer's poll interval waiting on the gate rather than
+        # spinning, then fall through to the real get once it opens.
+        if not self._gate.wait(timeout if block else 0):
+            raise _queue_mod.Empty()
+        return super().get(block=block, timeout=timeout)
+
+    def get_nowait(self):
+        if not self._gate.is_set():
+            raise _queue_mod.Empty()
+        return super().get_nowait()
+
+
 class TestHistoryCache:
     def test_load_history_caches_result(self, fresh_store):
         fresh_store.replace_history("tg", "cache1", [
@@ -448,17 +515,37 @@ class TestHistoryCache:
         assert key not in fresh_store._history_cache
 
     def test_save_turn_appends_to_cached_history(self, fresh_store):
+        # The append has to be observable *while the write is still in flight*
+        # — that window is the whole point of it. Once the writer settles the op
+        # it drops the key (item 33) and the next read re-queries, so this test
+        # holds the op on a gated queue rather than racing the writer.
         fresh_store.replace_history("tg", "cache5", [{"role": "user", "content": "seed"}])
+        assert fresh_store.flush_writes(timeout=3.0) is True
         fresh_store.load_history("tg", "cache5")  # populate cache
+        fresh_store.shutdown_writer(timeout=2.0)
+        gate = _GatedQueue(maxsize=1000)
+        fresh_store._write_queue = gate
+
         fresh_store.save_turn("tg", "cache5", "newq", "newa")
         key = fresh_store._cache_key("tg", "cache5")
         cached = fresh_store._history_cache[key][1]
         contents = [m["content"] for m in cached]
-        assert "newq" in contents
-        assert "newa" in contents
+        assert contents == ["seed", "newq", "newa"]
+
+        # And once the write actually lands, a fresh read agrees with the cache.
+        gate.open()
+        fresh_store._ensure_writer()
+        assert fresh_store.flush_writes(timeout=3.0) is True
+        assert [m["content"] for m in fresh_store.load_history("tg", "cache5")] == [
+            "seed", "newq", "newa",
+        ]
 
     def test_cached_history_trimmed_to_20(self, fresh_store):
         # Pre-seed a cache with 20 entries, then a save_turn adds 2 more.
+        # Same in-flight window as above — inspect the cache before the writer
+        # settles the op and invalidates the key.
+        fresh_store.shutdown_writer(timeout=2.0)
+        fresh_store._write_queue = _GatedQueue(maxsize=1000)
         key = fresh_store._cache_key("tg", "cache6")
         seed = [{"role": "user", "content": f"m{i}"} for i in range(20)]
         fresh_store._history_cache[key] = (time.time(), seed)
@@ -482,17 +569,100 @@ class TestHistoryCache:
         assert not any(k.startswith("stale:") for k in fresh_store._history_cache)
         assert fresh_store._cache_key("tg", "evict1") in fresh_store._history_cache
 
-    def test_eviction_clears_all_when_no_stale(self, fresh_store):
-        # Fill with FRESH entries so the stale sweep frees nothing; the cache
-        # must then be cleared entirely before inserting the new entry.
+    def test_eviction_is_oldest_first_when_nothing_is_stale(self, fresh_store):
+        # Item 33: with no stale entries to reclaim the old code fell back to
+        # `_history_cache.clear()`, so one over-cap insert threw away every
+        # other conversation's history — and under sustained load it did that
+        # on every load. Eviction is now oldest-first and drops only what the
+        # cap requires.
+        cap = fresh_store._HISTORY_CACHE_MAX
         now = time.time()
-        for i in range(fresh_store._HISTORY_CACHE_MAX):
+        for i in range(cap):
             fresh_store._history_cache[f"fresh:{i}"] = (now, [])
         fresh_store.replace_history("tg", "evict2", [{"role": "user", "content": "kept"}])
         fresh_store.load_history("tg", "evict2")
+
         keys = list(fresh_store._history_cache.keys())
-        assert not any(k.startswith("fresh:") for k in keys)
+        assert len(keys) == cap                  # still full, not emptied
+        assert "fresh:0" not in keys             # the oldest went
+        assert f"fresh:{cap - 1}" in keys        # the newest stayed
+        assert sum(k.startswith("fresh:") for k in keys) == cap - 1
         assert fresh_store._cache_key("tg", "evict2") in keys
+
+    def test_read_waits_for_a_turn_the_writer_has_not_committed(self, fresh_store):
+        # Item 33: the writer commits on its own connection. A read taken in
+        # the window between save_turn enqueueing and the writer committing
+        # used to query the table, miss the turn, and then cache that truncated
+        # conversation for the full TTL — the bot "forgetting" what was just
+        # said. The read must now wait for the pending write.
+        fresh_store.shutdown_writer(timeout=2.0)
+        gate = _GatedQueue(maxsize=1000)
+        fresh_store._write_queue = gate
+        fresh_store.save_turn("tg", "pending", "what did I say?", "you said hi")
+        # Nothing has drained the queue yet, so the rows are not in the table.
+        assert gate.qsize() == 1
+        assert fresh_store._pending_writes[fresh_store._cache_key("tg", "pending")] == 1
+
+        # Let the write through only after the reader is already blocked on it.
+        fresh_store._ensure_writer()
+        threading.Timer(0.3, gate.open).start()
+        started = time.monotonic()
+        hist = fresh_store.load_history("tg", "pending")
+        assert time.monotonic() - started >= 0.25  # it really waited
+        assert [m["content"] for m in hist] == ["what did I say?", "you said hi"]
+
+    def test_writer_invalidates_the_cache_it_did_not_populate(self, fresh_store):
+        # The cache is filled on a reader's connection; the writer commits on
+        # its own and nothing told the reader the rows had changed. A committed
+        # write must drop the key so the next read re-queries.
+        key = fresh_store._cache_key("tg", "xconn")
+        fresh_store.save_turn("tg", "xconn", "q1", "a1")
+        assert fresh_store.flush_writes(timeout=3.0) is True
+        time.sleep(0.2)
+        hist = fresh_store.load_history("tg", "xconn")
+        assert key in fresh_store._history_cache
+        assert len(hist) == 2
+
+        fresh_store.save_turn("tg", "xconn", "q2", "a2")
+        assert fresh_store.flush_writes(timeout=3.0) is True
+        time.sleep(0.2)
+        # The writer settled the op, so the entry it could not update is gone.
+        assert key not in fresh_store._history_cache
+        assert [m["content"] for m in fresh_store.load_history("tg", "xconn")] == [
+            "q1", "a1", "q2", "a2",
+        ]
+
+    def test_dropped_write_still_releases_waiting_readers(self, fresh_store):
+        # A write the writer finally gives up on must still settle, or a reader
+        # waits out the entire timeout for a turn that is never coming.
+        fresh_store.save_turn("tg", "doomed", "q", "a")
+        assert fresh_store.flush_writes(timeout=3.0) is True
+        time.sleep(0.2)
+        assert fresh_store._pending_writes == {}
+
+        # Same, but for an op that can never succeed.
+        fresh_store._enqueue_op(fresh_store._WriteOp(
+            [("INSERT INTO no_such_table VALUES (?)", (1,))],
+            cache_keys=(fresh_store._cache_key("tg", "doomed"),),
+        ))
+        assert fresh_store.flush_writes(timeout=3.0) is True
+        time.sleep(0.3)
+        assert fresh_store._pending_writes == {}
+
+    def test_read_gives_up_waiting_rather_than_hanging(self, fresh_store, monkeypatch):
+        # A wedged writer must not deadlock reads; serving slightly stale
+        # history is the better failure.
+        monkeypatch.setattr(fresh_store, "_HISTORY_WAIT_TIMEOUT", 0.1)
+        fresh_store.shutdown_writer(timeout=2.0)
+        # Gated and never opened — the write stays wedged however many writers
+        # are polling the queue global.
+        fresh_store._write_queue = _GatedQueue(maxsize=1000)
+        fresh_store.save_turn("tg", "wedged", "q", "a")
+        started = time.monotonic()
+        hist = fresh_store.load_history("tg", "wedged")
+        elapsed = time.monotonic() - started
+        assert 0.05 < elapsed < 1.5
+        assert hist == []  # the write never landed, and nothing hung
 
     def test_session_name_scopes_cache_key(self, fresh_store):
         fresh_store.replace_history("tg", "u1", [{"role": "user", "content": "main"}],

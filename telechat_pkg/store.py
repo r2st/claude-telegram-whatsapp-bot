@@ -12,6 +12,7 @@ import queue as _queue_mod
 import sqlite3
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 import os
 
@@ -116,13 +117,21 @@ class _WriteOp:
 
     ``statements`` commit together as a single transaction, so a multi-statement
     logical write can never be left half-applied.
+
+    ``cache_keys`` names the history-cache entries this op invalidates. The
+    writer commits on its *own* connection, so nothing on a reader's connection
+    would otherwise learn that the rows changed; it therefore drops these keys
+    once the op settles. Enqueueing an op with cache keys also registers it as
+    pending, so :func:`load_history` can wait for it rather than querying a
+    table the write has not reached yet.
     """
 
-    __slots__ = ("statements", "attempts")
+    __slots__ = ("statements", "attempts", "cache_keys")
 
-    def __init__(self, statements: list[tuple[str, tuple]]):
+    def __init__(self, statements: list[tuple[str, tuple]], cache_keys: tuple[str, ...] = ()):
         self.statements = statements
         self.attempts = 0
+        self.cache_keys = cache_keys
 
 
 def _as_op(item) -> _WriteOp | None:
@@ -210,6 +219,18 @@ def _write_batch(conn: sqlite3.Connection, ops: list[_WriteOp]) -> None:
         _apply_op(conn, op)
 
 
+def _close_writer_conn(conn: sqlite3.Connection) -> None:
+    """Close the writer's connection and drop it from the thread-local cache."""
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+    # The thread-local outlives the thread object in CPython's pool; drop the
+    # closed handle so nothing reuses it.
+    if getattr(_local, "conn", None) is conn:
+        _local.conn = None
+
+
 def _db_writer():
     """Background thread that drains the write queue and batches DB writes.
 
@@ -218,8 +239,15 @@ def _db_writer():
     The connection is opened lazily on the first op: opening it eagerly races
     ``init_db`` for the exclusive lock the ``journal_mode=WAL`` switch needs.
     Stops when it dequeues ``_WRITER_SHUTDOWN`` (see :func:`shutdown_writer`).
+
+    The connection is also reopened if ``DB_PATH`` moves after it was opened.
+    A cached handle points at the database that was configured when the first
+    op arrived, so a later repoint would have this thread committing to the
+    *old* file while every reader had moved on — silent, total write loss for
+    everything that went through the queue.
     """
     conn = None
+    conn_path = None
     try:
         while True:
             q = _write_queue
@@ -256,21 +284,26 @@ def _db_writer():
                     ops.append(op)
 
             if ops:
+                if conn is not None and conn_path != DB_PATH:
+                    _close_writer_conn(conn)
+                    conn = None
                 if conn is None:
                     conn = _get_conn()
-                _write_batch(conn, ops)
+                    conn_path = DB_PATH
+                try:
+                    _write_batch(conn, ops)
+                finally:
+                    # Settle every op whether it committed or was dropped: a
+                    # reader waiting on a write that will never arrive must not
+                    # wait out the whole timeout. This is also where readers on
+                    # other connections learn the rows changed.
+                    for op in ops:
+                        _settle_pending(op.cache_keys)
             if stopping:
                 return
     finally:
         if conn is not None:
-            try:
-                conn.close()
-            except Exception:  # noqa: BLE001
-                pass
-            # The thread-local outlives the thread object in CPython's pool;
-            # drop the closed handle so nothing reuses it.
-            if getattr(_local, "conn", None) is conn:
-                _local.conn = None
+            _close_writer_conn(conn)
 
 
 def _ensure_writer():
@@ -340,6 +373,10 @@ def _enqueue_op(op: _WriteOp) -> None:
     if q is not None:
         thread = _writer_thread
         draining = thread is not None and thread.is_alive()
+        # Register before the put: once the op is on the queue the writer may
+        # settle it at any moment, and settling a write that was never
+        # registered would underflow the pending count.
+        _register_pending(op.cache_keys)
         try:
             if draining:
                 q.put(op, timeout=_WRITE_QUEUE_TIMEOUT)
@@ -347,18 +384,25 @@ def _enqueue_op(op: _WriteOp) -> None:
                 q.put_nowait(op)
             return
         except _queue_mod.Full:
+            _settle_pending(op.cache_keys)
             log.error(
                 "db write queue still full after %.1fs; writing synchronously "
                 "(write ordering is no longer guaranteed)",
                 _WRITE_QUEUE_TIMEOUT if draining else 0.0,
             )
         except Exception as e:  # noqa: BLE001 — a swapped-out queue must not lose the write
+            _settle_pending(op.cache_keys)
             log.error("could not enqueue db write (%s); writing synchronously", e)
 
     conn = _get_conn()
-    for stmt, stmt_params in op.statements:
-        conn.execute(stmt, stmt_params)
-    conn.commit()
+    try:
+        for stmt, stmt_params in op.statements:
+            conn.execute(stmt, stmt_params)
+        conn.commit()
+    finally:
+        # A synchronous write lands on this thread's connection, so readers on
+        # other connections still need their cached history dropped.
+        _invalidate_keys(op.cache_keys)
 
 
 def flush_writes(timeout: float = 2.0) -> bool:
@@ -383,13 +427,92 @@ def flush_writes(timeout: float = 2.0) -> bool:
 
 # ─── History cache (avoid repeated DB reads for same user) ──────────────────────
 
-_history_cache: dict[str, tuple[float, list[dict]]] = {}
+#: Insertion-ordered so eviction can drop the *oldest* entry. The old code fell
+#: back to `clear()` once the cache was full, which under load threw away every
+#: conversation's history repeatedly and sent every reader back to the DB.
+_history_cache: "OrderedDict[str, tuple[float, list[dict]]]" = OrderedDict()
 _HISTORY_TTL = 30.0
 _HISTORY_CACHE_MAX = 200
+
+#: Guards ``_history_cache`` and ``_pending_writes``. Both are read and mutated
+#: from every adapter thread and from the writer thread — the same exposure
+#: ``_rate_state`` had. The condition lets :func:`load_history` block for a
+#: pending write instead of polling for it.
+_history_cond = threading.Condition(threading.Lock())
+
+#: cache key -> number of enqueued-but-not-yet-committed writes touching it.
+#:
+#: Without this a reader could query the `conversations` table in the window
+#: between `save_turn` enqueueing a turn and the writer committing it, get a
+#: conversation missing its newest turns, and then *cache that answer for the
+#: full TTL* — which is what "the bot forgot what I just said" looked like.
+_pending_writes: dict[str, int] = {}
+
+#: Upper bound on how long a reader waits for pending writes to settle. A read
+#: that waits forever would deadlock behind a wedged writer; serving slightly
+#: stale history is the better failure.
+_HISTORY_WAIT_TIMEOUT = float(os.getenv("DB_HISTORY_WAIT_TIMEOUT", "2.0"))
 
 
 def _cache_key(platform: str, user_id: str) -> str:
     return f"{platform}:{user_id}"
+
+
+def _register_pending(keys: tuple[str, ...]) -> None:
+    """Record that writes touching ``keys`` are in flight."""
+    if not keys:
+        return
+    with _history_cond:
+        for k in keys:
+            _pending_writes[k] = _pending_writes.get(k, 0) + 1
+
+
+def _settle_pending(keys: tuple[str, ...]) -> None:
+    """Release in-flight writes for ``keys`` and drop their cached history.
+
+    Called once an op has settled — committed *or* finally dropped. Dropping it
+    must still release, or a reader would wait out the whole timeout for a write
+    that is never coming.
+    """
+    if not keys:
+        return
+    with _history_cond:
+        for k in keys:
+            left = _pending_writes.get(k, 0) - 1
+            if left > 0:
+                _pending_writes[k] = left
+            else:
+                _pending_writes.pop(k, None)
+            _history_cache.pop(k, None)
+        _history_cond.notify_all()
+
+
+def _invalidate_keys(keys: tuple[str, ...]) -> None:
+    """Drop cached history for ``keys`` without touching the pending counts."""
+    if not keys:
+        return
+    with _history_cond:
+        for k in keys:
+            _history_cache.pop(k, None)
+
+
+def _await_pending(key: str) -> None:
+    """Block briefly while writes touching ``key`` are still in flight.
+
+    Caller must hold ``_history_cond``.
+    """
+    if not _pending_writes.get(key):
+        return
+    deadline = time.monotonic() + _HISTORY_WAIT_TIMEOUT
+    while _pending_writes.get(key):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            log.warning(
+                "history read for %s proceeded with %d write(s) still pending",
+                key, _pending_writes.get(key, 0),
+            )
+            return
+        _history_cond.wait(remaining)
 
 
 # ─── Row timestamps ─────────────────────────────────────────────────────────────
@@ -419,7 +542,7 @@ def _next_ts(count: int = 1) -> list[float]:
 
 
 def _invalidate_history(platform: str, user_id: str):
-    _history_cache.pop(_cache_key(platform, user_id), None)
+    _invalidate_keys((_cache_key(platform, user_id),))
 
 
 # ─── Rate limiting ──────────────────────────────────────────────────────────────
@@ -582,9 +705,17 @@ def load_history(platform: str, user_id: str, limit: int = 20, session_name: str
     effective_uid = f"{user_id}:{session_name}" if session_name else user_id
 
     key = _cache_key(platform, effective_uid)
-    cached = _history_cache.get(key)
-    if cached and (time.time() - cached[0]) < _HISTORY_TTL:
-        return cached[1]
+    with _history_cond:
+        cached = _history_cache.get(key)
+        if cached and (time.time() - cached[0]) < _HISTORY_TTL:
+            _history_cache.move_to_end(key)
+            return cached[1]
+        # The writer commits on its own connection, so a turn that `save_turn`
+        # has already accepted may not be visible to this one yet. Querying
+        # anyway would return a conversation missing its newest turns *and*
+        # cache that answer for the full TTL — the bot "forgetting" what was
+        # just said. Wait for the write to settle first.
+        _await_pending(key)
 
     conn = _get_conn()
     rows = conn.execute(
@@ -594,15 +725,22 @@ def load_history(platform: str, user_id: str, limit: int = 20, session_name: str
         (platform, effective_uid, limit),
     ).fetchall()
     result = [{"role": r[0], "content": r[1]} for r in reversed(rows)]
-    # Evict stale entries when cache grows too large
-    if len(_history_cache) >= _HISTORY_CACHE_MAX:
-        now = time.time()
-        stale = [k for k, v in _history_cache.items() if now - v[0] > _HISTORY_TTL]
-        for k in stale:
-            del _history_cache[k]
+
+    with _history_cond:
+        # Don't cache a read that raced a write enqueued while we were querying.
+        if _pending_writes.get(key):
+            return result
+        # Drop expired entries first, then evict oldest-first while still over
+        # the cap. The old code fell back to clearing the whole cache, which
+        # under load simply cleared it again and again.
         if len(_history_cache) >= _HISTORY_CACHE_MAX:
-            _history_cache.clear()
-    _history_cache[key] = (time.time(), result)
+            now = time.time()
+            for k in [k for k, v in _history_cache.items() if now - v[0] > _HISTORY_TTL]:
+                _history_cache.pop(k, None)
+            while len(_history_cache) >= _HISTORY_CACHE_MAX:
+                _history_cache.popitem(last=False)
+        _history_cache[key] = (time.time(), result)
+        _history_cache.move_to_end(key)
     return result
 
 
@@ -623,10 +761,26 @@ def save_turn(platform: str, user_id: str, user_text: str, reply: str, session_n
     now surfaces as a logged error instead of a silently missing turn.
     """
     effective_uid = f"{user_id}:{session_name}" if session_name else user_id
+    key = _cache_key(platform, effective_uid)
     user_ts, reply_ts = _next_ts(2)
     insert = (
         "INSERT INTO conversations (platform,user_id,role,content,ts) VALUES (?,?,?,?,?)"
     )
+    # Extend the cached history *before* enqueueing, not after. The writer drops
+    # this key the moment the op settles, and settling can happen as soon as the
+    # op is on the queue — appending afterwards could therefore re-seed the
+    # cache on top of an invalidation and leave the stale copy to be served for
+    # the rest of the TTL.
+    with _history_cond:
+        cached = _history_cache.get(key)
+        if cached:
+            updated = cached[1] + [
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": reply},
+            ]
+            _history_cache[key] = (time.time(), updated[-20:])
+            _history_cache.move_to_end(key)
+
     _enqueue_op(_WriteOp([
         (insert, (platform, effective_uid, "user", user_text, user_ts)),
         (insert, (platform, effective_uid, "assistant", reply, reply_ts)),
@@ -636,47 +790,52 @@ def save_turn(platform: str, user_id: str, user_text: str, reply: str, session_n
                ORDER BY ts DESC LIMIT 1 OFFSET 20)""",
             (platform, effective_uid, platform, effective_uid),
         ),
-    ]))
-    key = _cache_key(platform, effective_uid)
-    cached = _history_cache.get(key)
-    if cached:
-        updated = cached[1] + [
-            {"role": "user", "content": user_text},
-            {"role": "assistant", "content": reply},
-        ]
-        _history_cache[key] = (time.time(), updated[-20:])
+    ], cache_keys=(key,)))
 
     _session_mgr.touch_active(platform, user_id)
 
 
 def replace_history(platform: str, user_id: str, messages: list[dict], session_name: str = "") -> None:
-    """Replace entire conversation history with compacted messages."""
+    """Replace entire conversation history with compacted messages.
+
+    Goes through the write queue rather than committing on the caller's own
+    connection. Writing directly here jumped ahead of turns `save_turn` had
+    already queued: the DELETE ran first, then the writer committed those
+    pending turns *on top of* the compacted history, so a compaction that
+    should have left three messages left seven. Same ordering hazard item 30
+    fixed for the queue-full fallback.
+    """
     effective_uid = f"{user_id}:{session_name}" if session_name else user_id
-    conn = _get_conn()
-    conn.execute(
+    key = _cache_key(platform, effective_uid)
+    statements: list[tuple[str, tuple]] = [(
         "DELETE FROM conversations WHERE platform=? AND user_id=?",
         (platform, effective_uid),
-    )
+    )]
     # Same allocator as save_turn, so a compaction can't hand out a timestamp a
     # concurrent turn is about to reuse.
     stamps = _next_ts(len(messages)) if messages else []
     for m, ts in zip(messages, stamps):
-        conn.execute(
+        statements.append((
             "INSERT INTO conversations (platform, user_id, role, content, ts) VALUES (?, ?, ?, ?, ?)",
             (platform, effective_uid, m.get("role", "user"), m.get("content", ""), ts),
-        )
-    conn.commit()
+        ))
+    _enqueue_op(_WriteOp(statements, cache_keys=(key,)))
     _invalidate_history(platform, effective_uid)
 
 
 def clear_history(platform: str, user_id: str, session_name: str = "") -> None:
+    """Drop a conversation's history.
+
+    Queued for the same reason as :func:`replace_history` — a direct commit
+    would be overtaken by turns already waiting in the queue, so a cleared
+    conversation could come back.
+    """
     effective_uid = f"{user_id}:{session_name}" if session_name else user_id
-    conn = _get_conn()
-    conn.execute(
+    key = _cache_key(platform, effective_uid)
+    _enqueue_op(_WriteOp([(
         "DELETE FROM conversations WHERE platform=? AND user_id=?",
         (platform, effective_uid),
-    )
-    conn.commit()
+    )], cache_keys=(key,)))
     _invalidate_history(platform, effective_uid)
 
 
