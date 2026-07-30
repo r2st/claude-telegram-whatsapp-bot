@@ -1047,7 +1047,7 @@ HELP_TEXT = (
     "• `/desktop_which` — show current session\n"
     "• `/desktop_clear` — clear current session\n"
     "• Reply to any session card → goes to that session\n"
-    "• Otherwise typed messages go to current session (or the only one running)\n"
+    "• Otherwise typed messages go to the current session, if one is set\n"
     "• `/desktop_all <msg>` — broadcast to every running session\n\n"
     "👁 *Live sync:*\n"
     "• `/follow <id>` — stream a session's messages & tool actions here live\n"
