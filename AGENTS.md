@@ -21,7 +21,7 @@ for every kind of context so you don't have to grep.
 | Telegram-specific features         | `docs/advanced-telegram-features.md`     |
 | Code review notes                  | `docs/CODE_REVIEW.md`                    |
 | App code                           | `telechat_pkg/`                          |
-| Tests                              | `tests/` (3000+ tests, ~99% coverage)    |
+| Tests                              | `tests/` (3000+ tests; coverage floor enforced in CI) |
 | Scripts                            | `scripts/`                               |
 | Why a decision was made            | `docs/decisions/` (ADRs — create as needed) |
 
@@ -48,9 +48,13 @@ for every kind of context so you don't have to grep.
 7. **Big decisions get an ADR.** Anything another agent might
    second-guess (schema change, dependency add, architectural shift) →
    `docs/decisions/NNNN-short-title.md`.
-8. **Don't break the test suite.** ~99% coverage today. Run `pytest -q`
-   before moving a ticket to `done/`. If a test must change, say why in
-   the outcome summary.
+8. **Don't break the test suite.** Run `pytest -q` before moving a ticket
+   to `done/`. If a test must change, say why in the outcome summary.
+   Coverage is enforced by a floor in `.github/workflows/pytest.yml` rather
+   than quoted here, so the number can't drift out of date again — read it
+   there, or run `pytest --cov=telechat_pkg` for the current per-module
+   figures. It is not uniform: the older modules are near-total, and
+   `desktop_bridge.py` is the thinnest.
 9. **Keep `docs/implementation-tracker.md` in sync.** When you finish a
    ticket that maps to a feature row, flip its status there too.
 

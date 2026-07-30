@@ -13,6 +13,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET="${1:-both}"
 
+echo "🔢 Syncing version numbers from pyproject.toml..."
+bash "$REPO_ROOT/scripts/sync-version.sh"
+echo ""
+
 echo "🧪 Running e2e tests before publish..."
 echo ""
 bash "$REPO_ROOT/tests/run-all.sh"

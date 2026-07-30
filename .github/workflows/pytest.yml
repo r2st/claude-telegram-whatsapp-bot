@@ -7,6 +7,18 @@ on:
     branches: [main]
 
 jobs:
+  versions:
+    name: version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Three different version numbers shipped in one release before this check
+      # existed (pyproject 1.2.0, __init__ 1.1.5, npm 1.1.1), which left the
+      # updater nagging npm users permanently. See item 4 of docs/improvements.md.
+      - name: Check every version derives from pyproject.toml
+        run: bash scripts/sync-version.sh --check
+
   pytest:
     name: pytest (${{ matrix.python-version }})
     runs-on: ubuntu-latest
