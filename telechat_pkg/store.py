@@ -392,6 +392,32 @@ def _cache_key(platform: str, user_id: str) -> str:
     return f"{platform}:{user_id}"
 
 
+# ─── Row timestamps ─────────────────────────────────────────────────────────────
+
+#: `conversations` is keyed on (platform, user_id, ts), so `ts` doubles as the
+#: row identity. Wall-clock time is not safe for that: two turns inside the same
+#: millisecond produce the same key and one is lost. `_next_ts` hands out
+#: strictly increasing values instead, so a conflict can't happen in-process.
+_TS_STEP = 0.001
+_ts_lock = threading.Lock()
+_last_ts = 0.0
+
+
+def _next_ts(count: int = 1) -> list[float]:
+    """Allocate ``count`` strictly increasing row timestamps.
+
+    Tracks wall-clock time when it can (so ordering stays meaningful across
+    restarts) and steps forward by ``_TS_STEP`` when calls arrive faster than
+    the clock advances.
+    """
+    global _last_ts
+    with _ts_lock:
+        base = max(time.time(), _last_ts + _TS_STEP)
+        stamps = [base + i * _TS_STEP for i in range(max(1, count))]
+        _last_ts = stamps[-1]
+        return stamps
+
+
 def _invalidate_history(platform: str, user_id: str):
     _history_cache.pop(_cache_key(platform, user_id), None)
 
@@ -567,22 +593,36 @@ def load_history(platform: str, user_id: str, limit: int = 20, session_name: str
 
 
 def save_turn(platform: str, user_id: str, user_text: str, reply: str, session_name: str = "") -> None:
+    """Persist one conversation turn (user message + assistant reply).
+
+    The three statements go out as a *single* queued op so they commit together.
+    Previously they were three independent enqueues with no transaction, so a
+    crash — or the queue filling — between them left a half-saved conversation,
+    and the trim DELETE could run against rows its own INSERTs hadn't landed yet,
+    drifting the retention window.
+
+    Row timestamps come from :func:`_next_ts` rather than ``time.time()``. The
+    primary key is ``(platform, user_id, ts)``, and the old code stamped the
+    assistant row at ``now + 0.001``: two turns inside a millisecond collided,
+    and ``INSERT OR IGNORE`` swallowed the second one. Monotonic timestamps make
+    that collision impossible, so ``OR IGNORE`` is gone too — a genuine conflict
+    now surfaces as a logged error instead of a silently missing turn.
+    """
     effective_uid = f"{user_id}:{session_name}" if session_name else user_id
-    now = time.time()
-    _enqueue_write(
-        "INSERT OR IGNORE INTO conversations (platform,user_id,role,content,ts) VALUES (?,?,?,?,?)",
-        (platform, effective_uid, "user", user_text, now),
+    user_ts, reply_ts = _next_ts(2)
+    insert = (
+        "INSERT INTO conversations (platform,user_id,role,content,ts) VALUES (?,?,?,?,?)"
     )
-    _enqueue_write(
-        "INSERT OR IGNORE INTO conversations (platform,user_id,role,content,ts) VALUES (?,?,?,?,?)",
-        (platform, effective_uid, "assistant", reply, now + 0.001),
-    )
-    _enqueue_write(
-        """DELETE FROM conversations WHERE platform=? AND user_id=? AND ts < (
-           SELECT ts FROM conversations WHERE platform=? AND user_id=?
-           ORDER BY ts DESC LIMIT 1 OFFSET 20)""",
-        (platform, effective_uid, platform, effective_uid),
-    )
+    _enqueue_op(_WriteOp([
+        (insert, (platform, effective_uid, "user", user_text, user_ts)),
+        (insert, (platform, effective_uid, "assistant", reply, reply_ts)),
+        (
+            """DELETE FROM conversations WHERE platform=? AND user_id=? AND ts < (
+               SELECT ts FROM conversations WHERE platform=? AND user_id=?
+               ORDER BY ts DESC LIMIT 1 OFFSET 20)""",
+            (platform, effective_uid, platform, effective_uid),
+        ),
+    ]))
     key = _cache_key(platform, effective_uid)
     cached = _history_cache.get(key)
     if cached:
@@ -603,11 +643,13 @@ def replace_history(platform: str, user_id: str, messages: list[dict], session_n
         "DELETE FROM conversations WHERE platform=? AND user_id=?",
         (platform, effective_uid),
     )
-    now = time.time()
-    for i, m in enumerate(messages):
+    # Same allocator as save_turn, so a compaction can't hand out a timestamp a
+    # concurrent turn is about to reuse.
+    stamps = _next_ts(len(messages)) if messages else []
+    for m, ts in zip(messages, stamps):
         conn.execute(
             "INSERT INTO conversations (platform, user_id, role, content, ts) VALUES (?, ?, ?, ?, ?)",
-            (platform, effective_uid, m.get("role", "user"), m.get("content", ""), now + i * 0.001),
+            (platform, effective_uid, m.get("role", "user"), m.get("content", ""), ts),
         )
     conn.commit()
     _invalidate_history(platform, effective_uid)

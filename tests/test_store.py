@@ -576,6 +576,91 @@ class TestConversationFunctions:
         # The most recent turn survives.
         assert any(m["content"] == "a14" for m in hist)
 
+    def test_save_turn_is_one_atomic_op(self, fresh_store):
+        # Item 31: the two INSERTs and the trim DELETE used to be three
+        # independent enqueues, so a crash or a full queue between them left a
+        # half-saved conversation. They must travel as a single transaction.
+        fresh_store.shutdown_writer(timeout=2.0)
+        fresh_store._write_queue = _queue_mod.Queue(maxsize=1000)
+        fresh_store.save_turn("tg", "atomic", "q", "a")
+        assert fresh_store._write_queue.qsize() == 1
+        op = fresh_store._write_queue.get_nowait()
+        assert isinstance(op, fresh_store._WriteOp)
+        assert len(op.statements) == 3
+        assert op.statements[0][0].startswith("INSERT INTO conversations")
+        assert op.statements[2][0].lstrip().startswith("DELETE FROM conversations")
+
+    def test_rapid_turns_are_not_silently_dropped(self, fresh_store):
+        # Both INSERTs used to be `INSERT OR IGNORE` keyed on
+        # (platform, user_id, ts) with the assistant row at now + 0.001, so two
+        # turns inside a millisecond collided and the second vanished.
+        for i in range(6):
+            fresh_store.save_turn("tg", "rapid", f"q{i}", f"a{i}")
+        assert fresh_store.flush_writes(timeout=3.0) is True
+        time.sleep(0.2)
+        rows = fresh_store._get_conn().execute(
+            "SELECT content FROM conversations WHERE platform=? AND user_id=? ORDER BY ts",
+            ("tg", "rapid"),
+        ).fetchall()
+        contents = [r[0] for r in rows]
+        assert len(contents) == 12
+        for i in range(6):
+            assert f"q{i}" in contents
+            assert f"a{i}" in contents
+
+    def test_save_turn_no_longer_uses_or_ignore(self, fresh_store):
+        # A genuine key conflict should raise (and be logged by the writer)
+        # rather than be swallowed.
+        fresh_store.shutdown_writer(timeout=2.0)
+        fresh_store._write_queue = _queue_mod.Queue(maxsize=1000)
+        fresh_store.save_turn("tg", "strict", "q", "a")
+        op = fresh_store._write_queue.get_nowait()
+        assert "OR IGNORE" not in op.statements[0][0]
+        assert "OR IGNORE" not in op.statements[1][0]
+
+
+class TestRowTimestamps:
+    def test_next_ts_is_strictly_increasing(self, fresh_store):
+        stamps = [fresh_store._next_ts()[0] for _ in range(500)]
+        assert all(b > a for a, b in zip(stamps, stamps[1:]))
+
+    def test_next_ts_batch_is_strictly_increasing(self, fresh_store):
+        stamps = fresh_store._next_ts(5)
+        assert len(stamps) == 5
+        assert all(b > a for a, b in zip(stamps, stamps[1:]))
+
+    def test_next_ts_is_unique_across_threads(self, fresh_store):
+        seen: list[float] = []
+        lock = threading.Lock()
+
+        def worker():
+            local = [fresh_store._next_ts()[0] for _ in range(100)]
+            with lock:
+                seen.extend(local)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(seen) == 800
+        assert len(set(seen)) == 800  # no collisions → no lost rows
+
+    def test_replace_history_uses_the_same_allocator(self, fresh_store):
+        # A compaction must not hand out a timestamp a concurrent turn reuses.
+        fresh_store.replace_history("tg", "compact", [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+        ])
+        fresh_store.save_turn("tg", "compact", "c", "d")
+        assert fresh_store.flush_writes(timeout=3.0) is True
+        time.sleep(0.2)
+        rows = fresh_store._get_conn().execute(
+            "SELECT content FROM conversations WHERE platform=? AND user_id=? ORDER BY ts",
+            ("tg", "compact"),
+        ).fetchall()
+        assert [r[0] for r in rows] == ["a", "b", "c", "d"]
+
     def test_track_usage_and_get(self, fresh_store):
         fresh_store.track_usage("tg", "usage1", in_tok=100, out_tok=50)
         fresh_store.flush_writes(timeout=2.0)
