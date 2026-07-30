@@ -19,6 +19,25 @@ jobs:
       - name: Check every version derives from pyproject.toml
         run: bash scripts/sync-version.sh --check
 
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Dockerfile COPYed loose modules from the repository root long after
+      # they moved into telechat_pkg/ — including a bot.py that never existed — so
+      # `docker compose up` failed at build time on a path the README documents as
+      # supported. Nothing caught it because nothing built the image. See item 1.
+      - name: Build the image
+        run: docker build -t telechat:ci .
+
+      - name: Check the entry point runs in the image
+        run: docker run --rm telechat:ci telechat --version
+
+      - name: Validate docker-compose.yml
+        run: docker compose config --quiet
+
   pytest:
     name: pytest (${{ matrix.python-version }})
     runs-on: ubuntu-latest

@@ -265,10 +265,18 @@ telechat --debug      # Start with verbose logging
 
 ### Docker (API mode only)
 
+CLI mode needs the `claude` binary and its host authentication, so the image runs
+in API mode — put `ANTHROPIC_API_KEY` in your `.env` before starting.
+
 ```bash
 docker compose up -d
 docker logs -f telechat
+curl http://127.0.0.1:8484/health     # component status + circuit-breaker state
 ```
+
+`bot.db` (conversations, memory, cost tracking) lives on the `telechat-data`
+volume, so rebuilding the image keeps your history. The container runs as a
+non-root user and its health endpoint is published on loopback only.
 
 ---
 

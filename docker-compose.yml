@@ -4,3 +4,19 @@ services:
     container_name: telechat
     env_file: .env
     restart: unless-stopped
+    # The image runs in API mode; CLI mode needs the `claude` binary and its host
+    # auth, neither of which belongs in a container.
+    environment:
+      CLAUDE_MODE: api
+    # bot.db lives here. Without the volume an image rebuild takes the
+    # conversation history, memory, and cost tracking with it.
+    volumes:
+      - telechat-data:/data
+    # The health server binds 0.0.0.0 inside the container (see Dockerfile) but is
+    # published on loopback only — it needs no authentication and should not be
+    # reachable from the network.
+    ports:
+      - "127.0.0.1:8484:8484"
+
+volumes:
+  telechat-data:
