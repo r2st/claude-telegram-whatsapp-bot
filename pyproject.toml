@@ -36,7 +36,10 @@ dependencies = [
 # without them, but installing the extra makes the feature actually work.
 [project.optional-dependencies]
 qr = ["qrcode>=7.4"]
-sdk = ["claude-code-sdk>=0.0.10"]
+# claude-code-sdk itself requires 3.10+. Without the marker, `pip install
+# telechatai[all]` fails to resolve at all on 3.9 — which requires-python still
+# advertises — instead of just omitting the one extra that cannot work there.
+sdk = ['claude-code-sdk>=0.0.10; python_version >= "3.10"']
 docs = [
     "PyMuPDF>=1.24.0",
     "python-docx>=1.1.0",
@@ -55,7 +58,7 @@ dev = [
 ]
 all = [
     "qrcode>=7.4",
-    "claude-code-sdk>=0.0.10",
+    'claude-code-sdk>=0.0.10; python_version >= "3.10"',
     "PyMuPDF>=1.24.0",
     "python-docx>=1.1.0",
     "playwright>=1.40.0",
