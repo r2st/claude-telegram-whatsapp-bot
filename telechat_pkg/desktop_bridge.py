@@ -1318,10 +1318,10 @@ async def try_handle_text_message(update, ctx) -> bool:
         cur_sid, cur_cwd = get_current_session()
         if cur_sid and cur_cwd:
             sid_cwd = (cur_sid, cur_cwd)
-        else:
-            singles = [s for s in list_running_sessions() if s["sid"] and s["cwd"]]
-            if len(singles) == 1:
-                sid_cwd = (singles[0]["sid"], singles[0]["cwd"])
+        # No implicit fallback to a lone running session: hijacking every plain
+        # message whenever one Claude session happens to be open makes the bot
+        # unusable as a normal assistant. Route only on explicit targets —
+        # a reply to a session card, or a session pinned via "Use session".
     if sid_cwd is None:
         return False
     sid, cwd = sid_cwd
