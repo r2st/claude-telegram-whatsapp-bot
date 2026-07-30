@@ -70,7 +70,10 @@ def _restore_store_state():
         return
     yield
     # Restore after module — reset connection and writer thread so each
-    # module starts with a fresh thread-local connection.
+    # module starts with a fresh thread-local connection. Stop the writer
+    # first: dropping the globals on a live thread leaks its SQLite handle
+    # and leaves it racing the next module's writer for the shared queue.
+    store.shutdown_writer(timeout=2.0)
     store.DB_PATH = orig_db
     store._local = threading.local()
     store._writer_thread = None

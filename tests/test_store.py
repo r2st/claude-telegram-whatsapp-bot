@@ -35,6 +35,11 @@ def fresh_store(tmp_path):
     orig_cache = dict(store._history_cache)
     orig_rate = dict(store._rate_state)
 
+    # Stop any writer left over from a previous DB before repointing DB_PATH:
+    # the writer reads the module-level queue, so a survivor would race this
+    # test's writer for ops and commit them to the wrong database.
+    store.shutdown_writer(timeout=2.0)
+
     store.DB_PATH = str(tmp_path / "store_test.db")
     store._local = threading.local()
     store._writer_thread = None
@@ -47,7 +52,7 @@ def fresh_store(tmp_path):
 
     # Tear down the writer thread + connection for this DB, then restore.
     try:
-        store.flush_writes(timeout=2.0)
+        store.shutdown_writer(timeout=2.0)
     except Exception:
         pass
     store._reset_conn_state()
@@ -124,6 +129,113 @@ class TestWriterThread:
         fresh_store.track_usage("tg", "after_error", in_tok=1, out_tok=1)
         assert fresh_store.flush_writes(timeout=3.0) is True
         assert fresh_store.get_usage("tg", "after_error")["messages"] == 1
+
+    def test_bad_op_does_not_discard_the_rest_of_its_batch(self, fresh_store):
+        # Item 29: the old handler dropped the whole batch on any failure, so a
+        # single bad op silently took its neighbours' writes with it.
+        q = fresh_store._write_queue
+        good = (
+            "INSERT INTO usage (platform, user_id, message_count, input_tokens, "
+            "output_tokens) VALUES (?,?,1,5,5)"
+        )
+        q.put((good, ("tg", "batch_survivor_a")))
+        q.put(("INSERT INTO nonexistent_table VALUES (?)", (1,)))
+        q.put((good, ("tg", "batch_survivor_b")))
+        assert fresh_store.flush_writes(timeout=3.0) is True
+        time.sleep(0.2)
+        assert fresh_store.get_usage("tg", "batch_survivor_a")["messages"] == 1
+        assert fresh_store.get_usage("tg", "batch_survivor_b")["messages"] == 1
+
+    def test_permanent_failure_is_counted_and_logged(self, fresh_store, caplog):
+        import logging
+
+        before = fresh_store.write_failures
+        with caplog.at_level(logging.ERROR, logger="telechat_pkg.store"):
+            fresh_store._write_queue.put(("INSERT INTO no_such_table VALUES (?)", (1,)))
+            fresh_store.flush_writes(timeout=3.0)
+            time.sleep(0.3)
+        assert fresh_store.write_failures > before
+        # The offending SQL is in the log, not just the exception text.
+        assert any("no_such_table" in r.message for r in caplog.records)
+
+    def test_transient_error_is_retried(self, fresh_store):
+        import sqlite3 as _sq
+
+        calls = {"n": 0}
+
+        class FlakyConn:
+            def execute(self, sql, params):
+                calls["n"] += 1
+                if calls["n"] < 3:
+                    raise _sq.OperationalError("database is locked")
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+        before = fresh_store.write_retries
+        op = fresh_store._WriteOp([("INSERT INTO x VALUES (?)", (1,))])
+        assert fresh_store._apply_op(FlakyConn(), op) is True
+        assert calls["n"] == 3  # two transient failures, then success
+        assert fresh_store.write_retries == before + 2
+
+    def test_permanent_error_is_not_retried(self, fresh_store):
+        import sqlite3 as _sq
+
+        calls = {"n": 0}
+
+        class BadSqlConn:
+            def execute(self, sql, params):
+                calls["n"] += 1
+                raise _sq.OperationalError("no such table: nope")
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+        op = fresh_store._WriteOp([("INSERT INTO nope VALUES (?)", (1,))])
+        assert fresh_store._apply_op(BadSqlConn(), op) is False
+        assert calls["n"] == 1  # given up immediately, queue not wedged
+
+    def test_malformed_queue_item_is_discarded(self, fresh_store):
+        fresh_store._write_queue.put("not-a-tuple")
+        fresh_store.track_usage("tg", "after_malformed", in_tok=1, out_tok=1)
+        assert fresh_store.flush_writes(timeout=3.0) is True
+        time.sleep(0.2)
+        assert fresh_store._writer_thread.is_alive()
+        assert fresh_store.get_usage("tg", "after_malformed")["messages"] == 1
+
+
+class TestWriterShutdown:
+    def test_shutdown_stops_the_thread(self, fresh_store):
+        fresh_store._ensure_writer()
+        thread = fresh_store._writer_thread
+        assert fresh_store.shutdown_writer(timeout=3.0) is True
+        assert not thread.is_alive()
+        assert fresh_store._writer_thread is None
+
+    def test_shutdown_drains_pending_writes_first(self, fresh_store):
+        fresh_store._ensure_writer()
+        for i in range(20):
+            fresh_store.track_usage("tg", "shutdown_drain", in_tok=1, out_tok=1)
+        assert fresh_store.shutdown_writer(timeout=5.0) is True
+        assert fresh_store.get_usage("tg", "shutdown_drain")["messages"] == 20
+
+    def test_shutdown_is_idempotent(self, fresh_store):
+        assert fresh_store.shutdown_writer(timeout=2.0) is True
+        assert fresh_store.shutdown_writer(timeout=2.0) is True
+
+    def test_ensure_writer_restarts_after_shutdown(self, fresh_store):
+        fresh_store.shutdown_writer(timeout=2.0)
+        fresh_store._ensure_writer()
+        assert fresh_store._writer_thread.is_alive()
+        fresh_store.track_usage("tg", "restarted", in_tok=2, out_tok=2)
+        assert fresh_store.flush_writes(timeout=3.0) is True
+        assert fresh_store.get_usage("tg", "restarted")["messages"] == 1
 
 
 # ══════════════════════════════════════════════════════════════════════════════

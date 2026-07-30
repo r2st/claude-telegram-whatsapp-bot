@@ -752,7 +752,9 @@ def _cmd_start() -> None:
         print("\nShutting down…")
         try:
             from . import store
-            store.flush_writes(timeout=3.0)
+            # Drains the queue *and* stops the writer thread so its SQLite
+            # connection is closed rather than killed at interpreter exit.
+            store.shutdown_writer(timeout=3.0)
         except Exception:  # noqa: BLE001
             pass
         sys.exit(0)

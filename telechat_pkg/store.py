@@ -89,28 +89,183 @@ def _reset_conn_state() -> None:
 _write_queue: _queue_mod.Queue | None = None
 _writer_thread: threading.Thread | None = None
 
+#: Enqueued by :func:`shutdown_writer` to stop the writer thread cleanly.
+_WRITER_SHUTDOWN = object()
 
-def _db_writer():
-    """Background thread that drains the write queue and batches DB writes."""
-    while True:
-        ops = []
+#: Upper bound on how many ops go into a single transaction, so one busy burst
+#: can't build an arbitrarily large batch that fails (and retries) as a unit.
+_WRITE_BATCH_MAX = 200
+
+#: Per-op retry budget for *transient* SQLite failures (lock/busy contention).
+_WRITE_MAX_ATTEMPTS = int(os.getenv("DB_WRITE_MAX_ATTEMPTS", "3"))
+_WRITE_RETRY_DELAY = 0.05
+
+#: Observability counters — writes retried, and writes finally given up on.
+#: The first useful numbers for a future /metrics surface.
+write_retries = 0
+write_failures = 0
+
+
+class _WriteOp:
+    """One unit of work for the writer thread.
+
+    ``statements`` commit together as a single transaction, so a multi-statement
+    logical write can never be left half-applied.
+    """
+
+    __slots__ = ("statements", "attempts")
+
+    def __init__(self, statements: list[tuple[str, tuple]]):
+        self.statements = statements
+        self.attempts = 0
+
+
+def _as_op(item) -> _WriteOp | None:
+    """Normalize a queue item to a ``_WriteOp``.
+
+    Plain ``(sql, params)`` tuples remain supported — that is the historical
+    queue format, and callers (and tests) still enqueue them directly.
+    """
+    if isinstance(item, _WriteOp):
+        return item
+    try:
+        sql, params = item
+    except (TypeError, ValueError):
+        log.error("db_writer discarding malformed queue item: %r", item)
+        return None
+    return _WriteOp([(sql, params)])
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """True for SQLite errors worth retrying — lock/busy contention only.
+
+    Bad SQL and constraint violations are permanent: retrying them just wedges
+    the queue behind an op that can never succeed.
+    """
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
+def _apply_op(conn: sqlite3.Connection, op: _WriteOp) -> bool:
+    """Execute one op in its own transaction, retrying transient failures.
+
+    Returns True if it committed. A permanent failure is logged *with the
+    offending SQL* and dropped — silently losing it is what the old
+    swallow-the-whole-batch handler did.
+    """
+    global write_retries, write_failures
+    for attempt in range(1, _WRITE_MAX_ATTEMPTS + 1):
         try:
-            op = _write_queue.get(timeout=1.0)
-            ops.append(op)
-        except _queue_mod.Empty:
-            continue
-        while not _write_queue.empty():
-            try:
-                ops.append(_write_queue.get_nowait())
-            except _queue_mod.Empty:
-                break
-        try:
-            conn = _get_conn()
-            for sql, params in ops:
+            for sql, params in op.statements:
                 conn.execute(sql, params)
             conn.commit()
-        except Exception as e:
-            log.error("db_writer batch error: %s", e)
+            return True
+        except Exception as e:  # noqa: BLE001 — the writer thread must not die
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            op.attempts = attempt
+            if not _is_transient(e) or attempt >= _WRITE_MAX_ATTEMPTS:
+                write_failures += 1
+                log.error(
+                    "db_writer dropping write after %d attempt(s): %s | sql=%s",
+                    attempt, e, op.statements[0][0],
+                )
+                return False
+            write_retries += 1
+            time.sleep(_WRITE_RETRY_DELAY * attempt)
+    return False
+
+
+def _write_batch(conn: sqlite3.Connection, ops: list[_WriteOp]) -> None:
+    """Commit a batch, replaying op-by-op if the batch as a whole fails.
+
+    Batching is the fast path. Previously any failure discarded the *entire*
+    batch, so one bad op silently took its neighbours — and the conversation
+    turns they carried — with it.
+    """
+    try:
+        for op in ops:
+            for sql, params in op.statements:
+                conn.execute(sql, params)
+        conn.commit()
+        return
+    except Exception as e:  # noqa: BLE001
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        log.warning(
+            "db_writer batch failed (%s); replaying %d op(s) individually", e, len(ops)
+        )
+    for op in ops:
+        _apply_op(conn, op)
+
+
+def _db_writer():
+    """Background thread that drains the write queue and batches DB writes.
+
+    Owns its thread-local SQLite connection for the life of the thread and
+    closes it on the way out, so a restarted writer doesn't leak the handle.
+    The connection is opened lazily on the first op: opening it eagerly races
+    ``init_db`` for the exclusive lock the ``journal_mode=WAL`` switch needs.
+    Stops when it dequeues ``_WRITER_SHUTDOWN`` (see :func:`shutdown_writer`).
+    """
+    conn = None
+    try:
+        while True:
+            q = _write_queue
+            if q is None:
+                time.sleep(0.1)
+                continue
+            try:
+                item = q.get(timeout=1.0)
+            except _queue_mod.Empty:
+                continue
+            except Exception as e:  # noqa: BLE001
+                # The module-level queue was swapped for something we can't read
+                # (tests do this). Back off rather than dying.
+                log.debug("db_writer could not read the write queue: %s", e)
+                time.sleep(0.1)
+                continue
+
+            stopping = item is _WRITER_SHUTDOWN
+            ops: list[_WriteOp] = []
+            if not stopping:
+                op = _as_op(item)
+                if op is not None:
+                    ops.append(op)
+            while not stopping and len(ops) < _WRITE_BATCH_MAX:
+                try:
+                    item = q.get_nowait()
+                except Exception:  # noqa: BLE001 — Empty, or an unreadable queue
+                    break
+                if item is _WRITER_SHUTDOWN:
+                    stopping = True
+                    break
+                op = _as_op(item)
+                if op is not None:
+                    ops.append(op)
+
+            if ops:
+                if conn is None:
+                    conn = _get_conn()
+                _write_batch(conn, ops)
+            if stopping:
+                return
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            # The thread-local outlives the thread object in CPython's pool;
+            # drop the closed handle so nothing reuses it.
+            if getattr(_local, "conn", None) is conn:
+                _local.conn = None
 
 
 def _ensure_writer():
@@ -119,8 +274,41 @@ def _ensure_writer():
     if _write_queue is None:
         _write_queue = _queue_mod.Queue(maxsize=1000)
     if _writer_thread is None or not _writer_thread.is_alive():
-        _writer_thread = threading.Thread(target=_db_writer, daemon=True)
+        _writer_thread = threading.Thread(
+            target=_db_writer, name="telechat-db-writer", daemon=True
+        )
         _writer_thread.start()
+
+
+def shutdown_writer(timeout: float = 5.0) -> bool:
+    """Drain the queue, stop the writer thread, and close its DB connection.
+
+    :func:`flush_writes` only waits for the queue to empty — the thread itself
+    ran forever and was killed abruptly at interpreter exit, leaking its SQLite
+    connection. Shutdown paths should call this instead.
+
+    Returns True if the writer stopped (or was never running).
+    """
+    global _writer_thread
+    thread = _writer_thread
+    if thread is None or not thread.is_alive():
+        _writer_thread = None
+        return True
+    flush_writes(timeout=timeout)
+    q = _write_queue
+    if q is not None:
+        try:
+            q.put(_WRITER_SHUTDOWN, timeout=max(0.1, timeout))
+        except Exception as e:  # noqa: BLE001
+            log.warning("could not signal db_writer shutdown: %s", e)
+            return False
+    thread.join(timeout=timeout)
+    stopped = not thread.is_alive()
+    if stopped:
+        _writer_thread = None
+    else:
+        log.warning("db_writer did not stop within %.1fs", timeout)
+    return stopped
 
 
 def _enqueue_write(sql: str, params: tuple):
