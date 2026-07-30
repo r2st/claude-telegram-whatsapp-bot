@@ -56,20 +56,84 @@ function setClaudeWorkdir(dir) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function findPython() {
-  for (const cmd of ["python3", "python"]) {
-    try {
-      const v = execSync(`${cmd} --version 2>&1`, { encoding: "utf8" });
-      if (v.includes("Python 3")) return cmd;
-    } catch {}
+// Quote a path for the shell (interpreter paths can contain spaces).
+function shq(p) {
+  return `'${String(p).replace(/'/g, `'\\''`)}'`;
+}
+
+function isPython3(cmd) {
+  try {
+    const v = execSync(`${shq(cmd)} --version 2>&1`, { encoding: "utf8" });
+    return v.includes("Python 3");
+  } catch {
+    return false;
   }
-  return null;
+}
+
+function pythonCandidates() {
+  return [...new Set([
+    "python3",
+    "python",
+    "/usr/bin/python3",              // macOS system/CLT Python — common home of user-site installs
+    "/opt/homebrew/bin/python3",
+    "/usr/local/bin/python3",
+  ])];
+}
+
+// Resolve a bare command name ("python3") to an absolute path so the choice
+// survives PATH changes between runs. Already-absolute paths pass through.
+function absInterpreter(cmd) {
+  if (path.isAbsolute(cmd)) return cmd;
+  try {
+    const real = execSync(
+      `${shq(cmd)} -c "import sys; print(sys.executable)"`,
+      { encoding: "utf8" }
+    ).trim();
+    if (real && path.isAbsolute(real)) return real;
+  } catch {}
+  return cmd;
+}
+
+function findPython() {
+  // An explicitly pinned / previously validated interpreter wins outright —
+  // keeps the service on the same Python (and the same installed backend)
+  // across restarts and PATH changes. A stale pin falls through to detection.
+  const config = loadConfig();
+  if (config.pythonPath && isPython3(config.pythonPath)) return config.pythonPath;
+  const cands = pythonCandidates().filter(isPython3);
+  if (cands.length === 0) return null;
+  // Prefer an interpreter that can already import the backend: the first
+  // python3 on PATH frequently is NOT where telechatai was installed (e.g.
+  // Homebrew Python vs. a user-site or editable install under another
+  // interpreter), and picking it would trigger a needless — often
+  // PEP 668-blocked — reinstall.
+  const withPkg = cands.find(isPyPkgInstalled);
+  const chosen = absInterpreter(withPkg || cands[0]);
+  if (withPkg) {
+    config.pythonPath = chosen;
+    saveConfig(config);
+  }
+  return chosen;
 }
 
 function isPyPkgInstalled(python) {
   try {
-    execSync(`${python} -c "import telechat_pkg"`, { stdio: "ignore" });
+    execSync(`${shq(python)} -c "import telechat_pkg"`, { stdio: "ignore" });
     return true;
+  } catch {
+    return false;
+  }
+}
+
+// True if the backend is an editable/source install (pip install -e) — its
+// __file__ lives outside site-packages, or is None under a PEP 660 finder.
+function isEditableInstall(python) {
+  try {
+    const out = execSync(
+      `${shq(python)} -c "import telechat_pkg; print(telechat_pkg.__file__)"`,
+      { encoding: "utf8" }
+    ).trim();
+    return out === "None" || !out.includes("site-packages");
   } catch {
     return false;
   }
@@ -582,16 +646,40 @@ async function setup() {
 function installPyPkg(python) {
   console.log(`Installing ${PYPI_PACKAGE} from PyPI...`);
   try {
-    execSync(`${python} -m pip install --upgrade ${PYPI_PACKAGE}`, { stdio: "inherit" });
+    // Capture stderr so PEP 668 rejections can be detected; stdout still
+    // streams pip's progress to the user.
+    execSync(`${shq(python)} -m pip install --upgrade ${PYPI_PACKAGE}`, {
+      stdio: ["ignore", "inherit", "pipe"],
+      encoding: "utf8",
+    });
     return true;
-  } catch {
-    console.error(
-      `\nFailed to install from PyPI. You can install manually:\n` +
-      `  ${python} -m pip install ${PYPI_PACKAGE}\n\n` +
-      `Or clone and run from source:\n` +
-      `  git clone https://github.com/telechatai/telechat.git\n` +
-      `  cd telechat && ./scripts/install.sh && ./scripts/start.sh`
-    );
+  } catch (e) {
+    const errOut = `${e.stderr || ""}${e.stdout || ""}`;
+    if (errOut.includes("externally-managed-environment")) {
+      console.error(
+        `\n  ✗ ${python} refuses pip installs (PEP 668: externally-managed-environment).\n\n` +
+        `  Options:\n` +
+        `    • If ${PYPI_PACKAGE} is already installed under another interpreter,\n` +
+        `      point telechat at it:\n` +
+        `        telechat python /path/to/that/python3\n` +
+        `    • Install with pipx (isolated, recommended):\n` +
+        `        brew install pipx && pipx install ${PYPI_PACKAGE}\n` +
+        `        telechat python ~/.local/pipx/venvs/${PYPI_PACKAGE}/bin/python\n` +
+        `    • Or use a virtual environment:\n` +
+        `        python3 -m venv ~/.telechat/venv\n` +
+        `        ~/.telechat/venv/bin/pip install ${PYPI_PACKAGE}\n` +
+        `        telechat python ~/.telechat/venv/bin/python`
+      );
+    } else {
+      if (e.stderr) process.stderr.write(e.stderr);
+      console.error(
+        `\nFailed to install from PyPI. You can install manually:\n` +
+        `  ${python} -m pip install ${PYPI_PACKAGE}\n\n` +
+        `Or clone and run from source:\n` +
+        `  git clone https://github.com/telechatai/telechat.git\n` +
+        `  cd telechat && ./scripts/install.sh && ./scripts/start.sh`
+      );
+    }
     return false;
   }
 }
@@ -627,10 +715,14 @@ function checkAndFixIssues() {
       console.log(`    Fix: ${python} -m pip install ${PYPI_PACKAGE}\n`);
       issues++;
     }
+  } else if (isEditableInstall(python)) {
+    // Never auto-upgrade an editable/source install — pip would replace the
+    // dev tree with the (possibly older) PyPI release.
+    console.log("  ✓ Python backend installed (editable — skipping auto-upgrade)");
   } else {
     // Silently upgrade
     try {
-      execSync(`${python} -m pip install --upgrade ${PYPI_PACKAGE}`, { stdio: "ignore" });
+      execSync(`${shq(python)} -m pip install --upgrade ${PYPI_PACKAGE}`, { stdio: "ignore" });
     } catch {}
     console.log("  ✓ Python backend up to date");
   }
@@ -751,6 +843,7 @@ function printTips() {
     telechat init         Claude-assisted setup (recommended)
     telechat setup        Manual setup wizard
     telechat workdir      Show/set Claude working directory
+    telechat python       Show/pin the backend Python interpreter
     telechat update       Update to latest version
 
   Tips:
@@ -864,6 +957,7 @@ Usage:
   telechat init          Claude-assisted setup (opens browser, validates)
   telechat setup         Manual setup wizard (no Claude needed)
   telechat workdir       Show/set Claude working directory
+  telechat python        Show/pin the backend Python interpreter (python <path>|clear)
   telechat bridge        Manage Claude Desktop bridge (install/uninstall/status)
   telechat update        Update to latest version
   telechat --debug       Start with verbose logging
@@ -1398,6 +1492,40 @@ FLOW:
     return;
   }
 
+  // ── Pin / show the backend Python interpreter ──
+  if (cmd === "python") {
+    const target = args[args.indexOf("python") + 1];
+    if (!target) {
+      const config = loadConfig();
+      console.log(`  Pinned interpreter : ${config.pythonPath || "(none — auto-detect)"}`);
+      console.log(`  Resolved           : ${findPython() || "(no Python 3 found)"}`);
+      process.exit(0);
+    }
+    if (target === "clear") {
+      const config = loadConfig();
+      delete config.pythonPath;
+      saveConfig(config);
+      console.log("  ✓ Cleared pinned interpreter — auto-detect on next run.");
+      process.exit(0);
+    }
+    if (!isPython3(target)) {
+      console.error(`  ✗ Not a working Python 3 interpreter: ${target}`);
+      process.exit(1);
+    }
+    const config = loadConfig();
+    config.pythonPath = absInterpreter(target);
+    saveConfig(config);
+    if (isPyPkgInstalled(target)) {
+      console.log(`  ✓ Pinned Python: ${target} (backend found)`);
+    } else {
+      console.log(`  ✓ Pinned Python: ${target}`);
+      console.log(`    ⚠ Backend not installed there yet — it will be installed on next start,`);
+      console.log(`      or run: ${target} -m pip install ${PYPI_PACKAGE}`);
+    }
+    if (getRunningPid()) console.log("    Apply to the running bot: telechat restart");
+    process.exit(0);
+  }
+
   // ── Restart ──
   if (cmd === "restart") {
     const python = findPython();
@@ -1422,6 +1550,11 @@ FLOW:
     const python = findPython();
     if (!python) {
       console.error("Error: Python 3.9+ required.");
+      process.exit(1);
+    }
+    if (isPyPkgInstalled(python) && isEditableInstall(python)) {
+      console.log("  ⚠ Backend is an editable/source install — update it with git pull");
+      console.log("    in the source tree instead. Skipping pip to avoid clobbering it.");
       process.exit(1);
     }
     console.log("  Updating telechat...");
