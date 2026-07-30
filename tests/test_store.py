@@ -17,6 +17,7 @@ neither leaks into nor is polluted by other tests or modules.
 """
 
 import queue as _queue_mod
+import sys
 import threading
 import time
 
@@ -536,6 +537,109 @@ class TestRateLimit:
         fresh_store._rate_last_cleanup = time.time() - 10_000
         assert fresh_store.check_rate_limit("live_key") is True
         assert "dead_key" not in fresh_store._rate_state
+
+    def test_cleanup_keeps_the_key_being_checked(self, fresh_store):
+        # The sweep must never drop the bucket this call just wrote, or the
+        # caller's own request stops counting toward its limit.
+        fresh_store._rate_last_cleanup = time.time() - 10_000
+        assert fresh_store.check_rate_limit("swept_key") is True
+        assert fresh_store._rate_state.get("swept_key")
+
+    def test_concurrent_checks_do_not_exceed_the_limit(self, fresh_store, monkeypatch):
+        # Item 32: read-filter-publish-append is not atomic, so two threads can
+        # each admit a request against the same bucket state.
+        #
+        # This is a real reproduction, not just an invariant. Two things make
+        # the race land reliably under the GIL: a switch interval short enough
+        # that the interpreter preempts inside the racy window, and a limit high
+        # enough that the whole run stays in the admitting phase (once a bucket
+        # is full every call takes the cheap early-return path and nothing
+        # races). Verified to admit every one of the 1600 attempts when the lock
+        # is removed, and exactly `limit` with it.
+        key = "rl_concurrent"
+        limit = 500
+        monkeypatch.setattr(fresh_store, "RATE_LIMIT_REQUESTS", limit)
+        threads_n, per_thread = 16, 100  # 1600 attempts against a limit of 500
+        allowed = []
+        lock = threading.Lock()
+        start = threading.Barrier(threads_n)
+
+        def worker():
+            start.wait()
+            mine = [fresh_store.check_rate_limit(key) for _ in range(per_thread)]
+            with lock:
+                allowed.extend(mine)
+
+        old_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        try:
+            threads = [threading.Thread(target=worker) for _ in range(threads_n)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        finally:
+            sys.setswitchinterval(old_interval)
+
+        assert len(allowed) == threads_n * per_thread
+        assert sum(allowed) == limit  # exactly the limit, no lost updates
+        assert len(fresh_store._rate_state[key]) == limit
+
+    def test_state_is_only_mutated_while_the_lock_is_held(self, fresh_store, monkeypatch):
+        # The deterministic half of item 32: whatever the scheduler does, every
+        # mutation of the shared dict must happen inside the lock.
+        unguarded = []
+
+        class _Watched(dict):
+            def _check(self, how):
+                if not fresh_store._rate_lock.locked():
+                    unguarded.append(how)
+
+            def __setitem__(self, k, v):
+                self._check(f"__setitem__({k!r})")
+                super().__setitem__(k, v)
+
+            def __delitem__(self, k):
+                self._check(f"__delitem__({k!r})")
+                super().__delitem__(k)
+
+            def pop(self, k, *a):
+                self._check(f"pop({k!r})")
+                return super().pop(k, *a)
+
+        monkeypatch.setattr(fresh_store, "_rate_state", _Watched())
+        fresh_store.check_rate_limit("guarded")
+        fresh_store._rate_last_cleanup = 0.0  # force the sweep branch too
+        fresh_store.check_rate_limit("guarded")
+        assert unguarded == []
+
+    def test_sweep_does_not_race_concurrent_appends(self, fresh_store):
+        # The periodic sweep used to `del` keys other threads could be
+        # mid-append on, and iterated the dict while other threads inserted
+        # into it. Hammer both paths together and require no exception.
+        #
+        # Unlike the two tests above this one is a smoke test, not a
+        # reproduction: it passes with the lock removed too. "RuntimeError:
+        # dictionary changed size during iteration" needs a preemption inside
+        # the sweep's comprehension, which is too narrow to force reliably.
+        errors = []
+
+        def worker(n):
+            try:
+                for i in range(50):
+                    if i % 10 == 0:
+                        # Force the cleanup branch from several threads at once.
+                        fresh_store._rate_last_cleanup = 0.0
+                    fresh_store.check_rate_limit(f"sweep_{n}_{i % 3}")
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(n,)) for n in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errors == []
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -427,23 +427,37 @@ def _invalidate_history(platform: str, user_id: str):
 _rate_state: dict[str, list[float]] = {}
 _rate_last_cleanup = 0.0
 
+#: ``_rate_state`` is mutated from the Telegram asyncio loop, the WhatsApp
+#: worker thread, the Slack thread, and web-chat tasks concurrently. The
+#: read-filter-append sequence below is not atomic, so without this lock two
+#: threads could each read a bucket at the limit and both append — letting a
+#: user exceed their limit — and the periodic sweep could ``del`` a key another
+#: thread was mid-append on. ``SessionManager`` got the same treatment; this
+#: was the one place it was missed.
+_rate_lock = threading.Lock()
+
 
 def check_rate_limit(key: str) -> bool:
     """Return True if the request is allowed, False if rate-limited."""
     global _rate_last_cleanup
     now = time.time()
-    bucket = _rate_state.setdefault(key, [])
-    _rate_state[key] = [t for t in bucket if now - t < RATE_LIMIT_WINDOW]
-    if len(_rate_state[key]) >= RATE_LIMIT_REQUESTS:
-        return False
-    _rate_state[key].append(now)
-    # Periodic cleanup of stale keys (every 5 minutes)
-    if now - _rate_last_cleanup > 300:
-        _rate_last_cleanup = now
-        stale = [k for k, v in _rate_state.items() if not v or now - v[-1] > RATE_LIMIT_WINDOW]
-        for k in stale:
-            del _rate_state[k]
-    return True
+    with _rate_lock:
+        bucket = [t for t in _rate_state.get(key, ()) if now - t < RATE_LIMIT_WINDOW]
+        if len(bucket) >= RATE_LIMIT_REQUESTS:
+            _rate_state[key] = bucket
+            return False
+        bucket.append(now)
+        _rate_state[key] = bucket
+        # Periodic cleanup of stale keys (every 5 minutes)
+        if now - _rate_last_cleanup > 300:
+            _rate_last_cleanup = now
+            stale = [
+                k for k, v in _rate_state.items()
+                if k != key and (not v or now - v[-1] > RATE_LIMIT_WINDOW)
+            ]
+            for k in stale:
+                _rate_state.pop(k, None)
+        return True
 
 
 # ─── SQLite conversation store ──────────────────────────────────────────────────
