@@ -13,11 +13,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The versions pyproject.toml advertises via requires-python. 3.9 is
-        # included deliberately: whatsapp_bot.py carries a comment claiming the
-        # project targets 3.10+, which contradicts requires-python = ">=3.9",
-        # and only a matrix settles which of the two is wrong.
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        # The versions pyproject.toml advertises via requires-python. 3.9 was
+        # in this matrix briefly and is what proved the floor was wrong: the
+        # suite fails and then hangs there, and doctor.py's own check requires
+        # 3.10+. requires-python now says 3.10, so the matrix and the floor agree.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 

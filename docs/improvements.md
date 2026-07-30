@@ -107,6 +107,19 @@ Related: `pyproject.toml` declares `requires-python = ">=3.9"`, but
 `whatsapp_bot.py:75` carries the comment *"we target 3.10+ per pyproject"*. One of the two
 is wrong. A test matrix would have caught the disagreement.
 
+> **Done (2026-07-30).** `.github/workflows/pytest.yml` runs the suite across the
+> advertised versions plus a coverage job with an enforced 80% floor (measured: **84.32%**),
+> and `publish-pypi.yml` gates on a pytest job.
+>
+> The matrix settled the 3.9/3.10 disagreement immediately, and in favour of the
+> *comment*: on 3.9 the suite fails and then hangs, and `doctor.py:69` requires 3.10+ and
+> reports a failing check there — so the project's own health check contradicted its
+> declared floor. `requires-python` is now `>=3.10`, the 3.9 classifier is gone, and the
+> npm wrapper's "Python 3.9+" messages and its version gate were raised to match.
+> A separate find along the way: `claude-code-sdk` requires 3.10+, so
+> `pip install telechatai[all]` could not resolve at all on the 3.9 the metadata
+> advertised — moot now that the floor is 3.10.
+
 ### 3. Default model IDs are deprecated and past their announced retirement
 
 **S–M (~half a day).** The API-mode defaults point at models that are no longer current:

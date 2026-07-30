@@ -355,7 +355,7 @@ async function setup() {
   // ── Check Python ──
   const python = findPython();
   if (!python) {
-    console.error("✗ Python 3.9+ not found. Install from https://python.org");
+    console.error("✗ Python 3.10+ not found. Install from https://python.org");
     rl.close();
     process.exit(1);
   }
@@ -698,7 +698,7 @@ function checkAndFixIssues() {
   // 1. Python check
   const python = findPython();
   if (!python) {
-    console.log("  ✗ Python 3.9+ not found");
+    console.log("  ✗ Python 3.10+ not found");
     console.log("    Fix: install from https://python.org/downloads\n");
     process.exit(1);
   }
@@ -1081,13 +1081,13 @@ Docs: https://github.com/telechatai/telechat`);
     // Pre-flight: Python check
     const python = findPython();
     if (!python) {
-      console.error("  ✗ Python 3.9+ required. Install from https://python.org/downloads");
+      console.error("  ✗ Python 3.10+ required. Install from https://python.org/downloads");
       process.exit(1);
     }
     const pyVer = execSync(`${python} --version`, { encoding: "utf8" }).trim();
     const pyMinor = parseInt(pyVer.match(/3\.(\d+)/)?.[1] || "0", 10);
-    if (pyMinor < 9) {
-      console.error(`  ✗ ${pyVer} found but Python 3.9+ is required.`);
+    if (pyMinor < 10) {
+      console.error(`  ✗ ${pyVer} found but Python 3.10+ is required.`);
       process.exit(1);
     }
     console.log(`  ✓ ${pyVer}`);
@@ -1530,7 +1530,7 @@ FLOW:
   if (cmd === "restart") {
     const python = findPython();
     if (!python) {
-      console.error("Error: Python 3.9+ required.");
+      console.error("Error: Python 3.10+ required.");
       process.exit(1);
     }
     stopService();
@@ -1549,7 +1549,7 @@ FLOW:
   if (cmd === "update") {
     const python = findPython();
     if (!python) {
-      console.error("Error: Python 3.9+ required.");
+      console.error("Error: Python 3.10+ required.");
       process.exit(1);
     }
     if (isPyPkgInstalled(python) && isEditableInstall(python)) {
@@ -1583,7 +1583,7 @@ FLOW:
   if (cmd === "bridge") {
     const python = findPython();
     if (!python) {
-      console.error("  ✗ Python 3.9+ required.");
+      console.error("  ✗ Python 3.10+ required.");
       process.exit(1);
     }
     if (!isPyPkgInstalled(python)) {
@@ -1602,7 +1602,7 @@ FLOW:
   if (cmd === "start" || !cmd) {
     const python = findPython();
     if (!python) {
-      console.error("  ✗ Python 3.9+ required.\n    Install from https://python.org/downloads");
+      console.error("  ✗ Python 3.10+ required.\n    Install from https://python.org/downloads");
       process.exit(1);
     }
 

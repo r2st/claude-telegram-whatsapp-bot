@@ -72,7 +72,7 @@ def _within_root(p: Path) -> bool:
         resolved = p.expanduser().resolve()
     except (OSError, RuntimeError):
         return False
-    # Path.is_relative_to was added in 3.9, which is the floor pyproject sets.
+    # Path.is_relative_to was added in 3.9; we target 3.10+ per pyproject.
     try:
         return resolved == BROWSE_ROOT or resolved.is_relative_to(BROWSE_ROOT)
     except AttributeError:  # pragma: no cover — defensive for older runtimes
