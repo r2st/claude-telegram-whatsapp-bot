@@ -96,6 +96,11 @@ _WRITER_SHUTDOWN = object()
 #: can't build an arbitrarily large batch that fails (and retries) as a unit.
 _WRITE_BATCH_MAX = 200
 
+#: How long a caller waits for room in a full queue before giving up and writing
+#: synchronously. Blocking here is deliberate back-pressure: it keeps writes in
+#: order, which the old jump-the-queue fallback did not (see :func:`_enqueue_op`).
+_WRITE_QUEUE_TIMEOUT = float(os.getenv("DB_WRITE_QUEUE_TIMEOUT", "5.0"))
+
 #: Per-op retry budget for *transient* SQLite failures (lock/busy contention).
 _WRITE_MAX_ATTEMPTS = int(os.getenv("DB_WRITE_MAX_ATTEMPTS", "3"))
 _WRITE_RETRY_DELAY = 0.05
@@ -312,15 +317,47 @@ def shutdown_writer(timeout: float = 5.0) -> bool:
 
 
 def _enqueue_write(sql: str, params: tuple):
-    """Enqueue a non-blocking DB write. Falls back to sync if full."""
-    if _write_queue is not None:
+    """Enqueue a single-statement DB write."""
+    _enqueue_op(_WriteOp([(sql, params)]))
+
+
+def _enqueue_op(op: _WriteOp) -> None:
+    """Enqueue a write, applying back-pressure rather than jumping the queue.
+
+    The old fallback wrote *synchronously* on the caller's own connection the
+    moment the queue was full. That write committed immediately while earlier
+    queued writes were still pending, so ordering inverted — a sync DELETE could
+    land before the queued INSERT it was meant to follow, leaving the database
+    in a state no sequential execution could produce. And it triggered under
+    back-pressure, exactly when ordering matters most.
+
+    So we block for up to ``_WRITE_QUEUE_TIMEOUT`` instead, which preserves
+    order. The synchronous path survives only for the two cases where queueing
+    cannot work at all: no queue configured, and a writer thread that is gone or
+    wedged (blocking there would hang the caller forever).
+    """
+    q = _write_queue
+    if q is not None:
+        thread = _writer_thread
+        draining = thread is not None and thread.is_alive()
         try:
-            _write_queue.put_nowait((sql, params))
+            if draining:
+                q.put(op, timeout=_WRITE_QUEUE_TIMEOUT)
+            else:
+                q.put_nowait(op)
             return
         except _queue_mod.Full:
-            pass
+            log.error(
+                "db write queue still full after %.1fs; writing synchronously "
+                "(write ordering is no longer guaranteed)",
+                _WRITE_QUEUE_TIMEOUT if draining else 0.0,
+            )
+        except Exception as e:  # noqa: BLE001 — a swapped-out queue must not lose the write
+            log.error("could not enqueue db write (%s); writing synchronously", e)
+
     conn = _get_conn()
-    conn.execute(sql, params)
+    for stmt, stmt_params in op.statements:
+        conn.execute(stmt, stmt_params)
     conn.commit()
 
 

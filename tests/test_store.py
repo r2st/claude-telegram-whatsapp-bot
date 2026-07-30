@@ -259,8 +259,10 @@ class TestEnqueueWrite:
         ).fetchall()
         assert any(r[0] == "synced" for r in rows)
 
-    def test_enqueue_full_queue_falls_back_to_sync(self, fresh_store):
-        # A full queue should trigger the synchronous fallback branch.
+    def test_enqueue_full_queue_falls_back_to_sync(self, fresh_store, monkeypatch):
+        # A queue that stays full past the timeout still falls back to a sync
+        # write rather than losing the row. Short timeout so the test is quick.
+        monkeypatch.setattr(fresh_store, "_WRITE_QUEUE_TIMEOUT", 0.05)
         fresh_store._write_queue = _queue_mod.Queue(maxsize=1)
         fresh_store._write_queue.put(("noop", ()))  # fill it
         fresh_store._enqueue_write(
@@ -272,6 +274,51 @@ class TestEnqueueWrite:
             "SELECT content FROM conversations WHERE user_id=?", ("full_user",)
         ).fetchall()
         assert any(r[0] == "fallback" for r in rows)
+
+    def test_enqueue_blocks_for_room_instead_of_jumping_the_queue(self, fresh_store):
+        # Item 30: the old fallback wrote synchronously the instant the queue was
+        # full, committing ahead of writes already queued and inverting order.
+        # Now the caller waits for room, so the queued write lands first.
+        fresh_store.shutdown_writer(timeout=2.0)
+        q = _queue_mod.Queue(maxsize=1)
+        fresh_store._write_queue = q
+
+        insert = (
+            "INSERT INTO conversations (platform,user_id,role,content,ts) "
+            "VALUES (?,?,?,?,?)"
+        )
+        q.put((insert, ("tg", "order_user", "user", "first", 1.0)))  # queue now full
+
+        # Restart the writer so the queued op drains and makes room.
+        fresh_store._ensure_writer()
+        fresh_store._enqueue_write(insert, ("tg", "order_user", "user", "second", 2.0))
+        assert fresh_store.flush_writes(timeout=3.0) is True
+        time.sleep(0.2)
+
+        rows = fresh_store._get_conn().execute(
+            "SELECT content FROM conversations WHERE user_id=? ORDER BY ts",
+            ("order_user",),
+        ).fetchall()
+        assert [r[0] for r in rows] == ["first", "second"]
+
+    def test_enqueue_does_not_block_when_writer_is_dead(self, fresh_store):
+        # Nothing is draining, so blocking would hang the caller forever —
+        # the sync fallback must still apply immediately.
+        fresh_store.shutdown_writer(timeout=2.0)
+        fresh_store._write_queue = _queue_mod.Queue(maxsize=1)
+        fresh_store._write_queue.put(("noop", ()))  # full, and no writer
+
+        started = time.monotonic()
+        fresh_store._enqueue_write(
+            "INSERT OR IGNORE INTO conversations (platform,user_id,role,content,ts) "
+            "VALUES (?,?,?,?,?)",
+            ("tg", "dead_writer", "user", "sync", time.time()),
+        )
+        assert time.monotonic() - started < 1.0
+        rows = fresh_store._get_conn().execute(
+            "SELECT content FROM conversations WHERE user_id=?", ("dead_writer",)
+        ).fetchall()
+        assert any(r[0] == "sync" for r in rows)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
