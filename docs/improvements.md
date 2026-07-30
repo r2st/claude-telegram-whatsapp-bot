@@ -80,6 +80,12 @@ While in there: the image needs the API-mode extras it actually uses (`httpx`, `
 should run as a non-root user, and should declare a `HEALTHCHECK` against the existing
 `:8484/health` endpoint. Add a `docker build` step to CI so this cannot rot again.
 
+> **Done (2026-07-30).** Installs the package rather than copying a file list, adds the
+> `httpx`/`docs` extras, a non-root user, and the `HEALTHCHECK`. `docker-compose.yml` gains a
+> named volume for `/data` (a rebuild used to take the database with it), pins
+> `CLAUDE_MODE=api`, and publishes the unauthenticated health port on loopback only. A CI job
+> builds the image, runs `telechat --version` inside it, and validates the compose file.
+
 *Note: `CODE_REVIEW.md` #26 asked only whether the Dockerfile leaks `.env`/`bot.db`. It
 does not — `.dockerignore` was added in ticket 0021 — but the build itself is broken,
 which that review did not catch.*
@@ -150,6 +156,14 @@ Two structural fixes worth doing at the same time:
   in API mode and warn when a configured model is absent from the list. That converts a
   future silent 404 into an actionable boot warning.
 
+> **Done (2026-07-30), except the startup model check.** `telechat_pkg/models.py` is the
+> single source for both IDs and pricing; defaults are `claude-opus-5` / `claude-sonnet-5` /
+> `claude-haiku-4-5`, each overridable via `MODEL_OPUS` / `MODEL_SONNET` / `MODEL_HAIKU`, and
+> the five modules that hardcoded IDs now read from it. No call site set `temperature`,
+> `top_p`, or `thinking.budget_tokens`, so the swap needed no other change. A test fails if
+> any shipped tier points at a model on the retired list. **Still open:** the `doctor.py`
+> `GET /v1/models` startup check.
+
 ### 4. Three different version numbers ship in one release
 
 **S (~1h).** Three sources of truth, all disagreeing today:
@@ -172,6 +186,11 @@ Make `pyproject.toml` (or `__init__.py`) the single source, derive the other two
 `scripts/publish.sh`, and add a CI check that fails when they diverge.
 *(`CODE_REVIEW.md` #27 flagged the pyproject/mcp_client half of this; the npm wrapper is
 the third leg and the one that reaches users.)*
+
+> **Done (2026-07-30).** `pyproject.toml` is the single source. `__init__.py` resolves the
+> version from installed metadata (what the updater reads) with a pyproject fallback for
+> source checkouts; `npm/package.json` is derived by `scripts/sync-version.sh`, which
+> `publish.sh` runs and CI checks with `--check`. All three now report 1.2.0.
 
 ### 16. In API mode every turn is recorded as costing $0 — `/budget` silently enforces nothing
 
@@ -201,6 +220,14 @@ cache-read rates per model), compute the cost when the backend does not supply o
 label computed figures as estimates in `/usage`. This pairs naturally with the `models.py`
 registry from item 3 — same table, same bump cadence.
 
+> **Done (2026-07-30).** The pricing table lives in `telechat_pkg/models.py` alongside the
+> tiers, keyed by longest-prefix match so dated snapshots resolve via their family. An
+> unknown model estimates at Sonnet rates and logs once rather than returning 0.0 — for a
+> spend guard, erring high is the safe direction. Estimates are labelled: `stats` carry
+> `cost_estimated`, the per-turn footer prefixes `~`, and `/budget` says so in API mode. The
+> `web_chat.py` gate on a truthy `cost_usd` is fixed too, so API-mode web turns are recorded
+> at all.
+
 ### 17. The Desktop bridge has zero tests, and the tickets queued against it assume otherwise
 
 **M (3–4 days).** `grep -rl desktop_bridge tests/` returns **nothing**: 1,817 lines
@@ -218,6 +245,14 @@ and text routing — then land 0023/0024/0026 against it.
 
 This is also where the "~99% coverage" claim in `AGENTS.md` breaks down: coverage is high
 across the older modules and absent on the newest and most complex one.
+
+> **Done (2026-07-30) — the harness, not the split.** `tests/test_desktop_bridge.py` is 71
+> tests on the four fakes this item asks for (fake `~/.claude/projects` tree, stubbed
+> `_tg_call`, fake `claude` binary, isolated bridge DB), covering transcript parsing, digest
+> formatting and its no-summarizer fallback, the approve/deny round-trip including the
+> documented five-minute fail-open, short-id resolution, and text routing.
+> `desktop_bridge.py` 19% → 45%; total 84% → 87%, with the CI floor raised to 85.
+> **Still open:** splitting the module (items 6/14) before tickets 0023–0027 land.
 
 ---
 
@@ -615,6 +650,10 @@ test-writing this tree most needs — an agent that thinks coverage is near-tota
 reason to check. Replace the headline figure with either per-module numbers or a CI-enforced
 floor (item 2), so it cannot drift again. Pairs with item 2 in wave 1.
 
+> **Done (2026-07-30).** Both quoted figures are gone; `AGENTS.md` points at the enforced CI
+> floor instead of a number that can go stale, and says outright that coverage is not uniform
+> across modules. A test fails if a coverage percentage reappears in `AGENTS.md`.
+
 ### 29. `_db_writer` silently drops writes, never shuts down, and leaks its connection
 
 **M (1–2 days for items 29–33 as one pass).** `store.py:93-112`, three defects in twenty
@@ -712,6 +751,11 @@ closed historical record, or delete it and let this document supersede it, with
 [Appendix A](#appendix-a--code_reviewmd-findings-verified-fixed) as the disposition record.
 Then repoint `AGENTS.md`. Do this in wave 1 alongside item 27 — both are "stop the tree
 lying to its own agents" work.
+
+> **Done (2026-07-30).** `docs/CODE_REVIEW.md` now opens with a closed-record banner naming
+> this document as its successor and Appendix A as the disposition record, and says which
+> part is still worth reading (§1's component map, for item 19). `AGENTS.md` points agents
+> here instead, with the old review labelled closed.
 
 ### Revised sequencing for these items
 

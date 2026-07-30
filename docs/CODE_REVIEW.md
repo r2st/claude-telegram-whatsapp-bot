@@ -1,9 +1,30 @@
-# Telechat — Code Review
+# Telechat — Code Review (CLOSED — historical record)
 
-Reviewed: 2026-05-20. Scope: `/Users/dev/projects/claudeplus/telechat` (telechatai 1.1.5).
-No code was modified; this is a read-only review.
+> ## ⛔ This document is closed. Do not work from it.
+>
+> **Superseded by [`docs/improvements.md`](improvements.md) as of 2026-07-30** (item 35).
+> It is kept only as a historical record of the 2026-05-20 review.
+>
+> **Why it is closed rather than updated:** its structure still reads as an open P0
+> list, but of its seven P0 items five are fully fixed, several
+> `[PARTIALLY RESOLVED]` annotations are now fully resolved, and its line
+> references are stale throughout (it cites `main.py` at 1083 lines; the file is
+> 852). Every agent who trusted it therefore paid a re-verification pass to
+> discover most of it was history. `docs/improvements.md` re-derived the open
+> findings against current code, and its
+> [Appendix A](improvements.md#appendix-a--code_reviewmd-findings-verified-fixed)
+> is the disposition record for everything here.
+>
+> **What is still worth reading:** §1's component map is accurate and is a good
+> starting point for rewriting `docs/architecture.md` (improvements.md item 19).
+> Treat every *finding* below as closed unless improvements.md carries it forward.
 
-> **Note 2026-06-03:** Items fixed since the original review are annotated inline as **[RESOLVED ...]**, **[PARTIALLY RESOLVED ...]**, or **[OUT OF DATE: ...]** markers. Current version is **1.2.0** (not 1.1.5 as reviewed). Other findings are presumed still valid — this is not a full review refresh. See `agents/done/` and git log for context. — ticket 0020.
+Reviewed: 2026-05-20. Scope: `telechat` (telechatai 1.1.5 at the time; 1.2.0 now).
+No code was modified; this was a read-only review.
+
+The inline **[RESOLVED …]** / **[PARTIALLY RESOLVED …]** / **[OUT OF DATE: …]**
+markers below were added 2026-06-03 by ticket 0020 and were never completed —
+which is part of why the document is closed rather than maintained.
 
 ---
 

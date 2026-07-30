@@ -19,7 +19,8 @@ for every kind of context so you don't have to grep.
 | Self-improving system design       | `docs/self-improving-design.md`          |
 | Feature implementation status      | `docs/implementation-tracker.md`         |
 | Telegram-specific features         | `docs/advanced-telegram-features.md`     |
-| Code review notes                  | `docs/CODE_REVIEW.md`                    |
+| Review findings / what to fix next | `docs/improvements.md`                   |
+| Older review (CLOSED, historical)  | `docs/CODE_REVIEW.md` — superseded; don't work from it |
 | App code                           | `telechat_pkg/`                          |
 | Tests                              | `tests/` (3000+ tests; coverage floor enforced in CI) |
 | Scripts                            | `scripts/`                               |
