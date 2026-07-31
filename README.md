@@ -27,6 +27,14 @@ telechat init
 
 That's it. `telechat init` walks you through each platform interactively using Claude CLI — it opens the right pages, grabs your tokens, validates everything, and writes your config.
 
+**Just want to see it work?** Skip the setup entirely:
+
+```bash
+telechat web
+```
+
+That starts the local web chat on `http://127.0.0.1:8585` — no bot token, no messenger account, nothing written to disk. It only needs a way to reach Claude (the Claude Code CLI, or an `ANTHROPIC_API_KEY`), and it tells you which is missing if neither is there.
+
 Requires: [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`npm install -g @anthropic-ai/claude-code && claude auth login`)
 
 ### Alternative installs
@@ -57,6 +65,8 @@ Step-by-step wizard with prompts. Works without Claude CLI.
 
 ```bash
 telechat              # Start bot as background service
+telechat web          # Local web chat only — no account, no .env needed
+telechat doctor       # Diagnose configuration and connectivity
 telechat stop         # Stop the bot
 telechat restart      # Restart the bot
 telechat status       # Check if running
@@ -333,13 +343,22 @@ WHATSAPP_ALLOWED_NUMBERS=919876543210   # your number without the +
 
 The fastest way to try telechat: a local browser UI with markdown rendering, session switching, and stats. Nothing to register, no messenger involved.
 
+```bash
+telechat web              # no .env needed at all
+telechat web --port 9000  # if 8585 is taken
+```
+
+To make it part of your normal setup instead, put it in `.env`:
+
 ```env
 BOT_MODE=web
 WEB_CHAT_PORT=8585
 WEB_CHAT_TOKEN=pick-something-long   # required if you bind beyond loopback
 ```
 
-Then `telechat` and open http://127.0.0.1:8585. `telechat init` prints a QR code for the URL so you can open it on your phone over the same network.
+Then `telechat` and open http://127.0.0.1:8585.
+
+Bound to loopback it is reachable from that machine only. To open it on your phone over the same network, set `WEB_CHAT_BIND=0.0.0.0` **and** `WEB_CHAT_TOKEN` — then startup prints a scannable QR code for the LAN URL.
 
 It binds `127.0.0.1` by default and **refuses to start exposed without a token** — set `WEB_CHAT_BIND=0.0.0.0` and `WEB_CHAT_TOKEN` together, or it will tell you why it stopped. Behind a reverse proxy, set `WEB_CHAT_TRUST_PROXY=1` so client IPs (used for the auth lockout) come from `X-Forwarded-For` rather than the proxy's own address.
 

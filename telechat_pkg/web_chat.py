@@ -588,8 +588,14 @@ async def run_web_chat() -> None:
     log.info("Web chat running on http://%s:%d", WEB_BIND, WEB_PORT)
     print(f"  Web chat: http://localhost:{WEB_PORT}")
 
-    from .qr_util import print_web_qr
-    print_web_qr(str(WEB_PORT))
+    # Only offer the phone QR when a phone could actually reach it. On the
+    # default loopback bind the LAN address in that QR refuses connections.
+    if _is_loopback_bind(WEB_BIND):
+        print("  Bound to 127.0.0.1 — reachable from this machine only.")
+        print("  For your phone: set WEB_CHAT_BIND=0.0.0.0 and WEB_CHAT_TOKEN=<secret> in .env.")
+    else:
+        from .qr_util import print_web_qr
+        print_web_qr(str(WEB_PORT))
 
     try:
         while True:

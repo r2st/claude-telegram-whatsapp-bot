@@ -11,6 +11,21 @@ not which function moved.
 
 ### Fixed
 
+- **`telechat doctor` did not exist if you installed with npm.** The command
+  was documented and implemented, but the npm wrapper — the CLI that `npm
+  install -g telechat` puts on your PATH — answered "Unknown command". Anything
+  the Python backend owns is now forwarded through one list, so a command
+  cannot be reachable on one install path and missing on the other.
+- **The web chat printed a QR code your phone could not use.** Under "Scan to
+  open on your phone" it always encoded this machine's LAN address, but the web
+  chat binds to `127.0.0.1` unless you opt out — so scanning it timed out. The
+  QR now appears only when the server is actually reachable from the network;
+  otherwise you get a line saying it is local-only and which two settings make
+  it shareable.
+- **An aborted startup could lose queued database writes.** Only Ctrl-C drained
+  the write queue, so a boot that failed on a missing token — or on an adapter
+  raising on the way up — left rows in the queue and killed the writer's
+  database connection on the way out. Every exit path drains it now.
 - **`SYSTEM_PROMPT` and `CLAUDE_CLI_ADD_DIRS` did nothing.** `.env.example`
   documented both names; the code reads `CLAUDE_SYSTEM_PROMPT` and
   `CLAUDE_ADD_DIRS`. Anyone who set a custom system prompt or extra Claude
@@ -56,6 +71,12 @@ not which function moved.
 
 ### Added
 
+- **`telechat web`** — starts just the local web chat, with no messenger
+  account and no `.env` at all. It forces web-only mode for that one run
+  (nothing is written to disk, so a Telegram setup is untouched), checks first
+  that there is actually a way to reach Claude, and tells you what to install
+  if there isn't. `--port N` moves it off 8585. This is the shortest path from
+  "heard about it" to "talked to it".
 - **`telechat doctor`** — the same configuration/connectivity checks the
   Telegram `/doctor` command runs, now reachable from the CLI for when the bot
   won't start in the first place. Also flags settings in `.env` that nothing in

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
 # Ensure env vars are set before importing main
@@ -1908,3 +1909,178 @@ class TestStartupAlwaysDrainsTheWriteQueue:
             with pytest.raises(RuntimeError, match="event loop"):
                 main_mod._cmd_start()
         drain.assert_called_once()
+
+
+# ─── `telechat web` — the no-account way in ──────────────────────────────────
+
+
+class TestClaudeBackendPreflight:
+    """The web chat needs no messenger account, but it still needs Claude.
+
+    A chat window that accepts a message and then fails on the first turn is a
+    worse first impression than a clear message before anything opens.
+    """
+
+    def _no_env(self, monkeypatch):
+        import main as main_mod
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_MODE", raising=False)
+        monkeypatch.setattr(main_mod, "_read_env", lambda _p: {})
+        monkeypatch.setattr(main_mod, "_find_env_file", lambda: "/nonexistent/.env")
+        return main_mod
+
+    def test_cli_mode_is_ok_when_the_claude_binary_exists(self, monkeypatch):
+        main_mod = self._no_env(monkeypatch)
+        with patch("shutil.which", return_value="/usr/local/bin/claude"):
+            ok, detail = main_mod._claude_backend()
+        assert ok and "CLI mode" in detail
+
+    def test_falls_back_to_the_api_key_when_there_is_no_cli(self, monkeypatch):
+        main_mod = self._no_env(monkeypatch)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        with patch("shutil.which", return_value=None):
+            ok, detail = main_mod._claude_backend()
+        assert ok and "API mode" in detail
+
+    def test_fails_with_actionable_guidance_when_there_is_neither(self, monkeypatch):
+        main_mod = self._no_env(monkeypatch)
+        with patch("shutil.which", return_value=None):
+            ok, detail = main_mod._claude_backend()
+        assert not ok
+        # The message must say what to run, not just that something is missing.
+        assert "claude-code" in detail and "ANTHROPIC_API_KEY" in detail
+
+    def test_api_mode_without_a_key_is_refused_even_if_the_cli_exists(self, monkeypatch):
+        """An explicit CLAUDE_MODE=api is a choice; silently using the CLI ignores it."""
+        main_mod = self._no_env(monkeypatch)
+        monkeypatch.setenv("CLAUDE_MODE", "api")
+        with patch("shutil.which", return_value="/usr/local/bin/claude"):
+            ok, detail = main_mod._claude_backend()
+        assert not ok and "ANTHROPIC_API_KEY" in detail
+
+    def test_reads_the_env_file_not_just_the_process(self, monkeypatch):
+        """Credentials normally live in .env, which is not loaded this early."""
+        import main as main_mod
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_MODE", raising=False)
+        monkeypatch.setattr(main_mod, "_find_env_file", lambda: "/nonexistent/.env")
+        monkeypatch.setattr(main_mod, "_read_env", lambda _p: {"ANTHROPIC_API_KEY": "sk-ant-x"})
+        with patch("shutil.which", return_value=None):
+            ok, _ = main_mod._claude_backend()
+        assert ok
+
+
+class TestCmdWeb:
+    """`telechat web` forces web-only for one run and never touches the .env."""
+
+    def test_forces_web_mode_without_writing_anything(self, monkeypatch):
+        import main as main_mod
+
+        monkeypatch.setattr(main_mod, "_claude_backend", lambda: (True, "CLI mode"))
+        with patch("main._cmd_start") as start, patch("main._set_env_var") as write:
+            main_mod._cmd_web([])
+        start.assert_called_once_with({"BOT_MODE": "web"})
+        write.assert_not_called()
+
+    def test_port_override(self, monkeypatch):
+        import main as main_mod
+
+        monkeypatch.setattr(main_mod, "_claude_backend", lambda: (True, "CLI mode"))
+        with patch("main._cmd_start") as start:
+            main_mod._cmd_web(["--port", "9001"])
+        assert start.call_args[0][0] == {"BOT_MODE": "web", "WEB_CHAT_PORT": "9001"}
+
+    @pytest.mark.parametrize("argv", [
+        ["--port"],            # no value
+        ["--port", "nope"],    # not a number
+        ["--port", "0"],       # out of range
+        ["--port", "70000"],   # out of range
+        ["--bogus"],           # unknown option
+    ])
+    def test_rejects_bad_arguments_without_starting(self, argv, monkeypatch):
+        import main as main_mod
+
+        monkeypatch.setattr(main_mod, "_claude_backend", lambda: (True, "CLI mode"))
+        with patch("main._cmd_start") as start:
+            with pytest.raises(SystemExit) as exc:
+                main_mod._cmd_web(argv)
+        assert exc.value.code == 1
+        start.assert_not_called()
+
+    def test_help_does_not_start_anything(self, monkeypatch, capsys):
+        import main as main_mod
+
+        with patch("main._cmd_start") as start:
+            main_mod._cmd_web(["--help"])
+        start.assert_not_called()
+        assert "telechat web" in capsys.readouterr().out
+
+    def test_missing_backend_stops_before_the_browser_opens(self, monkeypatch, capsys):
+        import main as main_mod
+
+        monkeypatch.setattr(main_mod, "_claude_backend", lambda: (False, "no claude here"))
+        with patch("main._cmd_start") as start:
+            with pytest.raises(SystemExit) as exc:
+                main_mod._cmd_web([])
+        assert exc.value.code == 1
+        start.assert_not_called()
+        assert "no claude here" in capsys.readouterr().out
+
+    def test_overrides_win_over_the_env_file(self, tmp_path, monkeypatch):
+        """`.env` is loaded with override=True, so the forcing must come after."""
+        import main as main_mod
+
+        env = tmp_path / ".env"
+        env.write_text("BOT_MODE=telegram\nTELEGRAM_BOT_TOKEN=test-token\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("BOT_MODE", "telegram")
+
+        seen = {}
+
+        def _capture(coro):
+            seen["BOT_MODE"] = os.environ["BOT_MODE"]
+            coro.close()
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("main._find_env_file", return_value=str(env)))
+            stack.enter_context(patch("main._terminate_previous_instances", return_value=[]))
+            stack.enter_context(patch("main._write_pid_file"))
+            stack.enter_context(patch("main._shutdown_writer_quietly"))
+            stack.enter_context(patch("asyncio.run", side_effect=_capture))
+            main_mod._cmd_start({"BOT_MODE": "web"})
+
+        assert seen["BOT_MODE"] == "web", "the .env value overwrote the explicit override"
+
+
+class TestWebCommandIsReachable:
+    """A command that exists in Python but not in the npm wrapper does not exist.
+
+    `telechat doctor` shipped that way: documented in the README, dispatched in
+    `main.py`, and answered with "Unknown command" by the CLI that `npm install
+    -g telechat` puts on the PATH.
+    """
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def wrapper(cls) -> str:
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+        return (root / "npm" / "bin" / "telechat.js").read_text()
+
+    @pytest.mark.parametrize("command", ["bridge", "doctor", "web"])
+    def test_the_npm_wrapper_forwards_it(self, wrapper, command):
+        passthrough = re.search(r"const PASSTHROUGH = \[([^\]]*)\]", wrapper)
+        assert passthrough, "the npm wrapper has no passthrough list"
+        assert f'"{command}"' in passthrough.group(1)
+
+    @pytest.mark.parametrize("command", ["doctor", "web"])
+    def test_the_npm_help_lists_it(self, wrapper, command):
+        assert f"telechat {command}" in wrapper, f"`{command}` is missing from npm --help"
+
+    @pytest.mark.parametrize("command", ["doctor", "web"])
+    def test_python_help_lists_it(self, command, capsys):
+        with patch.object(sys, "argv", ["telechat", "help"]):
+            cli_entry()
+        assert command in capsys.readouterr().out

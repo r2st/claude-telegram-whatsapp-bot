@@ -443,7 +443,7 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
         </a>
         <a class="btn btn-ghost" href="https://github.com/telechatai/telechat" rel="noopener">Read the source</a>
       </div>
-      <p class="hero-note">Also on <code>pip install telechatai</code> · Python 3.10–3.13 · MIT licensed · v1.2.0</p>
+      <p class="hero-note">Or try it first with <code>telechat web</code> — no account, no config. Python 3.10–3.13 · MIT licensed · v1.2.0</p>
     </div>
 
     <!-- Telegram-style preview of a bridge triage card -->
@@ -644,6 +644,19 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
       <div class="step">
         <div class="num">3</div>
         <div>
+          <h3>Try it before configuring anything</h3>
+          <p>One command, no bot token, no messenger account, nothing written to disk. It checks you have a way to reach Claude first, and says what to install if you don't.</p>
+<pre><span class="c">$</span> telechat web
+
+  Starting the local web chat — no messenger account needed.
+  Claude: CLI mode (free with your Claude subscription)
+  Web chat: <span class="k">http://localhost:8585</span></pre>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">4</div>
+        <div>
           <h3>Run the setup wizard</h3>
           <p><code>telechat init</code> is AI-guided: it opens the right pages, collects your tokens, validates them and writes your <code>.env</code>. Prefer plain prompts? Use <code>telechat setup</code>.</p>
 <pre><span class="c">$</span> telechat init
@@ -656,7 +669,7 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
       </div>
 
       <div class="step">
-        <div class="num">4</div>
+        <div class="num">5</div>
         <div>
           <h3>Start it — and forget it</h3>
           <p>It runs detached, survives closing the terminal, and comes back after a crash. <code>telechat doctor</code> tells you what's wrong when something is.</p>
@@ -752,7 +765,7 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
 
     <details>
       <summary>Which platform should I start with?</summary>
-      <div class="body">The web chat, if you just want to see it work — <code>BOT_MODE=web</code> needs no account anywhere. Telegram, if you want the full feature set: it is the only adapter with inline buttons, photo and file handling, and the Desktop bridge.</div>
+      <div class="body">The web chat, if you just want to see it work: <code>telechat web</code> needs no account anywhere and writes nothing to disk. Telegram, if you want the full feature set — it is the only adapter with inline buttons, photo and file handling, and the Desktop bridge.</div>
     </details>
 
     <details>

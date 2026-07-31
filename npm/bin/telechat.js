@@ -948,6 +948,8 @@ async function main() {
 
 Usage:
   telechat [start]       Start bot (program-assisted, no Claude needed)
+  telechat web           Local web chat only — no account, no .env
+  telechat doctor        Diagnose configuration and connectivity
   telechat stop          Stop the bot
   telechat restart       Restart the bot
   telechat status        Show status, uptime, health, paths
@@ -1580,7 +1582,13 @@ FLOW:
 
   // ── Claude Desktop bridge (install/uninstall/status/notify/approve) ──
   // Delegates to telechat_pkg.desktop_bridge.cli_dispatch via main.py.
-  if (cmd === "bridge") {
+  // ── Commands the Python backend owns ──
+  // The wrapper implements process management and setup itself, but anything
+  // that needs the package proper is forwarded verbatim. A command missing
+  // from this list is a documented command that does not exist on the primary
+  // install path — which is what happened to `doctor`.
+  const PASSTHROUGH = ["bridge", "doctor", "web"];
+  if (PASSTHROUGH.includes(cmd)) {
     const python = findPython();
     if (!python) {
       console.error("  ✗ Python 3.10+ required.");
@@ -1590,8 +1598,9 @@ FLOW:
       console.log("  Installing Python backend...");
       if (!installPyPkg(python)) process.exit(1);
     }
-    const subArgs = args.slice(args.indexOf("bridge") + 1);
-    const result = spawnSync(python, ["-m", "telechat_pkg.main", "bridge", ...subArgs], {
+    ensureDataHome();
+    const subArgs = args.slice(args.indexOf(cmd) + 1);
+    const result = spawnSync(python, ["-m", "telechat_pkg.main", cmd, ...subArgs], {
       stdio: "inherit",
       env: process.env,
     });

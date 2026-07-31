@@ -21,8 +21,17 @@ def _get_local_ip() -> str:
         return "localhost"
 
 
-def print_web_qr(port: str) -> None:
-    ip = _get_local_ip()
+def print_web_qr(port: str, host: str | None = None) -> None:
+    """Print a scannable QR code for the web chat.
+
+    ``host`` is the address the code should advertise; it defaults to this
+    machine's LAN IP. Only call this when the server is actually reachable
+    there. The QR used to encode the LAN address unconditionally even though
+    the web chat binds to ``127.0.0.1`` by default, so scanning it from a phone
+    timed out — an invitation the configuration could not honour, which reads
+    as a broken product rather than a disabled feature.
+    """
+    ip = host or _get_local_ip()
     url = f"http://{ip}:{port}"
 
     try:

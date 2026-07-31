@@ -580,8 +580,15 @@ def _cmd_init() -> None:
                 print(f"    • {w}")
 
         if has_web:
-            from .qr_util import print_web_qr
-            print_web_qr(web_port)
+            # Same rule as web_chat.run_web_chat: a QR pointing at the LAN
+            # address is only honest when the server will bind there.
+            bind = final_env.get("WEB_CHAT_BIND", "127.0.0.1").strip()
+            if bind in ("127.0.0.1", "localhost", "::1", ""):
+                print(f"\n  Web chat: http://localhost:{web_port} (this machine only)")
+                print("  For your phone: set WEB_CHAT_BIND=0.0.0.0 and WEB_CHAT_TOKEN=<secret>.")
+            else:
+                from .qr_util import print_web_qr
+                print_web_qr(web_port)
 
         print("\n  Run 'telechat' or 'telechat start' to launch the bot.")
 
@@ -807,6 +814,100 @@ def _cmd_doctor() -> int:
     return 0 if report.healthy else 1
 
 
+# ─── Web command (the no-account way to try it) ──────────────────────────────
+
+def _claude_backend() -> tuple[bool, str]:
+    """Is there a way to reach Claude? Returns (ok, explanation).
+
+    The web chat needs no messenger account, but it still needs a backend. A
+    chat window that accepts your message and then fails on the first turn is a
+    worse first impression than a clear message before the browser opens.
+    """
+    import shutil
+
+    env = _read_env(_find_env_file())
+    mode = (os.getenv("CLAUDE_MODE") or env.get("CLAUDE_MODE") or "cli").strip().lower()
+    key = os.getenv("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_API_KEY", "")
+
+    if mode == "api":
+        if key:
+            return True, "API mode (ANTHROPIC_API_KEY is set)"
+        return False, (
+            "CLAUDE_MODE=api but ANTHROPIC_API_KEY is not set.\n"
+            "  Set it in your .env, or unset CLAUDE_MODE to use the Claude CLI."
+        )
+
+    if shutil.which("claude"):
+        return True, "CLI mode (free with your Claude subscription)"
+    if key:
+        # A key is present and the CLI is not — say so rather than failing on
+        # the first turn with "claude: command not found".
+        return True, "API mode (no claude CLI found, falling back to ANTHROPIC_API_KEY)"
+    return False, (
+        "No way to reach Claude was found.\n"
+        "  Install the Claude Code CLI:  npm install -g @anthropic-ai/claude-code\n"
+        "  then:                         claude auth login\n"
+        "  ...or set ANTHROPIC_API_KEY in your .env to use the API instead."
+    )
+
+
+def _cmd_web(argv: list[str]) -> None:
+    """Start only the local web chat, with no configuration at all.
+
+    This is the shortest path from "heard about it" to "talked to it": no bot
+    token, no messenger account, no `.env`. `BOT_MODE` is forced for this run
+    only — the file on disk is not touched, so someone running Telegram
+    day-to-day can still use this to check something in a browser.
+    """
+    overrides = {"BOT_MODE": "web"}
+
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        if arg in ("--port", "-p"):
+            if not rest:
+                print("  ✗ --port needs a number, e.g. telechat web --port 9000")
+                sys.exit(1)
+            raw = rest.pop(0)
+            try:
+                port = int(raw)
+            except ValueError:
+                print(f"  ✗ Not a port number: {raw}")
+                sys.exit(1)
+            if not 1 <= port <= 65535:
+                print(f"  ✗ Port out of range: {port}")
+                sys.exit(1)
+            overrides["WEB_CHAT_PORT"] = str(port)
+        elif arg in ("-h", "--help"):
+            print("Usage: telechat web [--port N]")
+            print()
+            print("  Starts only the local web chat, bound to 127.0.0.1.")
+            print("  No messenger account and no .env required.")
+            return
+        else:
+            print(f"  ✗ Unknown option: {arg}")
+            print("Usage: telechat web [--port N]")
+            sys.exit(1)
+
+    ok, detail = _claude_backend()
+    if not ok:
+        print()
+        print(f"  ✗ {detail}")
+        print()
+        sys.exit(1)
+
+    # No URL here on purpose — the server prints one once it is actually
+    # listening. Announcing a port before binding it means announcing a port
+    # that may already be taken.
+    print()
+    print("  Starting the local web chat — no messenger account needed.")
+    print(f"  Claude: {detail}")
+    print("  Press Ctrl-C to stop.")
+    print(flush=True)
+
+    _cmd_start(overrides)
+
+
 # ─── Start command (heavy setup deferred here) ───────────────────────────────
 
 def _shutdown_writer_quietly(timeout: float = 3.0) -> bool:
@@ -831,8 +932,13 @@ def _shutdown_writer_quietly(timeout: float = 3.0) -> bool:
         return False
 
 
-def _cmd_start() -> None:
-    """Load config and start the bot."""
+def _cmd_start(overrides: dict[str, str] | None = None) -> None:
+    """Load config and start the bot.
+
+    ``overrides`` are applied *after* the `.env` is loaded and win over it, so a
+    caller like ``telechat web`` can force a setting for one run without
+    touching the file. They are process-local; nothing is written to disk.
+    """
     import asyncio
     import logging
     import logging.handlers
@@ -845,6 +951,10 @@ def _cmd_start() -> None:
     # find ~/.telechat/.env. Always pass the data-home path.
     _env_path = _find_env_file()
     load_dotenv(_env_path, override=True)
+
+    # After load_dotenv, or `override=True` would put the file's value back.
+    for _key, _value in (overrides or {}).items():
+        os.environ[_key] = _value
 
     _debug = os.getenv("TELECHAT_DEBUG", "").lower() in ("1", "true", "yes")
     _log_level = logging.DEBUG if _debug else logging.INFO
@@ -1038,6 +1148,10 @@ def cli_entry():
         sys.exit(_bridge_cli(args[1:]))
     elif cmd == "doctor":
         sys.exit(_cmd_doctor())
+    elif cmd == "web":
+        # Deliberately ahead of the `_has_any_platform` pre-flight below: the
+        # whole point is that this path needs no platform credentials.
+        _cmd_web(args[1:])
     elif cmd in ("start", "run"):
         # Pre-flight: no usable config → guidance, not a traceback
         env = _read_env(_find_env_file())
@@ -1051,6 +1165,7 @@ def cli_entry():
         print("Commands:")
         print("  init                          Interactive setup wizard (creates/updates .env)")
         print("  start                         Start the bot (default)")
+        print("  web [--port N]                Local web chat only — no account, no .env")
         print("  bridge install [--approval]   Full Claude Desktop bridge setup:")
         print("                                  hooks + persistent service + checks")
         print("  bridge uninstall              Remove bridge hooks")
@@ -1060,6 +1175,7 @@ def cli_entry():
         print("  help                          Show this help")
         print()
         print("Examples:")
+        print("  telechat web                        # try it in a browser, nothing to set up")
         print("  telechat init                       # configure platforms & credentials")
         print("  telechat                            # start the bot")
         print("  telechat doctor                     # why isn't it working?")

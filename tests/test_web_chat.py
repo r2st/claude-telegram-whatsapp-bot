@@ -707,3 +707,64 @@ class TestAuthFailureTableIsBounded(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPhoneQrOnlyWhenReachable(unittest.TestCase):
+    """The QR code must not advertise an address that refuses connections.
+
+    `print_web_qr` encodes this machine's LAN IP, but the web chat binds to
+    127.0.0.1 unless the operator opts out. Under "── Scan to open on your
+    phone ──" that produced a code which timed out when scanned — an
+    invitation the configuration could not honour, which reads as a broken
+    product rather than a disabled feature.
+    """
+
+    def _start(self, bind):
+        from telechat_pkg import web_chat
+
+        async def run():
+            with patch.object(web_chat, "WEB_BIND", bind), \
+                 patch.object(web_chat, "WEB_AUTH_TOKEN", "tok"), \
+                 patch("telechat_pkg.web_chat._create_app"), \
+                 patch("aiohttp.web.AppRunner", return_value=AsyncMock()), \
+                 patch("aiohttp.web.TCPSite", return_value=AsyncMock()), \
+                 patch("telechat_pkg.qr_util.print_web_qr") as qr, \
+                 patch("builtins.print") as printed, \
+                 patch("asyncio.sleep", side_effect=asyncio.CancelledError):
+                await web_chat.run_web_chat()
+            return qr, printed
+
+        return asyncio.run(run())
+
+    def test_loopback_bind_prints_no_qr(self):
+        qr, printed = self._start("127.0.0.1")
+        qr.assert_not_called()
+        out = " ".join(str(c.args[0]) for c in printed.call_args_list if c.args)
+        self.assertIn("this machine only", out)
+        # And it says how to change that, rather than just refusing.
+        self.assertIn("WEB_CHAT_BIND=0.0.0.0", out)
+
+    def test_lan_bind_prints_the_qr(self):
+        qr, _ = self._start("0.0.0.0")
+        qr.assert_called_once()
+
+
+class TestPrintWebQrHost(unittest.TestCase):
+    def test_defaults_to_the_lan_address(self):
+        from telechat_pkg import qr_util
+
+        with patch.object(qr_util, "_get_local_ip", return_value="10.0.0.7"), \
+             patch("builtins.print") as printed:
+            qr_util.print_web_qr("8585")
+        out = " ".join(str(c.args[0]) for c in printed.call_args_list if c.args)
+        self.assertIn("10.0.0.7:8585", out)
+
+    def test_an_explicit_host_wins(self):
+        from telechat_pkg import qr_util
+
+        with patch.object(qr_util, "_get_local_ip", return_value="10.0.0.7"), \
+             patch("builtins.print") as printed:
+            qr_util.print_web_qr("8585", host="tailscale-host")
+        out = " ".join(str(c.args[0]) for c in printed.call_args_list if c.args)
+        self.assertIn("tailscale-host:8585", out)
+        self.assertNotIn("10.0.0.7", out)
