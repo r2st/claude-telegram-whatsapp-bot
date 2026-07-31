@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The tests agreed with the bug — Telechat</title>
+<meta name="description" content="Three shipped bugs in Telechat's output formatting, all covered by passing tests. What separates an assertion that catches a regression from one that ratifies it.">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#0b0c0e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<link rel="canonical" href="https://telechat.fyi/blog/the-tests-agreed-with-the-bug.html">
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="blog.css">
+<link rel="alternate" type="application/rss+xml" title="Telechat blog" href="../feed.xml">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Telechat">
+<meta property="og:url" content="https://telechat.fyi/blog/the-tests-agreed-with-the-bug.html">
+<meta property="og:title" content="The tests agreed with the bug">
+<meta property="og:description" content="Three shipped bugs in Telechat's output formatting, all covered by passing tests. What separates a test that catches a regression from one that ratifies whatever the code did.">
+<meta property="og:image" content="https://telechat.fyi/og.png">
+<meta property="og:image:alt" content="Telechat — Claude on Telegram, WhatsApp and Slack. Self-hosted, one command.">
+<meta property="article:published_time" content="2026-07-31">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="The tests agreed with the bug">
+<meta name="twitter:description" content="Three shipped formatting bugs, all covered by passing tests. What separates a real assertion from one that ratifies whatever the code did.">
+<meta name="twitter:image" content="https://telechat.fyi/og.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "The tests agreed with the bug",
+  "description": "Three shipped bugs in Telechat's output formatting, all covered by passing tests, and what separates a real assertion from one that ratifies whatever the code did.",
+  "url": "https://telechat.fyi/blog/the-tests-agreed-with-the-bug.html",
+  "mainEntityOfPage": "https://telechat.fyi/blog/the-tests-agreed-with-the-bug.html",
+  "datePublished": "2026-07-31",
+  "dateModified": "2026-07-31",
+  "image": "https://telechat.fyi/og.png",
+  "inLanguage": "en",
+  "keywords": "testing, regression tests, Telegram MarkdownV2, text chunking, code review",
+  "author": { "@type": "Organization", "name": "telechatai", "url": "https://github.com/telechatai" },
+  "publisher": { "@type": "Organization", "name": "Telechat", "url": "https://telechat.fyi/" }
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="nav-in">
+    <a class="brand" href="../"><span class="mark" aria-hidden="true">TC</span> Telechat</a>
+    <nav aria-label="Primary">
+      <a href="./">Blog</a>
+      <a href="../#install">Install</a>
+      <a href="https://github.com/telechatai/telechat" rel="noopener">GitHub</a>
+      <button class="icon-btn" id="theme" type="button" aria-label="Toggle colour theme">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<article>
+  <h1>The tests agreed with the bug</h1>
+  <p class="meta"><time datetime="2026-07-31">31 July 2026</time> · <span class="tag">Testing</span> <span class="tag">7 min read</span></p>
+
+  <p class="lede">Telechat has a large test suite, a coverage floor in CI, and three-and-a-half thousand passing tests. This week three bugs turned up in the code that formats every reply the bot sends. All three were covered. All three tests passed, before and after the fix.</p>
+
+  <p>The bugs are small. What they have in common is worth more than the fixes.</p>
+
+  <h2>1. Every heading came out italic</h2>
+
+  <p>Telegram's MarkdownV2 uses <code>*text*</code> for bold and <code>_text_</code> for italic. Claude writes ordinary markdown, so Telechat rewrites it. The heading rule was one line:</p>
+
+  <pre><code><span class="c"># Convert headings to bold</span>
+result = _HEADING_RE.sub(lambda m: f"*{m.group(1).strip()}*", result)</code></pre>
+
+  <p>Three passes later, the italic rule runs, and it matches a single asterisk not adjacent to another single asterisk. Which is exactly what the heading rule had just produced. Every heading became italic.</p>
+
+  <p>The comment says <em>bold</em>. The code says bold, locally. The pipeline says italic. This is the failure mode of any multi-pass text transform: each pass is correct in isolation, and the composition is not — a pass cannot tell the difference between a <code>*</code> the author wrote and a <code>*</code> an earlier pass emitted.</p>
+
+  <p>The fix is not a better regex, it is to stop putting a marker into text that later passes will read. The heading now goes into the same placeholder as <code>**bold**</code> — a sentinel no rule matches — and the asterisks are added at the very end.</p>
+
+  <h2>2. Blockquotes rendered as a literal &gt;</h2>
+
+  <p>Same shape, opposite direction. The blockquote rule inserted a <code>&gt;</code>, and then the escaper ran:</p>
+
+  <pre><code>result = _BLOCKQUOTE_RE.sub(lambda m: f"&gt;{m.group(1)}", result)
+...
+result = escape_md2(result)   <span class="c"># '&gt;' is on the escape list</span></code></pre>
+
+  <p>MarkdownV2 requires <code>&gt;</code> to be escaped when it is literal text — <code>if a &gt; b</code> must ship as <code>if a \&gt; b</code> or the message is rejected. So the escaper escapes it. Including the one the blockquote rule had just added, half a dozen lines earlier. Every quote shipped as <code>\&gt;quoted text</code>, which Telegram renders as a greater-than sign followed by the text.</p>
+
+  <p>The same fix applies: stash the marker behind a sentinel, escape everything, put the marker back. Escaping and markup have to be separated in <em>time</em>, not merely in code.</p>
+
+  <h2>3. Long replies were split three times too often</h2>
+
+  <p>The chunker splits a reply that exceeds the message limit, and it prefers a paragraph boundary — but not one too close to the start, or you get a two-line message followed by a wall:</p>
+
+  <pre><code>for match in re.finditer(r"\n\s*\n", text):
+    pos = match.end()
+    if pos &gt; len(text) * 0.3 and not _is_inside_fence(...):
+        return pos</code></pre>
+
+  <p>Read it as a sentence and it is right: break at a paragraph boundary at least 30% in. Read it as a loop and it returns the <em>first</em> boundary past 30% — for a reply made of ordinary short paragraphs, the one at roughly 31%.</p>
+
+  <p>Measured on 7 800 characters of prose against a 4 000-character limit: five messages, sized 1 233, 1 233, 1 233, 1 233, 2 860. It should be two. Every user of every platform had been getting two to three times more notifications than necessary, for as long as the function had existed.</p>
+
+  <p>Three of the four rules had this shape. The fourth used <code>rfind</code> and was correct, which is probably why nobody looked twice at the others.</p>
+
+  <p>The same rule had a second bug. It could break on the <code>```</code> that <em>closes</em> a code block — the fence regex cannot tell an opening fence from a closing one — leaving one message holding an unterminated block and the next starting on a stray fence. Under MarkdownV2 that can fail to parse, and the whole message falls back to plain text.</p>
+
+  <h2>What the tests said</h2>
+
+  <p>Here is the part worth the post. This test existed, and passed, the whole time:</p>
+
+  <pre><code>def test_heading_converted(self):
+    result = to_markdown_v2("# My Heading")
+    <span class="c"># Headings are converted to bold (*text*), which then passes</span>
+    <span class="c"># through the italic-capture pass, so the final output wraps in _ or *</span>
+    assert "My Heading" in result
+    assert result.strip() != "My Heading"</code></pre>
+
+  <p>Someone hit the bug, understood it precisely enough to write it down, and then wrote an assertion that accepts it. The comment is a correct description of a defect, sitting above a test that ratifies it. The blockquote test was the same: <code>assert "quoted text" in result</code> — true of a blockquote, and equally true of the escaped literal that shipped instead.</p>
+
+  <p>The chunker's tests failed differently. They were not wrong, they were vacant:</p>
+
+  <pre><code>chunks = chunk_text(text, limit=30, mode="smart")
+assert len(chunks) &gt;= 2</code></pre>
+
+  <p><code>&gt;= 2</code> is true of the correct output and true of a chunker that emits one character per message. The assertion is about the function running, not about what it produced.</p>
+
+  <h2>The tell</h2>
+
+  <p>All three share one property: <strong>the assertion cannot distinguish the fix from the bug.</strong> That is checkable without knowing anything about the domain. Take your assertion, imagine the behaviour you are worried about, and ask whether it would still pass. If it would, the test is measuring that the code ran.</p>
+
+  <p>Three habits fall out of it, and they are what the replacements do:</p>
+
+  <ul>
+    <li><strong>Assert the output, not a property of the output.</strong> <code>== "*My Heading*"</code> rather than <code>"My Heading" in result</code>. Exact equality is unfashionable because it is brittle — but brittle is the point for a pure function whose whole job is producing an exact string. When it breaks, it breaks loudly and you look.</li>
+    <li><strong>Assert the number that matters.</strong> The chunker's tests now say a 7 800-character reply is two messages and that non-final chunks are over 3 000 characters. That is the behaviour users experience, so it is the thing to pin.</li>
+    <li><strong>When you write a comment explaining surprising behaviour, stop.</strong> Understanding a defect well enough to describe it is understanding it well enough to file it. A comment is not a place to put a bug you have decided to live with — that is what an issue tracker is for, and what a failing test that you mark <code>xfail</code> is for.</li>
+  </ul>
+
+  <p>There is a fourth, harder one. The coverage number was never the problem: all three functions were covered, and coverage is measured by lines executed, not by claims verified. Formatting bugs in particular are invisible to a coverage floor and invisible in review — <code>\&gt;quoted text</code> looks fine in a diff and looks wrong only in a Telegram client. The only thing that finds them is somebody reading the output as a user, and the only thing that keeps them fixed is an assertion sharp enough to fail.</p>
+
+  <div class="note">
+    <p><strong>All three fixes are in <code>main</code>,</strong> with 20 replacement tests between them. The commits are <code>fix(chunking): stop splitting long replies three times more than needed</code> and <code>fix(markdown): headings were italic, and blockquotes were not blockquotes</code> — both in <a href="https://github.com/telechatai/telechat/commits/main" rel="noopener">the log</a>, with the reasoning in the message.</p>
+  </div>
+
+  <div class="cta">
+    <h3>Telechat is Claude on your own machine</h3>
+    <p>Telegram, WhatsApp, Slack and a local web chat, from one process. MIT licensed.</p>
+    <code>npm install -g telechat &amp;&amp; telechat init</code>
+    <p style="margin-top:16px"><a href="one-process-four-messengers.html">How it is built</a> · <a href="claude-code-that-pages-you.html">The Desktop bridge</a></p>
+  </div>
+</article>
+</main>
+
+<footer>
+  <div class="foot">
+    <span>© telechatai · MIT licensed</span>
+    <span><a href="../">telechat.fyi</a> · <a href="./">Blog</a> · <a href="../feed.xml">RSS</a> · <a href="https://github.com/telechatai/telechat" rel="noopener">GitHub</a></span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var root = document.documentElement, saved = null;
+  try { saved = localStorage.getItem('tc-theme'); } catch (e) {}
+  var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+  root.setAttribute('data-theme', saved || (light ? 'light' : 'dark'));
+  var btn = document.getElementById('theme');
+  if (btn) btn.addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('tc-theme', next); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>
