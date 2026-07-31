@@ -226,6 +226,90 @@ class TestFindBestBreak:
         assert pos > 0
 
 
+class TestChunksAreFilled:
+    """Every break rule takes the *last* candidate, not the first.
+
+    Taking the first break past the 30% floor meant a reply made of short
+    paragraphs — which is most replies — split at barely a third of the limit
+    every time. Users saw five Telegram messages where two would do.
+    """
+
+    PARAGRAPH = "This is a sentence of moderate length that a model would write.\n\n"
+
+    def test_prose_fills_the_limit(self):
+        text = self.PARAGRAPH * 120                      # ~7.8k chars
+        chunks = chunk_text(text, limit=4000)
+        assert len(chunks) == 2, [len(c.text) for c in chunks]
+        # Every chunk but the last should be most of a message, not a third.
+        assert all(len(c.text) > 3000 for c in chunks[:-1])
+
+    def test_no_chunk_exceeds_the_limit(self):
+        text = self.PARAGRAPH * 120
+        assert all(len(c.text) <= 4000 for c in chunk_text(text, limit=4000))
+
+    def test_nothing_is_lost(self):
+        import re as _re
+
+        text = self.PARAGRAPH * 40 + "Tail sentence without a trailing break."
+        joined = "".join(c.text for c in chunk_text(text, limit=1000))
+        assert _re.sub(r"\s", "", joined) == _re.sub(r"\s", "", text)
+
+    def test_indices_and_total_are_consistent(self):
+        chunks = chunk_text(self.PARAGRAPH * 120, limit=1500)
+        assert [c.index for c in chunks] == list(range(len(chunks)))
+        assert all(c.total == len(chunks) for c in chunks)
+
+    def test_a_single_long_paragraph_still_breaks_at_a_newline(self):
+        text = ("word " * 200 + "\n") * 6                # no blank lines at all
+        chunks = chunk_text(text, limit=2000)
+        assert len(chunks) > 1
+        assert all(len(c.text) <= 2000 for c in chunks)
+
+
+class TestCodeFencesSurviveChunking:
+    """A chunk must never end holding an unterminated code fence.
+
+    `_FENCE_RE` matches the ``` that *closes* a block as readily as the one
+    that opens it, and the old priority-2 rule broke at whichever it found
+    first past the floor. Splitting there left one message with an open fence
+    and the next starting on a stray one — which renders as broken output, and
+    under MarkdownV2 can fail to parse at all.
+    """
+
+    def _fenced(self):
+        return "```python\n" + ("x = 1\n" * 60) + "```\n" + ("tail line\n" * 30)
+
+    def test_fences_are_balanced_in_every_chunk(self):
+        for chunk in chunk_text(self._fenced(), limit=420):
+            assert chunk.text.count("```") % 2 == 0, f"unbalanced fence in: {chunk.text[:60]!r}"
+
+    def test_no_chunk_starts_with_a_dangling_close(self):
+        chunks = chunk_text(self._fenced(), limit=420)
+        for chunk in chunks[1:]:
+            first = chunk.text.lstrip().split("\n", 1)[0]
+            assert not (first.startswith("```") and first == "```"), (
+                f"chunk starts on a closing fence: {chunk.text[:40]!r}"
+            )
+
+    def test_a_block_that_does_not_fit_is_still_emitted(self):
+        """A fence longer than the limit cannot be kept whole — but nothing is lost."""
+        import re as _re
+
+        text = "Intro.\n\n```\n" + ("y = 2\n" * 400) + "```\n"
+        chunks = chunk_text(text, limit=500)
+        joined = "".join(c.text for c in chunks)
+        assert _re.sub(r"\s", "", joined) == _re.sub(r"\s", "", text)
+        assert all(len(c.text) <= 500 for c in chunks)
+
+    def test_break_prefers_the_start_of_a_block(self):
+        """Given the choice, the whole block moves to the next chunk."""
+        text = "Prose line.\n" * 30 + "```\n" + ("z = 3\n" * 5) + "```\n"
+        chunks = chunk_text(text, limit=400)
+        with_fence = [c for c in chunks if "```" in c.text]
+        assert with_fence, "the fenced block vanished"
+        assert all(c.text.count("```") == 2 for c in with_fence)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # music_gen.py
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -11,6 +11,17 @@ not which function moved.
 
 ### Fixed
 
+- **Long replies were split into far more messages than necessary.** The
+  chunker took the first paragraph break past a third of the message limit
+  instead of the last one, so a reply made of short paragraphs — which is most
+  replies — went out in chunks of about 1 200 characters against a 4 000-character
+  budget. A 7 800-character answer was five Telegram messages; it is now two.
+- **A code block could be split across two messages, unterminated.** The break
+  finder matched the ``` that closes a block as readily as the one that opens
+  it, so one message ended holding an open fence and the next began with a stray
+  closing one — broken formatting, and under MarkdownV2 sometimes a parse
+  failure that dropped the message to plain text. Breaks now land on the start
+  of a block, so the block moves whole into the next message.
 - **`telechat doctor` did not exist if you installed with npm.** The command
   was documented and implemented, but the npm wrapper — the CLI that `npm
   install -g telechat` puts on your PATH — answered "Unknown command". Anything

@@ -129,28 +129,55 @@ def _is_inside_fence(pos: int, absolute_pos: int, fence_spans: list[tuple[int, i
 
 
 def _find_best_break(text: str, absolute_offset: int, fence_spans: list[tuple[int, int]]) -> int:
-    """Find the best break point in text, avoiding code fences."""
-    # Priority 1: Break at a blank line (paragraph boundary)
+    """Find the best break point in ``text``, avoiding code fences.
+
+    ``text`` is one candidate window (at most ``limit`` characters), and the
+    return value is an offset into it.
+
+    Every rule takes the *last* acceptable break in the window rather than the
+    first. Taking the first one past the 30% floor is what the earlier version
+    did, and it meant a reply made of short paragraphs — which is most replies —
+    broke at barely a third of the limit every time: 7 800 characters of prose
+    went out as five messages of ~1 200 instead of two full ones.
+    """
+    floor = len(text) * 0.3
+    best = 0
+
+    # Priority 1: a blank line (paragraph boundary).
     for match in re.finditer(r"\n\s*\n", text):
         pos = match.end()
-        if pos > len(text) * 0.3 and not _is_inside_fence(pos, absolute_offset, fence_spans):
-            return pos
+        if pos > floor and not _is_inside_fence(pos, absolute_offset, fence_spans):
+            best = pos
+    if best:
+        return best
 
-    # Priority 2: Break at a code fence boundary
-    for match in _FENCE_RE.finditer(text):
+    # Priority 2: the start of a code block, so the block moves whole into the
+    # next chunk. Only span starts qualify. The earlier version matched the
+    # fence *regex*, which also matches the ``` that closes a block — breaking
+    # there left one chunk holding an unterminated code fence and the next
+    # opening with a stray one.
+    for start, _end in fence_spans:
+        pos = start - absolute_offset
+        if floor < pos <= len(text):
+            best = pos
+    if best:
+        return best
+
+    # Priority 3: a newline.
+    for match in re.finditer(r"\n", text):
         pos = match.start()
-        if pos > len(text) * 0.3:
-            return pos
+        if pos > floor and not _is_inside_fence(pos, absolute_offset, fence_spans):
+            best = pos + 1
+    if best:
+        return best
 
-    # Priority 3: Break at a newline
-    idx = text.rfind("\n", int(len(text) * 0.3))
-    if idx > 0 and not _is_inside_fence(idx, absolute_offset, fence_spans):
-        return idx + 1
-
-    # Priority 4: Break at sentence boundary
+    # Priority 4: a sentence boundary. Guarded too — a `.` inside a code block
+    # is not the end of a sentence.
     for match in re.finditer(r"[.!?]\s+", text):
         pos = match.end()
-        if pos > len(text) * 0.5:
-            return pos
+        if pos > len(text) * 0.5 and not _is_inside_fence(pos, absolute_offset, fence_spans):
+            best = pos
+    if best:
+        return best
 
     return 0  # No good break found
