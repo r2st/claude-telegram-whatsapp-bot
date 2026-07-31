@@ -101,6 +101,78 @@ def check_env_file() -> CheckResult:
     )
 
 
+def _env_file_path() -> Path | None:
+    """The .env the bot will actually read, or None if there isn't one."""
+    from . import store
+    for candidate in (
+        Path(store.DB_PATH).parent / ".env",
+        Path.home() / ".telechat" / ".env",
+        Path(".env"),
+    ):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+#: Keys a `.env` may legitimately carry that `telechat_pkg` itself never reads.
+_EXTERNAL_ENV_KEYS = frozenset({
+    # scripts/watchdog.py is a separate program shipped alongside the bot.
+    "WATCHDOG_PROJECT_DIR", "WATCHDOG_SCAN_INTERVAL", "WATCHDOG_BATCH_WINDOW",
+    "WATCHDOG_MAX_FIXES_HOUR", "WATCHDOG_FIX_COOLDOWN", "WATCHDOG_REGRESSION_WATCH",
+    "WATCHDOG_BOT_SERVICE", "WATCHDOG_CLAUDE_MODEL", "WATCHDOG_ENABLED",
+    "WATCHDOG_DRY_RUN",
+})
+
+
+def check_unknown_env_keys() -> CheckResult:
+    """Flag settings in .env that nothing in telechat reads.
+
+    This is the check that would have caught `SYSTEM_PROMPT`: `.env.example`
+    documented that name for a long time while the code read
+    `CLAUDE_SYSTEM_PROMPT`, so everyone who set a custom system prompt was
+    silently ignored. A typo'd key fails exactly the same way — quietly, and
+    looking like the feature is broken rather than the spelling.
+
+    Reported as a warning, not an error: an operator may keep unrelated
+    variables in the same file, and this must never block a start.
+    """
+    env_path = _env_file_path()
+    if not env_path:
+        return CheckResult("Unknown settings", True, "Skipped (no .env file)")
+
+    try:
+        from . import env_spec
+        known = env_spec.known_names() | _EXTERNAL_ENV_KEYS
+    except Exception as exc:  # pragma: no cover - defensive
+        return CheckResult("Unknown settings", True, f"Skipped ({exc})")
+
+    declared = []
+    try:
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key = line.split("=", 1)[0].strip()
+            if key.isupper():
+                declared.append(key)
+    except OSError as exc:
+        return CheckResult("Unknown settings", True, f"Skipped ({exc})")
+
+    unknown = sorted({k for k in declared if k not in known})
+    if not unknown:
+        return CheckResult(
+            "Unknown settings", True, f"All {len(set(declared))} settings are read by telechat"
+        )
+    shown = ", ".join(unknown[:5]) + ("…" if len(unknown) > 5 else "")
+    return CheckResult(
+        "Unknown settings", False,
+        f"{len(unknown)} setting(s) in {env_path.name} are never read: {shown}",
+        fix_hint="Check the spelling against docs/configuration.md — a misspelt "
+                 "key is ignored silently, which looks like a broken feature.",
+        severity="warning",
+    )
+
+
 def check_bot_token() -> CheckResult:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     if token and token != "CHANGE_ME_ROTATE_TOKEN" and ":" in token:
@@ -267,6 +339,7 @@ def run_doctor_sync() -> DoctorReport:
     report.add(check_dependencies())
     report.add(check_rate_limits())
     report.add(check_allowed_users())
+    report.add(check_unknown_env_keys())
     return report
 
 

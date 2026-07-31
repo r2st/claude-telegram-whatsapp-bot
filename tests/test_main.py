@@ -1734,3 +1734,81 @@ class TestTerminatePreviousInstances:
 
         monkeypatch.setattr(os, "kill", denied)
         assert _terminate_previous_instances() == []
+
+
+class TestCmdDoctor:
+    """`telechat doctor` — the diagnostic you can reach when the bot won't start.
+
+    /doctor already existed as a Telegram command, which is precisely the place
+    you cannot get to when what is broken is the configuration.
+    """
+
+    def _report(self, healthy=True):
+        from telechat_pkg.doctor import CheckResult, DoctorReport
+        report = DoctorReport()
+        report.add(CheckResult("Something", healthy, "message", severity="error"))
+        return report
+
+    def test_prints_the_report(self, capsys, monkeypatch):
+        from telechat_pkg import doctor
+        monkeypatch.setattr(doctor, "run_doctor", None)  # force nothing; patched below
+        import main as main_mod
+
+        async def fake_run():
+            return self._report(healthy=True)
+
+        monkeypatch.setattr(doctor, "run_doctor", fake_run)
+        code = main_mod._cmd_doctor()
+        out = capsys.readouterr().out
+        assert "Doctor Report" in out
+        assert code == 0
+
+    def test_exits_nonzero_when_a_check_fails(self, monkeypatch):
+        from telechat_pkg import doctor
+        import main as main_mod
+
+        async def fake_run():
+            return self._report(healthy=False)
+
+        monkeypatch.setattr(doctor, "run_doctor", fake_run)
+        assert main_mod._cmd_doctor() == 1
+
+    def test_falls_back_to_the_local_checks_when_the_async_run_fails(
+        self, capsys, monkeypatch
+    ):
+        # No network, no event loop, whatever — the local checks are the ones
+        # that matter when the bot won't start, and must still run.
+        from telechat_pkg import doctor
+        import main as main_mod
+
+        async def boom():
+            raise RuntimeError("no loop")
+
+        called = []
+
+        def fake_sync():
+            called.append(True)
+            return self._report(healthy=True)
+
+        monkeypatch.setattr(doctor, "run_doctor", boom)
+        monkeypatch.setattr(doctor, "run_doctor_sync", fake_sync)
+        assert main_mod._cmd_doctor() == 0
+        assert called
+
+    def test_the_cli_dispatches_to_it(self, monkeypatch):
+        import main as main_mod
+        called = []
+        monkeypatch.setattr(main_mod, "_cmd_doctor", lambda: called.append(True) or 0)
+        monkeypatch.setattr(main_mod, "_resolve_workdir", lambda: None)
+        monkeypatch.setattr(sys, "argv", ["telechat", "doctor"])
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cli_entry()
+        assert exc.value.code == 0
+        assert called
+
+    def test_help_mentions_it(self, capsys, monkeypatch):
+        import main as main_mod
+        monkeypatch.setattr(main_mod, "_resolve_workdir", lambda: None)
+        monkeypatch.setattr(sys, "argv", ["telechat", "help"])
+        main_mod.cli_entry()
+        assert "doctor" in capsys.readouterr().out

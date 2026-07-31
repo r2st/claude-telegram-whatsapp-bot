@@ -121,7 +121,14 @@ def _clean_state():
     _browse_items.clear()
     import telechat_pkg.whatsapp_bot as wb
     wb.ALLOWED_NUMBERS = []
+    threads_before = set(threading.enumerate())
     yield
+    # _process spawns a daemon thread per message. One outliving its test keeps
+    # touching the shared store, and at session end that lands as a
+    # `sqlite3.OperationalError: unable to open database file` traceback printed
+    # after an otherwise passing run — the temp home is already gone.
+    for thread in set(threading.enumerate()) - threads_before:
+        thread.join(timeout=10.0)
     _locks.clear()
     _verbose.clear()
     _user_model.clear()

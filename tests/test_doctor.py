@@ -634,6 +634,7 @@ class TestRunDoctorSync:
             "Dependencies",
             "Rate limiting",
             "Access control",
+            "Unknown settings",
         }
 
     def test_counts_are_consistent_with_checks(self):
@@ -650,4 +651,106 @@ class TestRunDoctor:
         assert "Telegram API" in names
         # run_doctor adds exactly one more check than run_doctor_sync.
         assert names.count("Telegram API") == 1
-        assert len(report.checks) == 10
+        assert len(report.checks) == 11
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# check_unknown_env_keys
+#
+# `.env.example` documented SYSTEM_PROMPT for a long time while the code read
+# CLAUDE_SYSTEM_PROMPT, so everyone who set a custom system prompt was ignored
+# — silently, and looking like a broken feature rather than a wrong name. A
+# typo fails identically. This is the check that catches both.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestUnknownEnvKeys:
+    @pytest.fixture
+    def env_file(self, tmp_path, monkeypatch):
+        """Point the doctor's .env lookup at a file we control."""
+        path = tmp_path / ".env"
+
+        def fake_path():
+            return path if path.exists() else None
+
+        monkeypatch.setattr(doctor, "_env_file_path", fake_path)
+        return path
+
+    def test_a_clean_env_passes(self, env_file):
+        env_file.write_text("TELEGRAM_BOT_TOKEN=x\nCLAUDE_MODE=cli\n")
+        result = doctor.check_unknown_env_keys()
+        assert result.passed is True
+
+    def test_a_typo_is_reported_by_name(self, env_file):
+        env_file.write_text("CLAUDE_MOED=cli\n")
+        result = doctor.check_unknown_env_keys()
+        assert result.passed is False
+        assert "CLAUDE_MOED" in result.message
+
+    def test_the_original_bug_would_have_been_caught(self, env_file):
+        # SYSTEM_PROMPT is now read as a legacy fallback, so use the shape of
+        # the bug rather than the name: a plausible-looking key nothing reads.
+        env_file.write_text("SYSTEM_PROMTP=be terse\n")
+        result = doctor.check_unknown_env_keys()
+        assert result.passed is False
+        assert "docs/configuration.md" in result.fix_hint
+
+    def test_it_warns_rather_than_erroring(self, env_file):
+        # An operator may keep unrelated variables in the same file; this must
+        # never be the thing that blocks a start.
+        env_file.write_text("MY_OWN_THING=1\n")
+        assert doctor.check_unknown_env_keys().severity == "warning"
+
+    def test_watchdog_settings_are_accepted(self, env_file):
+        # scripts/watchdog.py is a separate program shipped alongside the bot.
+        env_file.write_text("WATCHDOG_ENABLED=true\nWATCHDOG_DRY_RUN=false\n")
+        assert doctor.check_unknown_env_keys().passed is True
+
+    def test_legacy_names_are_accepted(self, env_file):
+        # These are read as fallbacks, so they must not be reported as typos.
+        env_file.write_text("SYSTEM_PROMPT=x\nCLAUDE_CLI_ADD_DIRS=/tmp\n")
+        assert doctor.check_unknown_env_keys().passed is True
+
+    def test_comments_and_blank_lines_are_ignored(self, env_file):
+        env_file.write_text("# NOT_A_SETTING=1\n\n   \nCLAUDE_MODE=cli\n")
+        assert doctor.check_unknown_env_keys().passed is True
+
+    def test_lowercase_keys_are_ignored(self, env_file):
+        # Shell-style locals in a sourced file are not telechat settings.
+        env_file.write_text("my_local=1\nCLAUDE_MODE=cli\n")
+        assert doctor.check_unknown_env_keys().passed is True
+
+    def test_many_unknowns_are_summarised_not_dumped(self, env_file):
+        env_file.write_text("".join(f"NOPE_{i}=1\n" for i in range(20)))
+        result = doctor.check_unknown_env_keys()
+        assert "20 setting(s)" in result.message
+        assert result.message.count(",") <= 5   # a sample, not all twenty
+
+    def test_no_env_file_is_a_skip_not_a_failure(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(doctor, "_env_file_path", lambda: None)
+        result = doctor.check_unknown_env_keys()
+        assert result.passed is True
+        assert "Skipped" in result.message
+
+    def test_an_unreadable_env_file_is_a_skip(self, tmp_path, monkeypatch):
+        missing = tmp_path / "gone.env"
+        monkeypatch.setattr(doctor, "_env_file_path", lambda: missing)
+        result = doctor.check_unknown_env_keys()
+        assert result.passed is True
+        assert "Skipped" in result.message
+
+
+class TestEnvFilePath:
+    def test_prefers_the_data_home_env(self, tmp_path, monkeypatch):
+        from telechat_pkg import store
+        home_env = tmp_path / ".env"
+        home_env.write_text("X=1\n")
+        monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
+        assert doctor._env_file_path() == home_env
+
+    def test_returns_none_when_there_is_no_env_anywhere(self, tmp_path, monkeypatch):
+        from telechat_pkg import store
+        monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
+        monkeypatch.setattr(doctor.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
+        monkeypatch.chdir(tmp_path)
+        assert doctor._env_file_path() is None

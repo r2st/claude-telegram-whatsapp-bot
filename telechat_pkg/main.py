@@ -776,6 +776,37 @@ def _terminate_previous_instances(log=None, health_port: int | None = None) -> l
 
 
 
+def _cmd_doctor() -> int:
+    """Run the diagnostic checks and print the report. Returns an exit code.
+
+    `/doctor` already existed as a Telegram command, which is the one place you
+    cannot reach when the thing that is broken is the bot's configuration. The
+    checks are the same; this is the entry point you can use when it will not
+    start.
+    """
+    import asyncio
+
+    from dotenv import load_dotenv
+
+    load_dotenv(_find_env_file(), override=True)
+
+    try:
+        from . import doctor
+    except ImportError:
+        # main.py is also imported as a top-level module (the test suite adds
+        # telechat_pkg/ to sys.path), where a relative import has no package.
+        from telechat_pkg import doctor
+
+    try:
+        report = asyncio.run(doctor.run_doctor())
+    except Exception:
+        # Connectivity checks need a network and an event loop; neither is
+        # worth losing the local checks over.
+        report = doctor.run_doctor_sync()
+    print(report.format())
+    return 0 if report.healthy else 1
+
+
 # ─── Start command (heavy setup deferred here) ───────────────────────────────
 
 def _cmd_start() -> None:
@@ -983,6 +1014,8 @@ def cli_entry():
         # (notify / approve). All persistence is in telechat's own bot.db.
         from .desktop_bridge import cli_dispatch as _bridge_cli
         sys.exit(_bridge_cli(args[1:]))
+    elif cmd == "doctor":
+        sys.exit(_cmd_doctor())
     elif cmd in ("start", "run"):
         # Pre-flight: no usable config → guidance, not a traceback
         env = _read_env(_find_env_file())
@@ -1000,12 +1033,14 @@ def cli_entry():
         print("                                  hooks + persistent service + checks")
         print("  bridge uninstall              Remove bridge hooks")
         print("  bridge status                 Show running Claude Desktop sessions")
+        print("  doctor                        Diagnose configuration and connectivity")
         print("  bridge service <install|uninstall|status>   Manage the persistent service")
         print("  help                          Show this help")
         print()
         print("Examples:")
         print("  telechat init                       # configure platforms & credentials")
         print("  telechat                            # start the bot")
+        print("  telechat doctor                     # why isn't it working?")
         print("  telechat bridge install             # enable bridge + persistent service")
         print("  telechat bridge install --approval  # also gate Bash/Write/Edit on Telegram approval")
         print("  telechat bridge install --no-service  # hooks only, skip the launchd service")

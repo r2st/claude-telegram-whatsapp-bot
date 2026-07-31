@@ -155,3 +155,47 @@ class TestGeneratorOutput:
         # would only surface at release time.
         source = (REPO_ROOT / "scripts" / "env_reference.py").read_text()
         ast.parse(source)
+
+
+class TestTheExtractorIsShared:
+    """One scan, two callers.
+
+    `telechat doctor` flags settings in a user's `.env` that nothing reads, and
+    the generator documents the settings that are read. Those have to be the
+    same answer, or the doctor starts reporting documented variables as typos.
+    """
+
+    def test_the_generator_delegates_to_the_packaged_scan(self, found):
+        from telechat_pkg import env_spec
+        assert set(env_spec.discover(REPO_ROOT / "telechat_pkg",
+                                     REPO_ROOT / "scripts")) == set(found)
+
+    def test_the_package_scan_defaults_to_the_package(self):
+        from telechat_pkg import env_spec
+        names = env_spec.known_names()
+        assert "TELEGRAM_BOT_TOKEN" in names
+        # scripts/ is not scanned by default — the doctor exempts those keys
+        # explicitly rather than pretending the package reads them.
+        assert "WATCHDOG_SCAN_INTERVAL" not in names
+
+    def test_the_doctor_accepts_every_documented_setting(self):
+        # The failure this prevents: `telechat doctor` telling a user that a
+        # variable straight out of the reference is unknown.
+        from telechat_pkg import doctor, env_spec
+        known = env_spec.known_names() | doctor._EXTERNAL_ENV_KEYS
+        documented = set(env_reference.DESCRIPTIONS)
+        assert not (documented - known), sorted(documented - known)
+
+    def test_every_env_example_key_passes_the_doctor(self):
+        from telechat_pkg import doctor, env_spec
+        known = env_spec.known_names() | doctor._EXTERNAL_ENV_KEYS
+        declared = {
+            line.split("=", 1)[0].strip()
+            for line in (REPO_ROOT / ".env.example").read_text().splitlines()
+            if "=" in line and not line.strip().startswith("#")
+        }
+        unknown = {k for k in declared if k.isupper()} - known
+        assert not unknown, (
+            "the shipped .env.example would make `telechat doctor` report "
+            f"these as unknown settings: {sorted(unknown)}"
+        )

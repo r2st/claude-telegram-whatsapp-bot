@@ -14,9 +14,11 @@ Usage:
 """
 from __future__ import annotations
 
-import ast
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from telechat_pkg import env_spec  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGE_DIR = REPO_ROOT / "telechat_pkg"
@@ -216,79 +218,15 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
 }
 
 
-def _literal(node: ast.AST) -> str | None:
-    """Render a default-value node as a string, or None if it isn't a literal."""
-    try:
-        value = ast.literal_eval(node)
-    except (ValueError, TypeError, SyntaxError):
-        return None
-    if value is None:
-        return None
-    return str(value)
-
-
 def discover(*source_dirs: Path) -> dict[str, dict]:
-    """Find every environment variable the package reads.
+    """Every environment variable read under ``source_dirs``.
 
-    Recognises ``os.getenv("X")``, ``os.environ.get("X")``, ``os.environ["X"]``,
-    and ``env.get("X")`` on a dict parsed out of the `.env` file — the bridge and
-    the CLI read some settings that way and never touch ``os.environ``, so a
-    scan that ignored it would report the reference as complete while missing
-    them. Returns name -> {default, modules}.
+    The scan itself lives in :mod:`telechat_pkg.env_spec` so `telechat doctor`
+    can use the same answer to flag unknown keys in a user's `.env`. This
+    module keeps the part that cannot be derived from an AST: what each
+    variable is *for*.
     """
-    found: dict[str, dict] = {}
-
-    def record(name: str, default: str | None, module: str) -> None:
-        entry = found.setdefault(name, {"default": None, "modules": set()})
-        entry["modules"].add(module)
-        # First non-None default wins; a later bare read shouldn't erase it.
-        if entry["default"] is None and default is not None:
-            entry["default"] = default
-
-    paths = [
-        path
-        for directory in (source_dirs or SOURCE_DIRS)
-        for path in sorted(directory.glob("*.py"))
-        # This file's own DESCRIPTIONS table would otherwise scan as source.
-        if path.name != "env_reference.py"
-    ]
-    for path in paths:
-        tree = ast.parse(path.read_text(), filename=str(path))
-        module = path.stem
-        for node in ast.walk(tree):
-            name = default = None
-            if isinstance(node, ast.Call) and node.args:
-                func = node.func
-                is_getenv = isinstance(func, ast.Attribute) and func.attr == "getenv"
-                is_environ_get = (
-                    isinstance(func, ast.Attribute)
-                    and func.attr == "get"
-                    and isinstance(func.value, ast.Attribute)
-                    and func.value.attr == "environ"
-                )
-                # A dict parsed from the .env file, e.g. `env.get("TELEGRAM_CHAT_ID")`.
-                is_env_dict_get = (
-                    isinstance(func, ast.Attribute)
-                    and func.attr == "get"
-                    and isinstance(func.value, ast.Name)
-                    and func.value.id in ("env", "_env", "final_env")
-                )
-                if (is_getenv or is_environ_get or is_env_dict_get) and isinstance(
-                    node.args[0], ast.Constant
-                ):
-                    name = node.args[0].value
-                    if len(node.args) > 1:
-                        default = _literal(node.args[1])
-            elif (
-                isinstance(node, ast.Subscript)
-                and isinstance(node.value, ast.Attribute)
-                and node.value.attr == "environ"
-                and isinstance(node.slice, ast.Constant)
-            ):
-                name = node.slice.value
-            if isinstance(name, str) and name.isupper():
-                record(name, default, module)
-    return found
+    return env_spec.discover(*(source_dirs or SOURCE_DIRS))
 
 
 def undocumented(found: dict[str, dict] | None = None) -> list[str]:
