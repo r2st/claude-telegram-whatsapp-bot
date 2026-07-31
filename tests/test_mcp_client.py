@@ -182,6 +182,190 @@ class TestCommandAllowlist:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 1b. Command *resolution* (SECURITY: a name is not an identity)
+#
+# The basename allowlist alone is forgeable: drop a script called `npx` in any
+# directory that lands on PATH and it passes. resolve_allowed_command() adds
+# path resolution plus a location check, and returns the absolute path that
+# gets exec'd so PATH cannot change underneath the decision.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _strict_mode(monkeypatch):
+    """Turn the allowlist on (tests inherit MCP_ALLOW_ANY_COMMAND=1 globally)."""
+    monkeypatch.delenv("MCP_ALLOW_ANY_COMMAND", raising=False)
+    monkeypatch.setattr(mcp_client, "MCP_ALLOW_ANY_COMMAND", False)
+    monkeypatch.setattr(mcp_client, "MCP_ALLOWED_COMMAND_PATHS", ())
+
+
+def _plant(directory, name, world_writable_dir: bool):
+    """Create an executable `name` in `directory`, mimicking a planted binary."""
+    directory.mkdir(parents=True, exist_ok=True)
+    binary = directory / name
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    directory.chmod(0o777 if world_writable_dir else 0o755)
+    return binary
+
+
+class TestCommandResolution:
+    def test_planted_binary_on_a_world_writable_path_is_refused(self, monkeypatch, tmp_path):
+        # THE bug this class exists for: an attacker drops `npx` into a
+        # world-writable directory and prepends it to PATH. The basename check
+        # says yes; the location check must say no.
+        _strict_mode(monkeypatch)
+        evil_dir = tmp_path / "evil"
+        _plant(evil_dir, "npx", world_writable_dir=True)
+        monkeypatch.setenv("PATH", str(evil_dir))
+
+        assert _is_command_allowed("npx") is True  # the forgeable half
+        resolved, reason = mcp_client.resolve_allowed_command("npx")
+        assert resolved is None
+        assert "world-writable" in reason
+
+    def test_binary_in_an_operator_owned_directory_is_allowed(self, monkeypatch, tmp_path):
+        _strict_mode(monkeypatch)
+        good_dir = tmp_path / "bin"
+        binary = _plant(good_dir, "npx", world_writable_dir=False)
+        monkeypatch.setenv("PATH", str(good_dir))
+
+        resolved, reason = mcp_client.resolve_allowed_command("npx")
+        assert reason is None
+        assert resolved == os.path.realpath(str(binary))
+
+    def test_world_writable_binary_itself_is_refused(self, monkeypatch, tmp_path):
+        # The directory is fine but the file is writable by anyone — same class
+        # of attack, one level down.
+        _strict_mode(monkeypatch)
+        good_dir = tmp_path / "bin"
+        binary = _plant(good_dir, "node", world_writable_dir=False)
+        binary.chmod(0o777)
+        monkeypatch.setenv("PATH", str(good_dir))
+
+        resolved, reason = mcp_client.resolve_allowed_command("node")
+        assert resolved is None
+        assert "world-writable" in reason
+
+    def test_unresolvable_command_is_refused(self, monkeypatch, tmp_path):
+        # Nothing to vet means nothing to trust — fail closed rather than
+        # deferring to a spawn-time error.
+        _strict_mode(monkeypatch)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        resolved, reason = mcp_client.resolve_allowed_command("deno")
+        assert resolved is None
+        assert "not found on PATH" in reason
+
+    def test_non_allowlisted_name_is_refused_before_resolution(self, monkeypatch, tmp_path):
+        _strict_mode(monkeypatch)
+        good_dir = tmp_path / "bin"
+        _plant(good_dir, "curl", world_writable_dir=False)
+        monkeypatch.setenv("PATH", str(good_dir))
+
+        resolved, reason = mcp_client.resolve_allowed_command("curl")
+        assert resolved is None
+        assert "not in allowlist" in reason
+
+    def test_empty_command_is_refused(self, monkeypatch):
+        _strict_mode(monkeypatch)
+        assert mcp_client.resolve_allowed_command("") == (None, "empty command")
+
+    def test_absolute_path_must_exist_and_be_executable(self, monkeypatch, tmp_path):
+        _strict_mode(monkeypatch)
+        not_executable = tmp_path / "npx"
+        not_executable.write_text("data")
+        not_executable.chmod(0o644)
+
+        resolved, reason = mcp_client.resolve_allowed_command(str(not_executable))
+        assert resolved is None
+        assert "not found on PATH" in reason
+
+    def test_symlink_is_resolved_to_its_target(self, monkeypatch, tmp_path):
+        _strict_mode(monkeypatch)
+        real_dir = tmp_path / "real"
+        binary = _plant(real_dir, "python3", world_writable_dir=False)
+        link_dir = tmp_path / "link"
+        link_dir.mkdir()
+        link = link_dir / "python3"
+        link.symlink_to(binary)
+        monkeypatch.setenv("PATH", str(link_dir))
+
+        resolved, reason = mcp_client.resolve_allowed_command("python3")
+        assert reason is None
+        assert resolved == os.path.realpath(str(binary))
+
+    def test_allowed_command_paths_restricts_to_prefixes(self, monkeypatch, tmp_path):
+        _strict_mode(monkeypatch)
+        allowed_dir = tmp_path / "allowed"
+        other_dir = tmp_path / "other"
+        _plant(allowed_dir, "npx", world_writable_dir=False)
+        _plant(other_dir, "node", world_writable_dir=False)
+        monkeypatch.setattr(
+            mcp_client, "MCP_ALLOWED_COMMAND_PATHS", (str(allowed_dir),)
+        )
+
+        monkeypatch.setenv("PATH", str(allowed_dir))
+        resolved, reason = mcp_client.resolve_allowed_command("npx")
+        assert reason is None and resolved
+
+        monkeypatch.setenv("PATH", str(other_dir))
+        resolved, reason = mcp_client.resolve_allowed_command("node")
+        assert resolved is None
+        assert "MCP_ALLOWED_COMMAND_PATHS" in reason
+
+    def test_any_command_mode_skips_every_check(self, monkeypatch):
+        monkeypatch.setenv("MCP_ALLOW_ANY_COMMAND", "1")
+        resolved, reason = mcp_client.resolve_allowed_command("/nowhere/at/all/rm")
+        assert reason is None
+        assert resolved == "/nowhere/at/all/rm"
+
+
+class TestRegistrationUsesResolvedPath:
+    def test_refuses_a_planted_binary(self, mgr, monkeypatch, tmp_path):
+        _strict_mode(monkeypatch)
+        evil_dir = tmp_path / "evil"
+        _plant(evil_dir, "npx", world_writable_dir=True)
+        monkeypatch.setenv("PATH", str(evil_dir))
+
+        mgr.add_server("pwn", {"command": "npx"})
+        assert "pwn" not in mgr._servers
+
+    def test_stores_and_reports_the_resolved_path(self, mgr, monkeypatch, tmp_path):
+        _strict_mode(monkeypatch)
+        good_dir = tmp_path / "bin"
+        binary = _plant(good_dir, "npx", world_writable_dir=False)
+        monkeypatch.setenv("PATH", str(good_dir))
+
+        mgr.add_server("fs", {"command": "npx"})
+        assert mgr._servers["fs"].resolved_command == os.path.realpath(str(binary))
+        assert mgr.list_servers()[0]["resolved_command"] == os.path.realpath(str(binary))
+
+    @pytest.mark.asyncio
+    async def test_connect_spawns_the_resolved_path_not_the_name(
+        self, mgr, monkeypatch, tmp_path
+    ):
+        # TOCTOU narrowing: whatever PATH says at connect time, we exec the
+        # binary that was vetted at registration time.
+        _strict_mode(monkeypatch)
+        good_dir = tmp_path / "bin"
+        binary = _plant(good_dir, "npx", world_writable_dir=False)
+        monkeypatch.setenv("PATH", str(good_dir))
+        mgr.add_server("fs", {"command": "npx"})
+
+        spawned: list[str] = []
+
+        async def fake_exec(program, *args, **kwargs):
+            spawned.append(program)
+            return FakeProcess([
+                json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode() + b"\n",
+                json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"tools": []}}).encode() + b"\n",
+            ])
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        assert await mgr.connect("fs") is True
+        assert spawned == [os.path.realpath(str(binary))]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 2. Version helper
 # ══════════════════════════════════════════════════════════════════════════════
 

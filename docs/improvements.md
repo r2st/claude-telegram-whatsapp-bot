@@ -737,6 +737,15 @@ the writer, or an LRU keyed per conversation with targeted invalidation on write
   `lsof -ti :$HEALTH_PORT` kill at `main.py:681` was correctly narrowed to the configured
   port already.)
 
+> **MCP half done (2026-07-31).** `resolve_allowed_command()` in `mcp_client.py` now does the
+> name check, resolves the command through `PATH` (or as a path) to a symlink-free absolute
+> path, and refuses anything whose binary or containing directory is world-writable — the
+> realistic planted-binary case. The resolved path is stored on the server record and is what
+> `connect()` spawns, so a `PATH` change after registration cannot swap the binary.
+> `MCP_ALLOWED_COMMAND_PATHS` adds an opt-in strict prefix allowlist. 13 tests in
+> `tests/test_mcp_client.py` (`TestCommandResolution`, `TestRegistrationUsesResolvedPath`),
+> including the plant-an-`npx`-in-a-world-writable-dir attack itself.
+
 ### 35. Retire `docs/CODE_REVIEW.md` rather than leaving it half-annotated
 
 **S (~2h).** Of its seven P0 items, **five are fully fixed**; several `[PARTIALLY RESOLVED]`

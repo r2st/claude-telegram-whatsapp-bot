@@ -21,7 +21,8 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
+import shutil
+import stat
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -43,26 +44,125 @@ _user_allowed = {
 MCP_ALLOWED_COMMANDS = _MCP_DEFAULT_ALLOWED | _user_allowed
 MCP_ALLOW_ANY_COMMAND = os.getenv("MCP_ALLOW_ANY_COMMAND", "0").lower() in ("1", "true", "yes", "on")
 
+#: Optional strict mode: absolute directory prefixes the resolved executable
+#: must live under. Empty (the default) means "anywhere that isn't obviously
+#: attacker-writable" — see :func:`_untrusted_location_reason`.
+MCP_ALLOWED_COMMAND_PATHS = tuple(
+    os.path.abspath(p.strip())
+    for p in os.getenv("MCP_ALLOWED_COMMAND_PATHS", "").split(os.pathsep)
+    if p.strip()
+)
+
+
+def _allow_any_command() -> bool:
+    """True when the allowlist is disabled, re-reading the env var each call."""
+    return (
+        MCP_ALLOW_ANY_COMMAND
+        or os.getenv("MCP_ALLOW_ANY_COMMAND", "0").lower() in ("1", "true", "yes", "on")
+    )
+
 
 def _is_command_allowed(command: str) -> bool:
-    """True if ``command`` is on the allowlist (or any-command mode is on).
+    """True if ``command``'s *name* is on the allowlist (or any-command mode is on).
 
     Reads the override env var each call so tests (and operators flipping it
     at runtime) get the current value, not whatever was set at import time.
 
     The check compares the executable's basename so absolute paths like
-    ``/usr/local/bin/npx`` match the entry ``npx``.
+    ``/usr/local/bin/npx`` match the entry ``npx``. A basename match alone is
+    **not** sufficient to execute anything — a name is trivially forgeable by
+    planting a binary called ``npx`` on ``PATH`` — so :func:`resolve_allowed_command`
+    layers path resolution and a location check on top. This function remains the
+    name half of that decision.
     """
-    allow_any = (
-        MCP_ALLOW_ANY_COMMAND
-        or os.getenv("MCP_ALLOW_ANY_COMMAND", "0").lower() in ("1", "true", "yes", "on")
-    )
-    if allow_any:
+    if _allow_any_command():
         return True
     if not command:
         return False
     base = os.path.basename(command)
     return base in MCP_ALLOWED_COMMANDS
+
+
+def _resolve_command_path(command: str) -> Optional[str]:
+    """Resolve ``command`` to an absolute, symlink-free path, or None.
+
+    A bare name is looked up on ``PATH`` exactly as the subprocess machinery
+    would; anything containing a separator is treated as a path. Returns None
+    when nothing executable is found, which is itself a refusal reason: a
+    command that cannot be resolved now cannot be vetted either.
+    """
+    if not command:
+        return None
+    has_sep = os.sep in command or (os.altsep and os.altsep in command)
+    if has_sep:
+        path = os.path.abspath(command)
+        if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+            return None
+    else:
+        path = shutil.which(command)
+        if not path:
+            return None
+    return os.path.realpath(path)
+
+
+def _untrusted_location_reason(path: str) -> Optional[str]:
+    """Return why ``path`` is an unsafe place to exec from, or None if it is fine.
+
+    The threat is a *planted* binary: an attacker who can write into a directory
+    on ``PATH`` (``/tmp``, a shared cache, a checked-out repo) drops a file named
+    ``npx`` and the basename allowlist waves it through. World-writable is the
+    cheap, portable signal for "someone other than the operator can put a file
+    here", and it is what catches the realistic version of this attack.
+
+    When ``MCP_ALLOWED_COMMAND_PATHS`` is set the check is stricter still: the
+    executable must sit under one of those prefixes.
+    """
+    if MCP_ALLOWED_COMMAND_PATHS:
+        parent = os.path.dirname(path)
+        under = any(
+            parent == prefix or parent.startswith(prefix.rstrip(os.sep) + os.sep)
+            for prefix in MCP_ALLOWED_COMMAND_PATHS
+        )
+        if not under:
+            return (
+                f"{path} is not under MCP_ALLOWED_COMMAND_PATHS "
+                f"({os.pathsep.join(MCP_ALLOWED_COMMAND_PATHS)})"
+            )
+    for target in (os.path.dirname(path), path):
+        try:
+            mode = os.stat(target).st_mode
+        except OSError:
+            return f"cannot stat {target}"
+        if mode & stat.S_IWOTH:
+            return f"{target} is world-writable"
+    return None
+
+
+def resolve_allowed_command(command: str) -> tuple[Optional[str], Optional[str]]:
+    """Vet ``command`` and return ``(resolved_path, refusal_reason)``.
+
+    Exactly one of the two is non-None. The resolved path is what callers should
+    actually exec: resolving once and spawning *that* closes the window where a
+    ``PATH`` entry changes between the check and the call.
+
+    Any-command mode short-circuits every check and hands the command back
+    unchanged — operators who set it have opted out deliberately.
+    """
+    if _allow_any_command():
+        return (command, None) if command else (None, "empty command")
+    if not command:
+        return None, "empty command"
+    if not _is_command_allowed(command):
+        return None, (
+            f"command {command!r} not in allowlist ({', '.join(sorted(MCP_ALLOWED_COMMANDS))})"
+        )
+    resolved = _resolve_command_path(command)
+    if not resolved:
+        return None, f"command {command!r} not found on PATH (or not executable)"
+    reason = _untrusted_location_reason(resolved)
+    if reason:
+        return None, f"refusing to exec {command!r}: {reason}"
+    return resolved, None
 
 
 # Environment variables safe to forward to an MCP subprocess. Everything else
@@ -116,6 +216,10 @@ class MCPTool:
 class MCPServer:
     name: str
     command: str
+    #: Absolute path the allowlist actually vetted. ``connect`` spawns this
+    #: rather than ``command`` so a PATH change after registration cannot
+    #: swap in a different binary.
+    resolved_command: str = ""
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     status: str = "disconnected"  # disconnected | connecting | connected | error
@@ -146,22 +250,27 @@ class MCPManager:
     def add_server(self, name: str, config: dict):
         """Register an MCP server configuration.
 
-        Refuses to register a server whose ``command`` is not on the
-        MCP_ALLOWED_COMMANDS allowlist. This is a defense-in-depth check:
-        an attacker who can write to MCP_CONFIG_FILE should not also gain
+        Refuses to register a server whose ``command`` fails
+        :func:`resolve_allowed_command` — it must be on the MCP_ALLOWED_COMMANDS
+        allowlist *and* resolve to an executable in a location the operator
+        controls. This is a defense-in-depth check: an attacker who can write to
+        MCP_CONFIG_FILE (or to a directory on PATH) should not also gain
         arbitrary local code execution at MCP-connect time.
         """
         command = config.get("command", "")
-        if not _is_command_allowed(command):
+        resolved, reason = resolve_allowed_command(command)
+        if reason or not resolved:
             log.error(
-                "Refusing to register MCP server %r: command %r not in allowlist "
-                "(%s). Set MCP_ALLOWED_COMMANDS or MCP_ALLOW_ANY_COMMAND=1 to override.",
-                name, command, sorted(MCP_ALLOWED_COMMANDS),
+                "Refusing to register MCP server %r: %s. "
+                "Set MCP_ALLOWED_COMMANDS / MCP_ALLOWED_COMMAND_PATHS, or "
+                "MCP_ALLOW_ANY_COMMAND=1 to override.",
+                name, reason,
             )
             return
         server = MCPServer(
             name=name,
             command=command,
+            resolved_command=resolved,
             args=config.get("args", []),
             env=config.get("env", {}),
         )
@@ -189,7 +298,7 @@ class MCPManager:
             # forwarded to a third-party MCP server (see _build_child_env).
             env = _build_child_env(server.env)
             proc = await asyncio.create_subprocess_exec(
-                server.command, *server.args,
+                server.resolved_command or server.command, *server.args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -301,6 +410,9 @@ class MCPManager:
             {
                 "name": s.name,
                 "command": s.command,
+                # The vetted absolute path actually spawned — an operator
+                # debugging "which npx is this?" should not have to guess.
+                "resolved_command": s.resolved_command,
                 "status": s.status,
                 "tools_count": len(s.tools),
                 "tools": [t.name for t in s.tools],
