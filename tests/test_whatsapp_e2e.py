@@ -200,6 +200,33 @@ class TestLocking:
         lock2 = _lock_for("chat-y")
         assert lock1 is not lock2
 
+    def test_concurrent_callers_share_one_lock(self):
+        # The poll loop spawns a thread per message, so two messages arriving
+        # together in the same chat used to be able to each create their own
+        # lock — losing the one-turn-at-a-time guarantee entirely.
+        import threading as _t
+
+        start = _t.Barrier(16)
+        seen = []
+        seen_lock = _t.Lock()
+
+        def grab():
+            start.wait()
+            lock = _lock_for("chat-concurrent")
+            with seen_lock:
+                seen.append(lock)
+
+        threads = [_t.Thread(target=grab) for _ in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(seen) == 16
+        assert len({id(lock) for lock in seen}) == 1, (
+            "concurrent callers got different locks for the same chat"
+        )
+
     def test_lock_is_acquirable(self):
         lock = _lock_for("chat-acquire-test")
         acquired = lock.acquire(blocking=False)

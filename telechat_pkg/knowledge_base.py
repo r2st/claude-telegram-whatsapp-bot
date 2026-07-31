@@ -37,6 +37,23 @@ KB_MAX_CONTEXT_CHUNKS = int(os.getenv("KB_MAX_CONTEXT_CHUNKS", "5"))
 KB_MAX_CONTEXT_CHARS = int(os.getenv("KB_MAX_CONTEXT_CHARS", "4000"))
 
 
+def _to_fts_query(raw: str) -> str:
+    """Turn free text into a safe FTS5 MATCH expression.
+
+    Each whitespace-separated token becomes a quoted phrase, and any embedded
+    double quote is doubled — the FTS5 escape. Without the doubling a search
+    containing a quote (`say "hi"`) produces malformed syntax, MATCH raises,
+    and the caller silently falls back to a full LIKE scan: the index quietly
+    stops being used for exactly the queries a user typed carefully.
+
+    memory.py has always escaped this way; the knowledge base did not.
+    """
+    tokens = raw.strip().split()
+    if not tokens:
+        return '""'
+    return " ".join('"{}"'.format(t.replace('"', '""')) for t in tokens)
+
+
 @dataclass
 class Document:
     id: str
@@ -297,7 +314,7 @@ class KnowledgeBase:
         conn = self._conn()
 
         if self._has_fts() and query.strip():
-            fts_query = " ".join(f'"{t}"' for t in query.strip().split())
+            fts_query = _to_fts_query(query)
             try:
                 rows = conn.execute(
                     """SELECT c.*, f.rank, d.title, d.tags as doc_tags, d.source, d.created_at as doc_created

@@ -35,6 +35,13 @@ not which function moved.
   from many addresses left an entry per address behind forever. Expired windows
   are now pruned and the table is capped — without letting an attacker evict
   their own counter by filling it.
+- **A knowledge-base search containing a `"` fell back to a full table scan.**
+  The FTS query builder quoted each word but never escaped an embedded quote,
+  so `a"b` produced unterminated syntax, `MATCH` raised, and the search
+  silently degraded to `LIKE`. `memory.py` had always escaped correctly.
+- **Two WhatsApp messages arriving together in one chat could bypass the
+  one-turn-at-a-time lock**, since the per-chat lock was created with a
+  check-then-act that two threads could both win.
 - **MCP servers were vetted by name only.** The allowlist compared the command's
   basename, so a script called `npx` planted in any world-writable directory on
   `PATH` passed. Commands are now resolved to an absolute path, refused if that

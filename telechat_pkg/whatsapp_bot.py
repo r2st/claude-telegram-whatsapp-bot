@@ -123,10 +123,18 @@ def _active_session(sender: str):
     return cc._session_mgr.get_or_create_active(PLATFORM, sender)
 
 
+#: Guards creation of the per-chat locks below. `if chat_id not in _locks:
+#: _locks[chat_id] = Lock()` is a check-then-act: the poll loop spawns a thread
+#: per message, so two messages arriving together in the same chat could both
+#: find the key missing and each get their *own* lock — losing exactly the
+#: one-turn-at-a-time guarantee the lock exists to provide.
+_locks_registry_lock = threading.Lock()
+
+
 def _lock_for(chat_id: str) -> threading.Lock:
-    if chat_id not in _locks:
-        _locks[chat_id] = threading.Lock()
-    return _locks[chat_id]
+    """The per-chat lock, created once however many threads ask at once."""
+    with _locks_registry_lock:
+        return _locks.setdefault(chat_id, threading.Lock())
 
 
 # ─── Green API helpers ──────────────────────────────────────────────────────────

@@ -309,3 +309,52 @@ class TestHasFts:
             delattr(kb, "_fts_ok")
         monkeypatch.setattr(kb, "_conn", lambda: _ConnProxy())
         assert kb._has_fts() is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FTS query escaping
+#
+# A search containing a double quote produced malformed FTS5 syntax, MATCH
+# raised OperationalError, and search() silently fell back to a full LIKE scan.
+# The index quietly stopped being used for exactly the queries someone had
+# typed carefully. memory.py escaped this correctly; the KB did not.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestFtsQueryEscaping:
+    def test_plain_words_become_quoted_phrases(self):
+        assert kbmod._to_fts_query("hello world") == '"hello" "world"'
+
+    def test_embedded_quotes_are_doubled(self):
+        # FTS5's escape for a literal " inside a quoted phrase is "".
+        assert kbmod._to_fts_query('say "hi"') == '"say" """hi"""'
+
+    def test_empty_input_is_a_valid_expression(self):
+        assert kbmod._to_fts_query("") == '""'
+        assert kbmod._to_fts_query("   ") == '""'
+
+    def test_the_result_is_accepted_by_sqlite(self, kb):
+        # The real check: whatever we build must parse. Anything MATCH rejects
+        # lands us back on the LIKE scan.
+        import sqlite3
+        conn = kb._conn()
+        for raw in ['say "hi"', 'a"b', '"', '""', "it's", "a AND b", "NEAR(x y)",
+                    "-minus", "*star*", "(paren)", "col:val"]:
+            try:
+                conn.execute(
+                    "SELECT rowid FROM kb_chunks_fts WHERE kb_chunks_fts MATCH ? LIMIT 1",
+                    (kbmod._to_fts_query(raw),),
+                ).fetchall()
+            except sqlite3.OperationalError as exc:  # pragma: no cover - the bug
+                raise AssertionError(f"{raw!r} produced invalid FTS syntax: {exc}") from exc
+
+    def test_a_quoted_search_still_finds_its_document(self, kb):
+        kb.ingest_text("telegram", "1", "Doc", 'The user said "hello" politely.')
+        results = kb.search("telegram", "1", 'said "hello"')
+        assert results, "a query containing quotes should still match"
+
+    def test_fts_operators_are_treated_as_literal_text(self, kb):
+        # A user typing AND/OR/NEAR means the words, not the operators — and
+        # more importantly must not produce a syntax error.
+        kb.ingest_text("telegram", "1", "Doc", "alpha and beta near gamma")
+        assert kb.search("telegram", "1", "alpha AND beta") is not None
