@@ -1,171 +1,217 @@
-# Telechat Architecture
+# Telechat architecture
 
-A Python 3.11+ async service that exposes Claude Code through Telegram, with optional webhook, scheduler, notification, project-thread, storage, and security layers.
+> **Rewritten 2026-07-31.** The previous version of this file described a
+> different program entirely — `src/main.py`, FastAPI, APScheduler, aiosqlite,
+> `claude-agent-sdk`, version 1.6.0, an entry point called
+> `claude-telegram-bot`. Not one of the modules it named exists in this
+> repository. `AGENTS.md` points every agent here as the canonical
+> architecture overview, so that document was actively misleading its readers.
+> This one is derived from the source at `telechat_pkg/` and is checked against
+> it by `tests/test_architecture_doc.py`.
 
-| Metadata | Value |
-| --- | --- |
-| Repository | `telechatai/telechat` |
-| Package version | `1.6.0` |
-| Entry point | `claude-telegram-bot` / `src.main:run` |
-| Generated | `2026-05-16` |
+One process, several chat adapters, one Claude invocation layer, one SQLite
+file. That is the whole shape of it. Everything below is detail.
 
-## Executive Summary
-
-The application is built around one composition root, `src/main.py`, which creates configuration, storage, security, Claude SDK integration, an event bus, Telegram handlers, and optional background services. Direct Telegram chat and automation triggers ultimately converge on the same Claude execution path: `ClaudeIntegration.run_command()`.
-
-Core traits:
-
-- **Primary interface:** Telegram bot using `python-telegram-bot`, with polling or webhook delivery.
-- **Agent runtime:** `claude-agent-sdk` client with tool allowlists, sandbox options, streaming, retry, and resume.
-- **Persistence:** SQLite via `aiosqlite` stores users, sessions, messages, tool use, jobs, webhooks, and project topics.
-- **Key design choice:** external automation, scheduled jobs, and direct chat are decoupled from delivery by the event bus and notification service.
-
-## Runtime Topology
-
-### Telegram Interaction Path
-
-```mermaid
-flowchart LR
-    User["Telegram users<br/>Text, commands, files, photos, voice"] --> Middleware["Middleware<br/>Security, auth, rate limit, context injection"]
-    Middleware --> Orchestrator["MessageOrchestrator<br/>Agentic/classic routing, thread context, streaming UI"]
-    Orchestrator --> Integration["ClaudeIntegration<br/>Session lookup, execution, resume fallback"]
-    Integration --> SDK["Claude Code SDK<br/>Tool execution in approved working directory"]
-    Integration --> Storage["SQLite storage<br/>Sessions, messages, tool usage, costs"]
+```
+Telegram ─┐
+WhatsApp ─┤                                    ┌─ claude CLI  (subprocess)
+Slack    ─┼─→ adapter ─→ claude_core.ask_* ────┼─ Anthropic API (httpx)
+Web chat ─┘       │                            └─ claude-code-sdk
+                  ↓
+              store.py  ──→  ~/.telechat/bot.db  (SQLite, WAL)
 ```
 
-### Automation Path
+## Entry point and process model
 
-```mermaid
-flowchart LR
-    Webhook["Webhook API<br/>FastAPI, GitHub HMAC, bearer auth"] --> EventBus["EventBus<br/>Typed async queue"]
-    Scheduler["Scheduler<br/>APScheduler cron jobs from SQLite"] --> EventBus
-    EventBus --> AgentHandler["AgentHandler<br/>Builds prompts from events"]
-    AgentHandler --> Integration["ClaudeIntegration"]
-    Integration --> EventBus
-    EventBus --> Notifications["NotificationService<br/>Rate-limited Telegram delivery"]
-```
+`telechat` (the console script) → `telechat_pkg/main.py:cli_entry`, which
+dispatches subcommands (`init`, `start`, `bridge`, `help`, `--version`).
 
-## Component Map
+`_cmd_start()` is the composition root:
 
-| Area | Key modules | Responsibility |
+1. Resolve the data home (`$TELECHAT_HOME`, else `~/.telechat`) and `chdir`
+   there, so `.env`, `bot.log`, and `bot.db` resolve identically no matter
+   where the command was run from.
+2. Load `.env`, configure logging (console at WARNING, rotating file at INFO or
+   DEBUG).
+3. Parse `BOT_MODE` into a set of platforms. `both` and `all` are aliases.
+4. Replace any instance already running — see [Single instance](#single-instance).
+5. `asyncio.run(_main())`, which starts the health server, the update checker,
+   and one runner per configured platform.
+
+**Concurrency is deliberately mixed**, because the libraries are:
+
+| Platform | How it runs | Why |
 | --- | --- | --- |
-| Composition and lifecycle | `src/main.py` | Loads settings, constructs dependencies, starts bot, API server, event bus, notifications, scheduler, and handles shutdown. |
-| Telegram bot | `src/bot/core.py`, `src/bot/orchestrator.py`, `src/bot/handlers/*` | Builds the Telegram application, registers commands and message handlers, injects dependencies, and routes updates by mode. |
-| Claude integration | `src/claude/facade.py`, `src/claude/sdk_integration.py`, `src/claude/session.py` | Creates or resumes sessions, invokes Claude Code SDK, streams progress, tracks cost and tool usage, and handles SDK/CLI errors. |
-| Security | `src/security/*`, `src/bot/middleware/*`, `src/events/middleware.py` | Validates users, paths, commands, rate limits, audit events, and event-origin constraints. |
-| Events and automation | `src/events/*`, `src/api/server.py`, `src/scheduler/scheduler.py`, `src/notifications/service.py` | Normalizes webhooks and cron jobs into typed events, runs agent work, and delivers responses asynchronously. |
-| Persistence | `src/storage/database.py`, `src/storage/repositories.py`, `src/storage/facade.py` | Initializes SQLite schema, provides repository access, and stores operational state. |
-| Project routing | `src/projects/registry.py`, `src/projects/thread_manager.py` | Loads YAML project definitions and reconciles Telegram forum/private topics to project directories. |
-| Optional capabilities | `src/bot/features/*`, `src/mcp/telegram_server.py` | Voice, image, files, Git integration, quick actions, session export, conversation mode, and MCP integration. |
+| Telegram | On the main asyncio loop (`run_telegram`) | `python-telegram-bot` is async; this is the primary adapter and gets the loop |
+| Web chat | asyncio task on the same loop (`run_web_chat`) | aiohttp |
+| WhatsApp | Daemon thread (`_run_whatsapp`) | Green API is a blocking polling loop |
+| Slack | Daemon thread (`_run_slack`) | `slack_bolt` Socket Mode is blocking |
+| Health | Daemon thread (`http.server`) | Trivial, and must answer even if the loop is busy |
+| Bridge watcher | Daemon thread (`_watcher_loop`) | Polls transcript files on a timer |
 
-## Startup Sequence
+Which is why `store.py` is written to be thread-safe rather than
+loop-affine — see below.
 
-1. `src.main:run` calls `asyncio.run(main())`.
-2. Settings are loaded through Pydantic from environment variables and an optional config file.
-3. `create_application()` initializes SQLite storage and security providers.
-4. Claude SDK manager and session manager are wrapped by `ClaudeIntegration`.
-5. The event bus, event security middleware, and agent handler are registered.
-6. `ClaudeCodeBot` is created with dependencies and later initialized to build the Telegram application.
-7. `run_application()` wires services that need the Telegram `Bot` instance: project topics, notifications, API server, and scheduler.
-8. Shutdown is ordered as scheduler, notifications, event bus, bot, Claude integration, then storage.
+## Modules
 
-## Telegram Request Flow
+| Area | Modules | Responsibility |
+| --- | --- | --- |
+| Entry / CLI | `main.py`, `__main__.py` | Subcommand dispatch, the `init` wizard, `.env` handling, single-instance enforcement, startup |
+| Claude invocation | `claude_core.py`, `models.py` | The three ways to reach Claude, prompt assembly, streaming callbacks, output parsing, the model/pricing registry |
+| Persistence | `store.py`, `session_manager.py` | SQLite connection handling, the async write queue, history cache, rate limiting, usage and cost tracking, multi-session state |
+| Adapters | `telegram_bot.py`, `whatsapp_bot.py`, `slack_bot.py`, `web_chat.py` (+ `web_chat_ui.html`) | Per-platform message handling, commands, access control, rendering |
+| Desktop bridge | `desktop_bridge.py` | Claude Code hooks → Telegram cards, replies → `claude --resume`, tool approval, session following |
+| Recall | `memory.py`, `knowledge_base.py`, `context_compaction.py` | FTS5 memories, chunked document store, history summarisation |
+| Cost and routing | `cost_budget.py`, `smart_router.py`, `two_agent.py` | Budgets, per-message model selection, the planner/executor split |
+| Self-improvement | `evaluator.py`, `preferences.py`, `prompt_optimizer.py`, `feedback.py`, `updater.py`, `auto_scheduler.py` | LLM-judge scoring, learned preferences, prompt A/B, update checks |
+| Media and web | `voice_transcription.py`, `tts.py`, `image_gen.py`, `music_gen.py`, `video_gen.py`, `web_search.py`, `web_fetch.py`, `link_understanding.py`, `document_extract.py` | Optional capabilities, each guarded by its own `is_available()` |
+| Infrastructure | `health.py`, `event_bus.py`, `resource_limiter.py`, `error_classifier.py`, `mcp_client.py`, `text_chunking.py`, `markdown_v2.py`, `qr_util.py` | Health/watchdog, in-process events, subprocess ceilings, error classification, MCP, formatting |
 
-### Agentic Mode
+Optional features are imported inside `try/except ImportError` and expose
+`is_available()`, so the bot runs with only the core dependencies installed and
+degrades feature by feature rather than failing to start. `pip install
+telechatai[all]` turns them all on.
 
-The default mode keeps the Telegram interface conversational. Known commands include `/start`, `/new`, `/status`, `/verbose`, `/repo`, and `/restart`. Unknown slash commands are passed through to Claude instead of being rejected.
+## Claude invocation
 
-Text, document, photo, and voice handlers live in `MessageOrchestrator`. Active requests are tracked per user so a stop callback can interrupt a running Claude SDK task.
+`claude_core.py` offers three paths, selected by `CLAUDE_MODE`:
 
-### Classic Mode
+- **`cli`** (default, free with a Claude subscription) — spawns the `claude`
+  binary with `--output-format stream-json`, reads the stream line by line, and
+  turns tool-use and text events into `on_progress` / `on_text` callbacks. This
+  is what drives the live "🔧 Reading main.py…" progress card.
+- **`api`** — the Anthropic SDK, streaming text deltas through the same
+  callbacks. Token counts come back from the API and are priced through
+  `models.py`.
+- **`sdk`** — `claude-code-sdk`, when installed. Permission mode is mapped from
+  `CLAUDE_CLI_PERMISSION_MODE` rather than hardcoded.
 
-When `AGENTIC_MODE=false`, routing delegates to the legacy command and callback handlers under `src/bot/handlers`. This exposes terminal-style navigation, session control, quick actions, git commands, and export commands.
+All three return `(reply_text, stats)` with the same stats keys, so adapters do
+not care which one ran. Sessions are continued with `--resume <session_id>`,
+which is what makes a Telegram conversation a single Claude session rather than
+a series of unrelated turns.
 
-Both modes share middleware, storage, security, Claude integration, and current-directory state conventions.
+## Persistence
 
-## Claude Execution Flow
+One SQLite file (`$TELECHAT_HOME/bot.db`, WAL mode), and every table lives in
+it:
 
-1. The bot calls `ClaudeIntegration.run_command(prompt, working_directory, user_id, ...)`.
-2. If no explicit session is supplied and this is not a forced new session, the latest non-expired session for the user and directory is selected.
-3. `SessionManager` creates or loads session state through `SQLiteSessionStorage`.
-4. `ClaudeSDKManager.execute_command()` builds `ClaudeAgentOptions` with cwd, model, budget, max turns, tools, sandbox, MCP servers, and system prompt.
-5. The SDK client sends a text or multimodal prompt and reads streamed messages until a result message arrives.
-6. Tool calls, costs, duration, turn count, output text, and Claude session ID are extracted.
-7. The session is updated; if resume fails, stale session state is removed and the command retries as a fresh session.
+| Table | Written by | Holds |
+| --- | --- | --- |
+| `conversations` | `store.py` | Turn history per platform/user/session |
+| `usage`, `tool_usage`, `cost_tracking` | `store.py` | Token counts, tool calls, spend |
+| `sessions` | `store.py` | Claude session id per platform/user |
+| `user_sessions`, `active_sessions` | `session_manager.py` | Named multi-session state |
+| `feedback`, `quality_scores` | `store.py` | 👍/👎 and LLM-judge scores |
+| `memories` | `memory.py` | FTS5-indexed long-term memory |
+| `kb_documents`, `kb_chunks` | `knowledge_base.py` | Knowledge base and its chunks |
+| `bridge_*` (6 tables) | `desktop_bridge.py` | Session cards, approvals, follow state, approve mode |
 
-Every Claude run starts with a directive that file operations must remain inside the current working directory and use relative paths. If a project `CLAUDE.md` exists, it is appended to the system prompt.
+Three properties of `store.py` are load-bearing, and each was a bug first:
 
-## Data Model
+- **Writes go through a queue on a single writer thread**, batched into
+  transactions. A `_WriteOp` carries all the statements of one logical write, so
+  a multi-statement write (`save_turn`) can never half-apply. Permanent failures
+  are logged with the offending SQL and dropped; transient lock/busy failures
+  retry.
+- **A full queue applies back-pressure** rather than letting the caller jump
+  ahead — the old fallback inverted write ordering.
+- **History reads wait for the writes they depend on.** The writer commits on
+  its own connection, so a reader would otherwise serve a conversation missing
+  its newest turns, which presents as the bot forgetting what was just said.
+  Ops carry the cache keys they invalidate, and `load_history` waits on pending
+  ones.
 
-SQLite is initialized by migrations embedded in `src/storage/database.py`. The schema is operational rather than domain-heavy; it stores bot usage, agent sessions, automation, and topic routing state.
+Connections are thread-local (`_get_conn`), with a busy timeout set *before*
+the `journal_mode=WAL` pragma so concurrent first-opens don't race.
 
-| Table or view | Purpose |
+## The Claude Desktop bridge
+
+The differentiator, and the part with the most moving pieces.
+
+`telechat bridge install` writes hook entries into `~/.claude/settings.json`:
+
+```
+Stop, Notification, SubagentStop  →  telechat bridge notify <event>
+PreToolUse (with --approval)      →  telechat bridge approve
+```
+
+Each hook is a *separate short-lived process* — Claude Code runs it, it does its
+work against the same `bot.db`, and exits. That is why bridge state is in the
+database rather than in memory: the notifying process and the Telegram poller
+that later handles your reply are different processes.
+
+```
+Claude Code session ends a turn
+        │  Stop hook
+        ▼
+telechat bridge notify stop ──→ read transcript ──→ AI triage digest (haiku)
+        │                                                    │
+        └────────────────→ Telegram card ←───────────────────┘
+                                │
+        your reply / button tap │  (handled by the running bot)
+                                ▼
+                  claude --resume <sid> -p "<your message>"
+                        (TELECHAT_BRIDGE_INTERNAL=1 so the
+                         resumed session's own Stop hook stays quiet)
+```
+
+The approval hook is synchronous: it writes a row to `bridge_approvals`, sends a
+card with Approve/Deny buttons, and polls that row until a decision lands or
+`BRIDGE_APPROVAL_TIMEOUT` expires. What an expiry means is
+`BRIDGE_APPROVAL_TIMEOUT_ACTION` — `fallthrough` (default), `deny`, or `allow`.
+
+A background watcher thread (`_watch_once`, polled every few seconds) streams
+followed sessions' new turns to Telegram and posts session start/exit pings.
+
+## Single instance
+
+Starting the bot replaces any instance already running. The bot records itself
+in `~/.telechat/.telechat.pid` — the same file the npm wrapper writes, so
+`telechat stop` and a pip-started bot agree on what is running — and every
+candidate for termination (from the PID file, from a `pgrep -u <uid>` fallback,
+or from the health port) is checked against its own argv by
+`_is_telechat_cmdline()` first. A process that merely *mentions* telechat (an
+editor, a `grep`, a test run) is not a telechat process and is left alone.
+
+## Access control
+
+A flat allowlist per platform: `TELEGRAM_ALLOWED_USER_IDS`,
+`WHATSAPP_ALLOWED_NUMBERS`, `SLACK_ALLOWED_USER_IDS`, and `WEB_CHAT_TOKEN`. An
+empty allowlist means anyone can use the bot, and `telechat init` warns about
+it.
+
+Everyone who passes shares one Claude authentication, one working directory, and
+one permission mode. Conversations and memory are keyed per user; **capability
+is not.** See `SECURITY.md` — this is a single-operator tool, and that is a
+design decision rather than an oversight.
+
+The web chat binds `127.0.0.1` by default and refuses to start exposed without a
+token; `X-Forwarded-For` is trusted only behind `WEB_CHAT_TRUST_PROXY`. MCP
+server commands are resolved to an absolute path and refused if that path is
+world-writable. The health endpoint is unauthenticated and binds loopback.
+
+## Configuration
+
+Environment variables, read from `$TELECHAT_HOME/.env` or the process
+environment. **[`configuration.md`](configuration.md) is the complete
+reference** — it is generated from the source by `scripts/env_reference.py` and
+checked in CI, so it cannot drift.
+
+## Testing
+
+~3,200 tests under `tests/`, one file per module plus per-platform e2e suites.
+CI runs the suite on Python 3.10–3.13 with a coverage floor, `ruff`, a
+version-consistency check, a Docker build, and the configuration-reference
+check. `tests/README_E2E.md` covers the recorded Anthropic cassettes.
+
+## Where to add things
+
+| You want to | Do this |
 | --- | --- |
-| `users` | Telegram user metadata, allowance flag, aggregate cost/message/session counts. |
-| `sessions` | Claude session ID per user and project path with cost and activity metadata. |
-| `messages` | Prompt, response, duration, cost, and error details for each conversation turn. |
-| `tool_usage` | Claude tool name, input, success flag, and related message/session IDs. |
-| `audit_log` | Security and access events. |
-| `user_tokens` | Optional token-auth material. |
-| `cost_tracking` | Per-user daily request and cost totals. |
-| `scheduled_jobs` | Persisted cron jobs that emit scheduled agent events. |
-| `webhook_events` | Webhook audit and delivery deduplication by delivery ID. |
-| `project_threads` | Mapping between configured projects and Telegram topic IDs. |
-| `daily_stats`, `user_stats` | Convenience analytics views over stored activity. |
-
-## Security Architecture
-
-| Control | Implementation |
-| --- | --- |
-| User authentication | Whitelist authentication is enabled when `ALLOWED_USERS` is configured. Token auth can be added through `ENABLE_TOKEN_AUTH`. |
-| Directory boundary | `SecurityValidator` constrains file paths under `APPROVED_DIRECTORY` and supports project-root checks. |
-| Tool permission gate | The SDK `can_use_tool` callback denies file or bash operations that break path or directory rules. |
-| Rate limiting | Bot middleware and notification delivery include request and per-chat throttling controls. |
-| Webhook verification | GitHub uses HMAC-SHA256; generic providers require a shared bearer secret. |
-| Secret redaction | Verbose tool output is scrubbed for common token, key, credential, and auth-header patterns. |
-
-Production note: in development mode, the application can fall back to an allow-all whitelist if no auth provider is configured. Production deployments should always configure explicit allowed users or token authentication.
-
-## Configuration Surface
-
-`src/config/settings.py` centralizes environment-driven configuration. The most architecturally significant settings are:
-
-| Category | Settings |
-| --- | --- |
-| Telegram | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, webhook URL/port/path, reply quoting. |
-| Security | `APPROVED_DIRECTORY`, `ALLOWED_USERS`, token auth, security-pattern and tool-validation toggles. |
-| Claude | CLI path, API key, model, max turns, timeout, per-user/request cost caps, allowed/disallowed tools, retry policy. |
-| Sandbox | Sandbox enablement and excluded commands such as git, npm, pip, poetry, make, and docker. |
-| Features | MCP, git integration, file uploads, voice provider, quick actions, agentic mode, API server, scheduler, project threads. |
-| Storage | `DATABASE_URL`, session timeout, max sessions per user. |
-
-## Deployment View
-
-The service is packaged as a Python application with a console entry point: `claude-telegram-bot = src.main:run`. Runtime dependencies include Telegram, Claude Agent SDK, FastAPI/Uvicorn, APScheduler, Pydantic Settings, structlog, SQLite, and optional Mistral/OpenAI voice providers.
-
-- **Local or server process:** runs polling mode by default unless Telegram webhook settings are configured.
-- **API sidecar in same process:** optional FastAPI server listens on `0.0.0.0` at the configured port.
-- **Scheduler in same event loop:** APScheduler emits events into the shared event bus.
-- **Database:** default SQLite file URL, with WAL enabled by migration 3.
-- **Claude runtime:** uses API key if configured, otherwise relies on existing Claude CLI authentication.
-
-## Extension Points
-
-| Extension | How to add it |
-| --- | --- |
-| New Telegram command | Add a handler in `src/bot/handlers` or `MessageOrchestrator`, then register it in the mode-specific command list. |
-| New event source | Create a typed event in `src/events/types.py`, publish it to `EventBus`, and subscribe a handler. |
-| New proactive notification target | Subscribe to `AgentResponseEvent` or add a parallel delivery service similar to `NotificationService`. |
-| New persistent entity | Add a migration in `DatabaseManager._get_migrations()`, a dataclass model, and repository methods. |
-| New Claude tool policy | Update allowed/disallowed tool settings or extend the SDK `can_use_tool` callback validation. |
-| New project routing model | Extend `ProjectRegistry` and `ProjectThreadManager`, preserving approved-directory validation. |
-
-## Operational Notes
-
-- All long-running runtime components share one asyncio event loop; failed tasks are logged and trigger shutdown handling when surfaced through `asyncio.wait(... FIRST_COMPLETED)`.
-- Notification sending is queued and split at Telegram message-size boundaries.
-- Webhook delivery deduplication is atomic through `INSERT OR IGNORE` on `delivery_id`.
-- Project thread mode is strict: messages outside mapped topics are rejected with guidance instead of falling back to a default directory.
-- Voice, image, file, Git, MCP, API server, scheduler, and project-thread behavior are feature-flagged by settings.
-
-Source files reviewed for this document include `src/main.py`, `src/bot/core.py`, `src/bot/orchestrator.py`, `src/claude/facade.py`, `src/claude/sdk_integration.py`, `src/events/*`, `src/api/server.py`, `src/storage/*`, `src/projects/*`, `src/scheduler/scheduler.py`, and `src/notifications/service.py`.
+| Add a Telegram command | Handler in `telegram_bot.py`, register it in `build_app()` and in `BOT_COMMANDS` |
+| Add a capability (a new generator, a new source) | New module with `is_available()` and an optional extra in `pyproject.toml`; import it guarded |
+| Add a setting | Read it in the module that uses it, then `python scripts/env_reference.py` |
+| Add a table | Create it in the owning module's schema function, called from `store.init_db()` |
+| Change bridge behaviour | `desktop_bridge.py` — and read `agents/inbox/0023–0027` first; they are queued against it |
+| Reach Claude a new way | `claude_core.py`, returning the same `(text, stats)` shape as the existing three |

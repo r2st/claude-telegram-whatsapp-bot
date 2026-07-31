@@ -389,6 +389,20 @@ map in `CODE_REVIEW.md` §1 is accurate and a good starting point), or delete it
 `AGENTS.md` at that section. `docs/architecture.html` is presumably generated from the
 same fiction — check before reusing it for the website (item 8).
 
+> **Done (2026-07-31).** `docs/architecture.md` is rewritten from the source: process model
+> (which adapter runs on the loop and which on a thread, and why), the three Claude
+> invocation paths, the real table list, the bridge's multi-process hook design, single-
+> instance enforcement, the trust boundary, and a "where to add things" table. It opens
+> with a note naming what it used to describe, so nobody re-derives that.
+> `docs/architecture.html` *was* the same fiction (`src/main.py`, FastAPI, APScheduler) and
+> is deleted rather than left as a prettier version of a wrong document.
+> `tests/test_architecture_doc.py` (23 tests) checks every module, function, table, and
+> setting the document names actually exists, and fails if the old document's fingerprints
+> reappear.
+>
+> The README gap in the paragraph below is closed too: `BOT_MODE=web` now appears in the
+> tagline, the platform comparison, the mode table, and a setup section of its own.
+
 While in the docs: the README never mentions `BOT_MODE=web`, even though `main.py:14`
 supports it, the `init` wizard offers it as option 4, and `web_chat.py` implements a full
 UI with token auth. A shipped, wizard-promoted platform is missing from the platform

@@ -1,7 +1,7 @@
 # Telechat
 
 > **Claude AI on your phone / desktop** — personal, self-hosted, zero-infrastructure.  
-> Supports **WhatsApp**, **Telegram**, and **Slack** simultaneously from a single process.
+> Supports **Telegram**, **WhatsApp**, **Slack**, and a **local web chat** simultaneously from a single process.
 
 A bot that connects to Claude AI via two modes:
 
@@ -68,14 +68,16 @@ The bot runs as a **background service** — it survives terminal close and Ctrl
 
 ## Platform comparison
 
-| | Telegram | WhatsApp | Slack |
-|--|----------|----------|-------|
-| Bridge | Telegram Bot API | [Green API](https://green-api.com) free tier | Slack Bolt + Socket Mode |
-| Setup | Talk to @BotFather | Scan a QR code | Create a Slack app |
-| Photo / file support | Yes | Text only | Text only |
-| Interactive UI | Inline buttons | No | Reactions as status indicator |
-| Works without public URL | Yes (polling) | Yes (polling) | Yes (WebSocket) |
-| Works on corporate Wi-Fi | Depends | Yes | Yes |
+| | Telegram | WhatsApp | Slack | Web chat |
+|--|----------|----------|-------|----------|
+| Bridge | Telegram Bot API | [Green API](https://green-api.com) free tier | Slack Bolt + Socket Mode | Local aiohttp server |
+| Setup | Talk to @BotFather | Scan a QR code | Create a Slack app | Nothing — open the URL |
+| Photo / file support | Yes | Text only | Text only | Text only |
+| Interactive UI | Inline buttons | No | Reactions as status indicator | Full browser UI |
+| Works without public URL | Yes (polling) | Yes (polling) | Yes (WebSocket) | It *is* local |
+| Works on corporate Wi-Fi | Depends | Yes | Yes | Yes |
+
+Telegram is the most complete adapter; the others cover the core chat loop. The web chat needs no account anywhere, which makes it the fastest way to try telechat before setting up a messenger.
 
 ---
 
@@ -90,10 +92,12 @@ Set `BOT_MODE` in `.env` — accepts a comma-separated list or a shorthand:
 | `telegram` | Telegram only *(default)* |
 | `whatsapp` | WhatsApp only |
 | `slack` | Slack only |
+| `web` | Local web chat only — no messenger account needed |
 | `telegram,slack` | Telegram + Slack |
 | `telegram,whatsapp` | Telegram + WhatsApp |
+| `telegram,web` | Telegram + web chat |
 | `both` | Telegram + WhatsApp (legacy alias) |
-| `all` | All three platforms |
+| `all` | All four |
 
 ---
 
@@ -207,6 +211,22 @@ WHATSAPP_ALLOWED_NUMBERS=919876543210   # your number without the +
 ```
 
 > **Corporate network note:** Green API works over standard HTTPS polling — no webhook or public URL needed.
+
+---
+
+### 2d — Web chat (no account anywhere)
+
+The fastest way to try telechat: a local browser UI with markdown rendering, session switching, and stats. Nothing to register, no messenger involved.
+
+```env
+BOT_MODE=web
+WEB_CHAT_PORT=8585
+WEB_CHAT_TOKEN=pick-something-long   # required if you bind beyond loopback
+```
+
+Then `telechat` and open http://127.0.0.1:8585. `telechat init` prints a QR code for the URL so you can open it on your phone over the same network.
+
+It binds `127.0.0.1` by default and **refuses to start exposed without a token** — set `WEB_CHAT_BIND=0.0.0.0` and `WEB_CHAT_TOKEN` together, or it will tell you why it stopped. Behind a reverse proxy, set `WEB_CHAT_TRUST_PROXY=1` so client IPs (used for the auth lockout) come from `X-Forwarded-For` rather than the proxy's own address.
 
 ---
 
