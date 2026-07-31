@@ -66,6 +66,13 @@ not which function moved.
   returns 503 when the writer thread has died with a live queue, which is the
   one condition that means writes are degraded *right now*. `store.py` had been
   counting most of this since its queue was fixed; nothing could read it.
+- **Web chat now has a dark theme, a real social-share preview, and is
+  keyboard/screen-reader accessible.** The page picks up the browser's
+  `prefers-color-scheme` automatically; sharing a TeleChat link now renders a
+  title, description, and card on Slack/Twitter/Dev.to instead of a bare URL;
+  and the suggestion/command chips are real `<button>`s (focusable, work with
+  Enter/Space) with `aria-live` regions announcing connection state and new
+  messages, plus `prefers-reduced-motion` support.
 
 ### Changed
 

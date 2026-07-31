@@ -3,7 +3,23 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TeleChat</title>
+<title>TeleChat — Chat with Claude from your browser</title>
+<meta name="description" content="TeleChat is a self-hosted chat UI for Claude — the same engine that powers your Telegram, WhatsApp, and Slack bot, right in your browser.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#d9534f">
+
+<!-- Open Graph / social sharing -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="TeleChat — Chat with Claude from your browser">
+<meta property="og:description" content="A self-hosted chat UI for Claude — the same engine that powers your Telegram, WhatsApp, and Slack bot.">
+<meta property="og:site_name" content="TeleChat">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="TeleChat — Chat with Claude from your browser">
+<meta name="twitter:description" content="A self-hosted chat UI for Claude — the same engine that powers your Telegram, WhatsApp, and Slack bot.">
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23d9534f'/%3E%3Ctext x='16' y='23' font-family='-apple-system,Helvetica,Arial,sans-serif' font-size='19' font-weight='700' fill='%23fff' text-anchor='middle'%3ET%3C/text%3E%3C/svg%3E">
 <style>
 :root {
   --bg: #ffffff;
@@ -26,6 +42,31 @@
   --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
   --radius: 16px;
   --radius-sm: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181a;
+    --surface: #1f2023;
+    --surface2: #26272b;
+    --accent: #e8635e;
+    --accent-hover: #f17974;
+    --accent-light: #2a1c1c;
+    --text: #f0f0f0;
+    --text-secondary: #b8b8b8;
+    --text-dim: #7a7a7a;
+    --user-bubble: #1e2a3d;
+    --bot-bubble: #212226;
+    --input-bg: #1f2023;
+    --border: #33343a;
+    --border-light: #2a2b30;
+    --code-bg: #1c1d20;
+    --code-border: #33343a;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .auth-box { background: var(--surface); }
+  .msg .bubble code:not(pre code) { color: #ff8fae; }
+  .msg .bubble a { color: #6ea8fe; }
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; }
@@ -413,6 +454,8 @@ body {
 }
 .empty-state .cmd {
   padding: 5px 12px;
+  border: none;
+  background: none;
   border-radius: 6px;
   font-size: 12px;
   font-family: 'SF Mono', monospace;
@@ -421,6 +464,36 @@ body {
   transition: color 0.2s;
 }
 .empty-state .cmd:hover { color: var(--accent); }
+
+.empty-state .suggestion {
+  font-family: inherit;
+}
+.empty-state .suggestion, .empty-state .cmd {
+  appearance: none;
+}
+.empty-state .suggestion:focus-visible, .empty-state .cmd:focus-visible,
+.send-btn:focus-visible, .auth-box input:focus-visible, .auth-box button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg { animation: none; }
+  .progress-indicator .spinner { animation-duration: 1.4s; }
+  .messages { scroll-behavior: auto; }
+  * { transition-duration: 0.01ms !important; }
+}
+
+/* visually hidden but available to screen readers */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* scrollbar */
 .messages::-webkit-scrollbar { width: 5px; }
@@ -443,44 +516,45 @@ body {
 <body>
 
 <!-- Auth overlay -->
-<div class="auth-overlay hidden" id="authOverlay">
+<div class="auth-overlay hidden" id="authOverlay" role="dialog" aria-modal="true" aria-labelledby="authTitle">
   <div class="auth-box">
-    <h2>TeleChat Web</h2>
-    <p>Enter your access token to continue.</p>
-    <input type="password" id="authToken" placeholder="Access token" autocomplete="off">
+    <h2 id="authTitle">TeleChat Web</h2>
+    <p id="authHint">Enter your access token to continue.</p>
+    <label class="sr-only" for="authToken">Access token</label>
+    <input type="password" id="authToken" placeholder="Access token" autocomplete="off" aria-describedby="authHint" aria-invalid="false">
     <button onclick="authenticate()">Connect</button>
-    <div class="error hidden" id="authError">Invalid token. Try again.</div>
+    <div class="error hidden" id="authError" role="alert">Invalid token. Try again.</div>
   </div>
 </div>
 
 <!-- Header -->
 <div class="header">
   <div class="header-left">
-    <div class="header-logo">T</div>
+    <div class="header-logo" aria-hidden="true">T</div>
     <h1>TeleChat</h1>
   </div>
   <div class="status">
-    <div class="dot" id="statusDot"></div>
-    <span id="statusText">Connecting…</span>
+    <div class="dot" id="statusDot" aria-hidden="true"></div>
+    <span id="statusText" role="status" aria-live="polite">Connecting…</span>
   </div>
 </div>
 
 <!-- Messages -->
-<div class="messages" id="messages">
+<div class="messages" id="messages" role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation">
   <div class="msg-wrap" id="msgWrap">
     <div class="empty-state" id="emptyState">
-      <div class="empty-logo">T</div>
+      <div class="empty-logo" aria-hidden="true">T</div>
       <h2>TeleChat Web</h2>
       <p>Chat with Claude right from your browser. Same engine as Telegram, WhatsApp, and Slack.</p>
       <div class="suggestions">
-        <div class="suggestion" onclick="insertAndSend('Explain how async/await works')">Explain async/await</div>
-        <div class="suggestion" onclick="insertAndSend('Write a Python function to reverse a linked list')">Reverse a linked list</div>
-        <div class="suggestion" onclick="insertAndSend('What are the best practices for REST API design?')">REST API best practices</div>
+        <button type="button" class="suggestion" onclick="insertAndSend('Explain how async/await works')">Explain async/await</button>
+        <button type="button" class="suggestion" onclick="insertAndSend('Write a Python function to reverse a linked list')">Reverse a linked list</button>
+        <button type="button" class="suggestion" onclick="insertAndSend('What are the best practices for REST API design?')">REST API best practices</button>
       </div>
       <div class="commands">
-        <div class="cmd" onclick="insertCmd('/help')">/help</div>
-        <div class="cmd" onclick="insertCmd('/clear')">/clear</div>
-        <div class="cmd" onclick="insertCmd('/new')">/new</div>
+        <button type="button" class="cmd" onclick="insertCmd('/help')">/help</button>
+        <button type="button" class="cmd" onclick="insertCmd('/clear')">/clear</button>
+        <button type="button" class="cmd" onclick="insertCmd('/new')">/new</button>
       </div>
     </div>
   </div>
@@ -489,9 +563,10 @@ body {
 <!-- Input -->
 <div class="input-area">
   <div class="input-wrap">
+    <label class="sr-only" for="input">Message Claude</label>
     <textarea id="input" placeholder="Message Claude…" rows="1" disabled></textarea>
-    <button class="send-btn" id="sendBtn" onclick="sendMessage()" disabled>
-      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.478 2.405a.75.75 0 0 0-.926.94l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.405Z"/></svg>
+    <button class="send-btn" id="sendBtn" onclick="sendMessage()" disabled aria-label="Send message">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3.478 2.405a.75.75 0 0 0-.926.94l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.405Z"/></svg>
     </button>
   </div>
 </div>

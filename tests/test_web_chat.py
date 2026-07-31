@@ -31,6 +31,41 @@ class TestIndexHandler(unittest.TestCase):
         self.assertEqual(result.content_type, "text/html")
         self.assertIn("<html", result.text)
 
+    def test_has_social_sharing_meta_tags(self):
+        # Shared links (Dev.to, Slack, Twitter/X, etc.) render a preview card
+        # from these tags — without them a shared TeleChat link looks bare.
+        from telechat_pkg.web_chat import _index_handler
+        request = MagicMock()
+        result = asyncio.run(_index_handler(request))
+        html = result.text
+        self.assertIn('name="description"', html)
+        self.assertIn('property="og:title"', html)
+        self.assertIn('property="og:description"', html)
+        self.assertIn('name="twitter:card"', html)
+        self.assertIn('name="theme-color"', html)
+        self.assertIn('rel="icon"', html)
+
+    def test_has_dark_mode_support(self):
+        from telechat_pkg.web_chat import _index_handler
+        request = MagicMock()
+        result = asyncio.run(_index_handler(request))
+        html = result.text
+        self.assertIn('name="color-scheme"', html)
+        self.assertIn("prefers-color-scheme: dark", html)
+
+    def test_has_accessibility_affordances(self):
+        from telechat_pkg.web_chat import _index_handler
+        request = MagicMock()
+        result = asyncio.run(_index_handler(request))
+        html = result.text
+        self.assertIn('aria-label="Send message"', html)
+        self.assertIn('role="log"', html)
+        self.assertIn("prefers-reduced-motion", html)
+        # Suggestion/command chips must be real buttons, not divs with
+        # onclick, so they're reachable and activatable via keyboard.
+        self.assertIn('<button type="button" class="suggestion"', html)
+        self.assertIn('<button type="button" class="cmd"', html)
+
 
 class TestHealthHandler(unittest.TestCase):
     @patch("telechat_pkg.health.get_health", return_value={"status": "healthy"})
