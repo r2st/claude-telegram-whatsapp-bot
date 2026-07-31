@@ -117,8 +117,9 @@ def ask_claude_sync(
         return _parse_cli_output(result.stdout, result.stderr, result.returncode, timeout)
     except subprocess.TimeoutExpired:
         return f"[Timeout] Claude took more than {timeout}s. Try a shorter prompt.", {}
-    except FileNotFoundError:
-        return "[Error] `claude` CLI not found. Ensure Claude Code is installed and in PATH.", {}
+    except OSError as exc:
+        log.error("could not start claude CLI: %s", exc)
+        return explain_spawn_failure(exc, CLAUDE_WORK_DIR), {}
 
 
 # ─── Claude CLI (async) ─────────────────────────────────────────────────────────
@@ -168,13 +169,19 @@ async def ask_claude_async(
     for d in [x.strip() for x in add_dirs.split(",") if x.strip()]:
         cmd += ["--add-dir", d]
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-        limit=10 * 1024 * 1024,
-    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            limit=10 * 1024 * 1024,
+        )
+    except OSError as exc:
+        # The sync path has always handled this; this one let it escape, and
+        # every adapter turned it into a generic "something went wrong".
+        log.error("could not start claude CLI: %s", exc)
+        return explain_spawn_failure(exc, cwd), {}
 
     stdout_lines: list[str] = []
     try:
@@ -252,13 +259,17 @@ async def ask_claude_async(
         for d in [x.strip() for x in add_dirs.split(",") if x.strip()]:
             retry_cmd += ["--add-dir", d]
 
-        proc2 = await asyncio.create_subprocess_exec(
-            *retry_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=CLAUDE_WORK_DIR,
-            limit=10 * 1024 * 1024,
-        )
+        try:
+            proc2 = await asyncio.create_subprocess_exec(
+                *retry_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=CLAUDE_WORK_DIR,
+                limit=10 * 1024 * 1024,
+            )
+        except OSError as exc:
+            log.error("could not start claude CLI for history retry: %s", exc)
+            return explain_spawn_failure(exc, CLAUDE_WORK_DIR), {}
         retry_lines: list[str] = []
         try:
             async def _read_retry():
@@ -569,11 +580,109 @@ def _build_prompt(user_text: str, history: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+#: What a failed `claude` run is usually telling you, in the order we check.
+#: Each entry is (substrings to look for in stderr, what to say instead).
+#: The raw stderr is still appended and still logged — this only puts an
+#: actionable sentence in front of it, because "[Claude error] " followed by a
+#: stack trace tells the person holding the phone nothing they can act on.
+_CLI_STDERR_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (
+        ("usage limit", "rate limit", "rate_limit", "429", "too many requests"),
+        "Claude's usage limit has been reached. Wait for the window to reset, "
+        "or switch to API mode with an API key (`/engine` on Telegram and Slack).",
+    ),
+    (
+        ("credit balance", "insufficient credit", "billing"),
+        "The Claude account is out of credit. Top it up, or switch to a "
+        "subscription plan that covers this usage.",
+    ),
+    (
+        ("invalid api key", "authentication", "unauthorized", "401",
+         "please run /login", "not logged in", "no credentials"),
+        "Claude Code is not signed in on this machine. Run `claude auth login` "
+        "in a terminal here, then try again. (If the bot runs as a different "
+        "user or service, sign in as that user.)",
+    ),
+    (
+        ("invalid model", "unknown model", "model not found"),
+        "That model name was rejected. Pick another with `/model`, or check "
+        "CLAUDE_MODEL in your .env against the models your plan can reach.",
+    ),
+    (
+        ("permission denied", "eacces"),
+        "Claude Code was denied permission. Check CLAUDE_CLI_WORK_DIR is "
+        "readable by the user running the bot, and that the permission mode "
+        "allows what you asked for.",
+    ),
+)
+
+
+def explain_cli_stderr(stderr: str) -> str:
+    """Turn a failed `claude` run into something the person reading it can act on.
+
+    Returns the actionable sentence, or "" when the failure isn't one we
+    recognise — in which case the caller falls back to showing the raw text,
+    which is still better than nothing.
+    """
+    haystack = stderr.lower()
+    for needles, advice in _CLI_STDERR_HINTS:
+        if any(n in haystack for n in needles):
+            return advice
+    return ""
+
+
+def explain_spawn_failure(exc: OSError, cwd: str | None) -> str:
+    """Why the `claude` process could not be started.
+
+    ``FileNotFoundError`` here means one of two unrelated things — the binary
+    isn't on PATH, or the working directory doesn't exist — and they have
+    different fixes. ``exc.filename`` says which, so say which. This used to
+    escape as a bare OSError and be reported to the user as "Lost connection to
+    Claude. Please try again in a moment", which is wrong twice over: nothing
+    was ever connected, and trying again will never help.
+    """
+    target = getattr(exc, "filename", None)
+    if cwd and target and os.path.normpath(str(target)) == os.path.normpath(cwd):
+        if isinstance(exc, NotADirectoryError):
+            return (
+                f"[Error] The working directory {cwd!r} is a file, not a directory. "
+                "Point CLAUDE_CLI_WORK_DIR at a directory."
+            )
+        return (
+            f"[Error] The working directory {cwd!r} does not exist. "
+            "Create it, or point CLAUDE_CLI_WORK_DIR somewhere that does."
+        )
+    if isinstance(exc, PermissionError):
+        return (
+            "[Error] Not allowed to run the `claude` CLI. Check the binary is "
+            "executable by the user running the bot."
+        )
+    return (
+        "[Error] `claude` CLI not found. Install it with "
+        "`npm install -g @anthropic-ai/claude-code` and sign in with "
+        "`claude auth login`, or set CLAUDE_MODE=api and an ANTHROPIC_API_KEY "
+        "to use the API instead."
+    )
+
+
 def _parse_cli_output(stdout: str, stderr: str, returncode: int, timeout: int) -> tuple[str, dict]:
     output = stdout.strip()
     if returncode != 0 and not output:
-        err = stderr.strip()[:500]
-        return f"[Claude error] {err}", {}
+        err = stderr.strip()
+        log.error("claude CLI exited %s: %s", returncode, err[:2000] or "(no stderr)")
+        advice = explain_cli_stderr(err)
+        if advice:
+            # Lead with the fix; keep the raw text underneath so nothing that
+            # was there before is lost.
+            detail = f"\n\n{err[:300]}" if err else ""
+            return f"[Claude error] {advice}{detail}", {}
+        if not err:
+            return (
+                f"[Claude error] The `claude` CLI exited with code {returncode} "
+                "and said nothing. Run `telechat doctor` to check the setup.",
+                {},
+            )
+        return f"[Claude error] {err[:500]}", {}
 
     result_text = ""
     tools_used: list[str] = []

@@ -543,6 +543,19 @@ class TestFriendlyErrorText(unittest.TestCase):
         self.assertIn("connection", msg.lower())
         self.assertNotIn("reset by peer", msg)
 
+    def test_missing_backend_is_not_reported_as_a_connection_blip(self):
+        # FileNotFoundError is an OSError, so it used to fall into the
+        # connection arm and answer "Lost connection… try again in a moment".
+        # Nothing was connected, and trying again will never fix a `claude`
+        # binary that isn't installed.
+        from telechat_pkg.web_chat import _friendly_error_text
+        for exc in (FileNotFoundError(2, "No such file or directory", "claude"),
+                    NotADirectoryError(20, "Not a directory", "/work"),
+                    PermissionError(13, "Permission denied", "claude")):
+            msg = _friendly_error_text(exc)
+            self.assertIn("isn't set up", msg)
+            self.assertNotIn("Lost connection", msg)
+
     def test_api_connection_error_by_class_name(self):
         from telechat_pkg.web_chat import _friendly_error_text
         APIConnectionError = type("APIConnectionError", (Exception,), {})

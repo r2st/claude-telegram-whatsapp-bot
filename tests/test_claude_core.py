@@ -252,6 +252,99 @@ class TestParseCliOutput:
         text, stats = cc._parse_cli_output("", "x" * 1000, 1, 180)
         assert len(text) < 600
 
+    def test_silent_failure_names_the_exit_code(self):
+        # "[Claude error] " with nothing after it told the reader nothing.
+        text, _ = cc._parse_cli_output("", "", 3, 180)
+        assert "3" in text and "doctor" in text
+
+
+class TestCliFailureAdvice:
+    """A failed run should say what to do, not just what happened.
+
+    The raw stderr still goes to the log and is still shown underneath — this
+    only puts an actionable sentence in front of it.
+    """
+
+    @pytest.mark.parametrize("stderr, expected", [
+        ("Claude AI usage limit reached", "usage limit"),
+        ("Error 429: too many requests", "usage limit"),
+        ("Your credit balance is too low", "credit"),
+        ("Invalid API key · Please run /login", "auth login"),
+        ("401 Unauthorized", "auth login"),
+        ("invalid model name: nope", "/model"),
+        ("EACCES: permission denied", "CLAUDE_CLI_WORK_DIR"),
+    ])
+    def test_known_failures_get_advice(self, stderr, expected):
+        text, _ = cc._parse_cli_output("", stderr, 1, 180)
+        assert expected in text
+        # The original text is never dropped.
+        assert stderr.split(":")[0][:12] in text
+
+    def test_unrecognised_failure_still_shows_the_raw_text(self):
+        text, _ = cc._parse_cli_output("", "wharrgarbl exploded", 1, 180)
+        assert "wharrgarbl exploded" in text
+
+    def test_advice_matching_is_case_insensitive(self):
+        assert cc.explain_cli_stderr("USAGE LIMIT REACHED")
+        assert cc.explain_cli_stderr("Usage Limit Reached")
+
+
+class TestSpawnFailureAdvice:
+    """A missing binary and a missing working directory are different problems.
+
+    Both arrive as FileNotFoundError from the same call; ``exc.filename`` is
+    what tells them apart, and they have different fixes.
+    """
+
+    def test_missing_binary(self):
+        exc = FileNotFoundError(2, "No such file or directory", "claude")
+        msg = cc.explain_spawn_failure(exc, "/work")
+        assert "not found" in msg and "npm install" in msg
+
+    def test_missing_work_dir(self):
+        exc = FileNotFoundError(2, "No such file or directory", "/work")
+        msg = cc.explain_spawn_failure(exc, "/work")
+        assert "does not exist" in msg and "CLAUDE_CLI_WORK_DIR" in msg
+
+    def test_work_dir_is_a_file(self):
+        exc = NotADirectoryError(20, "Not a directory", "/work")
+        msg = cc.explain_spawn_failure(exc, "/work")
+        assert "is a file" in msg
+
+    def test_binary_not_executable(self):
+        exc = PermissionError(13, "Permission denied", "claude")
+        assert "executable" in cc.explain_spawn_failure(exc, "/work")
+
+    def test_trailing_slash_still_matches_the_work_dir(self):
+        exc = FileNotFoundError(2, "No such file or directory", "/work/")
+        assert "does not exist" in cc.explain_spawn_failure(exc, "/work")
+
+
+class TestAsyncSpawnFailureIsReturned:
+    """The async path is the one every adapter uses, and it used to raise.
+
+    The sync path has always turned a missing binary into a message; the async
+    one let OSError escape, so the adapters reported a generic failure — and
+    the web chat specifically said "Lost connection… try again in a moment",
+    which is wrong: nothing was connected and retrying cannot help.
+    """
+
+    @pytest.mark.parametrize("exc", [
+        FileNotFoundError(2, "No such file or directory", "claude"),
+        PermissionError(13, "Permission denied", "claude"),
+    ])
+    def test_returns_a_message_instead_of_raising(self, exc):
+        import asyncio
+
+        async def boom(*a, **k):
+            raise exc
+
+        with patch("asyncio.create_subprocess_exec", boom):
+            text, stats = asyncio.run(cc.ask_claude_async("hi", []))
+
+        assert text.startswith("[Error]")
+        assert stats == {}
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. History cache

@@ -11,6 +11,20 @@ not which function moved.
 
 ### Fixed
 
+- **"Lost connection to Claude" when the `claude` CLI was simply not installed.**
+  Starting the CLI can fail before there is anything to connect to, and only the
+  synchronous path handled that. The async path — the one Telegram, WhatsApp,
+  Slack and the web chat all use — let the error escape, so the web chat
+  reported a network blip and invited you to try again, which could never work.
+  You now get told which of the two problems it is: the binary is missing, or
+  `CLAUDE_CLI_WORK_DIR` points somewhere that isn't a directory.
+- **A failed Claude run pasted raw stderr at you.** `[Claude error]` followed by
+  whatever the CLI printed — and, when it printed nothing, followed by nothing at
+  all. The common failures now lead with what to do about them: signed out
+  (`claude auth login`), usage limit reached, out of credit, model name rejected,
+  permission denied. The original text is still underneath, and still in the log;
+  an unrecognised failure is still shown verbatim.
+
 - **A stray `**` could replace a heading with `NUL BOLD0 NUL` in the message.**
   Bold, links, code and headings are set aside behind markers while the rest of
   the text is escaped, then put back. Putting them back was one pass per kind in

@@ -547,6 +547,16 @@ def _friendly_error_text(exc: Exception) -> str:
         return "Claude is receiving too many requests right now. Please wait a moment and try again."
     if name in _AUTH_ERRORS:
         return "The server's Claude credentials aren't working. Please contact the operator."
+    if isinstance(exc, (FileNotFoundError, NotADirectoryError, PermissionError)):
+        # Caught before the OSError arm below, which used to swallow these and
+        # answer "Lost connection… try again in a moment" — but nothing was
+        # connected and trying again cannot help. This is a setup problem on
+        # the machine running the bot, and the person chatting can't fix it.
+        return (
+            "The Claude backend isn't set up on this machine — the `claude` CLI "
+            "or its working directory is missing. Check the server log, or run "
+            "`telechat doctor`."
+        )
     if isinstance(exc, (ConnectionError, OSError)) or name in _CONNECTION_ERRORS:
         return "Lost connection to Claude. Please try again in a moment."
     return "Something went wrong processing your message. Please try again."
