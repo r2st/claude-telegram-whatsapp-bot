@@ -48,6 +48,14 @@ WEB_AUTH_LOCKOUT_SEC = float(os.getenv("WEB_CHAT_AUTH_LOCKOUT_SEC", "300"))
 # on process restart, which is acceptable for a single-node web chat.
 _auth_failures: dict[str, tuple[float, int]] = {}
 
+# An entry was only ever removed on a successful auth, or when that same IP was
+# checked again after its window expired. So a distributed brute force — one
+# failed attempt each from many addresses — left one entry per address behind
+# forever, and the defence against brute force became a way to grow the
+# process's memory without bound. Expired entries are now pruned on write, and
+# the table is hard-capped.
+_AUTH_FAILURES_MAX = 10_000
+
 _memory = MemoryStore()
 _active_ws: dict[str, web.WebSocketResponse] = {}
 
@@ -87,6 +95,31 @@ def _ip_is_locked(ip: str) -> bool:
     return count >= WEB_AUTH_MAX_ATTEMPTS
 
 
+def _prune_auth_failures(now: float, keep: str = "") -> None:
+    """Drop entries whose lockout window has expired, then enforce the cap.
+
+    Called on write rather than on a timer: failures are the only thing that
+    grows this table, so that is exactly when it needs bounding.
+
+    ``keep`` is never evicted. It is the IP whose failure triggered this call,
+    and dropping it would hand an attacker a way to clear their own counter by
+    filling the table from other addresses — turning the cap into a bypass for
+    the lockout it exists to protect.
+    """
+    for ip, (window_start, _count) in list(_auth_failures.items()):
+        if ip != keep and (now - window_start) > WEB_AUTH_LOCKOUT_SEC:
+            _auth_failures.pop(ip, None)
+    # Still over the cap means more distinct live attackers than we are willing
+    # to track. Evict the oldest windows — they are closest to expiring anyway.
+    if len(_auth_failures) > _AUTH_FAILURES_MAX:
+        evictable = sorted(
+            ((ip, rec) for ip, rec in _auth_failures.items() if ip != keep),
+            key=lambda kv: kv[1][0],
+        )
+        for ip, _rec in evictable[: len(_auth_failures) - _AUTH_FAILURES_MAX]:
+            _auth_failures.pop(ip, None)
+
+
 def _record_auth_failure(ip: str) -> int:
     """Increment failure count for `ip`; return the new count."""
     now = time.time()
@@ -95,7 +128,11 @@ def _record_auth_failure(ip: str) -> int:
         _auth_failures[ip] = (rec[0], rec[1] + 1)
     else:
         _auth_failures[ip] = (now, 1)
-    return _auth_failures[ip][1]
+    count = _auth_failures[ip][1]
+    # Prune after recording, and never evict this IP: its own failure must not
+    # be what clears its counter.
+    _prune_auth_failures(now, keep=ip)
+    return count
 
 
 def _clear_auth_failures(ip: str) -> None:

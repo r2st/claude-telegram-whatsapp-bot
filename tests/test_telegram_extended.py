@@ -2545,6 +2545,69 @@ class TestHandleCallbackPagination:
         assert "2" in msg or "Cancelling" in msg
 
 
+class TestResponseStoreEviction:
+    """Two caps, two counts.
+
+    The threshold used to be `len(_response_store) > 50` over both kinds of
+    entry, so accumulated `retry_*` stashes pushed the total past 50 on their
+    own and every new response then evicted an older one — pagination expiring
+    after a handful of responses instead of fifty.
+    """
+
+    def setup_method(self):
+        tb._response_store.clear()
+
+    def teardown_method(self):
+        tb._response_store.clear()
+
+    def _paginated(self):
+        return [k for k in tb._response_store if not k.startswith("retry_")]
+
+    def test_keeps_the_documented_number_of_responses(self):
+        for i in range(tb._RESPONSE_STORE_MAX + 20):
+            tb._store_response(1, f"p{i}", f"t{i}")
+        assert len(self._paginated()) == tb._RESPONSE_STORE_MAX
+
+    def test_the_oldest_response_is_the_one_dropped(self):
+        first = tb._store_response(1, "first", "text")
+        for i in range(tb._RESPONSE_STORE_MAX):
+            tb._store_response(1, f"p{i}", f"t{i}")
+        assert first not in tb._response_store
+        assert len(self._paginated()) == tb._RESPONSE_STORE_MAX
+
+    def test_pending_retries_do_not_evict_responses(self):
+        # THE bug: 60 stashed retries made the store look full, and the next
+        # response evicted a live one even though only three were held.
+        for i in range(60):
+            tb._response_store[f"retry_{i}"] = {"prompt": f"p{i}", "uid": 1}
+        kept = [tb._store_response(1, f"p{i}", f"t{i}") for i in range(3)]
+        assert all(rid in tb._response_store for rid in kept), (
+            "a pending retry stash must not evict a paginated response"
+        )
+
+    def test_retries_are_capped_independently(self):
+        for i in range(tb._RETRY_STORE_MAX + 30):
+            tb._response_store[f"retry_{i}"] = {"prompt": f"p{i}", "uid": 1}
+        tb._store_response(1, "p", "t")
+        retries = [k for k in tb._response_store if k.startswith("retry_")]
+        assert len(retries) == tb._RETRY_STORE_MAX
+
+    def test_capping_retries_drops_the_oldest_first(self):
+        for i in range(tb._RETRY_STORE_MAX + 5):
+            tb._response_store[f"retry_{i}"] = {"prompt": f"p{i}", "uid": 1}
+        tb._store_response(1, "p", "t")
+        assert "retry_0" not in tb._response_store
+        assert f"retry_{tb._RETRY_STORE_MAX + 4}" in tb._response_store
+
+    def test_a_freshly_stored_response_is_always_readable(self):
+        # The eviction runs after the insert; it must never evict what it just
+        # stored, whatever the store already held.
+        for i in range(tb._RESPONSE_STORE_MAX * 2):
+            tb._response_store[f"retry_{i}"] = {"prompt": "p", "uid": 1}
+        rid = tb._store_response(7, "prompt", "the answer")
+        assert tb._response_store[rid]["text"] == "the answer"
+
+
 class TestHeartbeatActualCode:
     """Call _heartbeat() directly with mocked asyncio.sleep to cover lines 277-310."""
 

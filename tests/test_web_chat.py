@@ -490,5 +490,75 @@ class TestSendJsonWhenClosed(unittest.TestCase):
         # We're testing the guard works.
 
 
+class TestAuthFailureTableIsBounded(unittest.TestCase):
+    """The brute-force defence must not itself be a way to exhaust memory.
+
+    An entry was only removed on a successful auth, or when that same IP came
+    back after its window expired. One failed attempt each from many addresses
+    therefore left one entry per address behind, permanently.
+    """
+
+    def setUp(self):
+        from telechat_pkg import web_chat
+        web_chat._auth_failures.clear()
+
+    def tearDown(self):
+        from telechat_pkg import web_chat
+        web_chat._auth_failures.clear()
+
+    def test_expired_windows_are_dropped_on_the_next_failure(self):
+        from telechat_pkg import web_chat
+        import time
+        stale = time.time() - (web_chat.WEB_AUTH_LOCKOUT_SEC + 60)
+        for i in range(500):
+            web_chat._auth_failures[f"10.0.0.{i}"] = (stale, 1)
+        web_chat._record_auth_failure("192.168.1.1")
+        self.assertEqual(list(web_chat._auth_failures), ["192.168.1.1"])
+
+    def test_a_live_window_is_kept(self):
+        from telechat_pkg import web_chat
+        import time
+        web_chat._auth_failures["10.0.0.1"] = (time.time(), 2)
+        web_chat._record_auth_failure("10.0.0.2")
+        self.assertIn("10.0.0.1", web_chat._auth_failures)
+        self.assertIn("10.0.0.2", web_chat._auth_failures)
+
+    def test_the_table_is_hard_capped(self):
+        from telechat_pkg import web_chat
+        import time
+        now = time.time()
+        with patch.object(web_chat, "_AUTH_FAILURES_MAX", 50):
+            for i in range(200):
+                # All within the window, so pruning alone can't help.
+                web_chat._auth_failures[f"10.1.0.{i}"] = (now, 1)
+            web_chat._record_auth_failure("10.2.0.1")
+            self.assertLessEqual(len(web_chat._auth_failures), 50)
+
+    def test_the_reporting_ip_survives_its_own_failure(self):
+        from telechat_pkg import web_chat
+        # Pruning runs after the record, so an attacker cannot evict their own
+        # counter by filling the table.
+        import time
+        now = time.time()
+        with patch.object(web_chat, "_AUTH_FAILURES_MAX", 10):
+            for i in range(50):
+                web_chat._auth_failures[f"10.3.0.{i}"] = (now + 100, 1)
+            web_chat._record_auth_failure("10.9.9.9")
+            self.assertIn("10.9.9.9", web_chat._auth_failures)
+
+    def test_the_count_still_increments_within_a_window(self):
+        from telechat_pkg import web_chat
+        # The bounding must not reset the thing it is bounding.
+        first = web_chat._record_auth_failure("10.4.0.1")
+        second = web_chat._record_auth_failure("10.4.0.1")
+        self.assertEqual((first, second), (1, 2))
+
+    def test_lockout_still_engages_after_the_cap_work(self):
+        from telechat_pkg import web_chat
+        for _ in range(web_chat.WEB_AUTH_MAX_ATTEMPTS):
+            web_chat._record_auth_failure("10.5.0.1")
+        self.assertTrue(web_chat._ip_is_locked("10.5.0.1"))
+
+
 if __name__ == "__main__":
     unittest.main()

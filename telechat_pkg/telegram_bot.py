@@ -466,26 +466,34 @@ _response_store: dict[str, dict] = {}  # response_id → {text, uid, prompt, pag
 _response_counter = itertools.count(1)
 
 RESPONSE_PAGE_SIZE = 3000  # chars per page
-_RETRY_STORE_MAX = 200  # cap on transient retry_* entries
+_RESPONSE_STORE_MAX = 50   # cap on paginated responses
+_RETRY_STORE_MAX = 200     # cap on transient retry_* entries
 
 
 def _store_response(uid: int, prompt: str, text: str) -> str:
-    """Store a long response and return its ID for pagination."""
+    """Store a long response and return its ID for pagination.
+
+    Two independent caps, because the entries are different things: `r*` keys
+    hold paginated response text, `retry_*` keys hold a prompt stashed against
+    a Retry button the user has not pressed yet.
+
+    They have to be counted separately as well as evicted separately. The
+    threshold used to be `len(_response_store) > 50` over *both* kinds, so
+    accumulated retry stashes pushed the total past 50 on their own and every
+    new response then evicted an older one — pagination expiring after a
+    handful of responses instead of fifty.
+    """
     rid = f"r{next(_response_counter)}"
     _response_store[rid] = {"text": text, "uid": uid, "prompt": prompt}
-    # Keep only last 50 paginated responses in memory.
-    # Skip retry_* entries: those are tiny prompt stashes awaiting user action,
-    # and deleting them in-flight breaks the Retry button.
-    if len(_response_store) > 50:
-        for k in list(_response_store.keys()):
-            if not k.startswith("retry_"):
-                del _response_store[k]
-                break
-    # Cap retry_* entries separately (FIFO eviction)
+
+    # Oldest-first: rids are monotonic and dicts keep insertion order.
+    paginated = [k for k in _response_store if not k.startswith("retry_")]
+    for k in paginated[: max(0, len(paginated) - _RESPONSE_STORE_MAX)]:
+        _response_store.pop(k, None)
+
     retry_keys = [k for k in _response_store if k.startswith("retry_")]
-    if len(retry_keys) > _RETRY_STORE_MAX:
-        for k in retry_keys[: len(retry_keys) - _RETRY_STORE_MAX]:
-            _response_store.pop(k, None)
+    for k in retry_keys[: max(0, len(retry_keys) - _RETRY_STORE_MAX)]:
+        _response_store.pop(k, None)
     return rid
 
 

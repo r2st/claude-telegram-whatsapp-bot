@@ -25,6 +25,16 @@ not which function moved.
   already used, so `telechat stop` and a pip-started bot finally agree) and
   verifies each candidate's own command line before signalling it. A health port
   held by something that is not telechat is reported instead of killed.
+- **Long-response pagination expired far sooner than it should have.** The
+  in-memory response store capped itself by counting paginated responses and
+  pending Retry stashes together, so a handful of unpressed Retry buttons made
+  every new response evict an older one. "Page expired" after a few messages
+  instead of fifty.
+- **The web chat's brute-force defence could exhaust memory.** A per-IP failure
+  counter was only removed on a successful login, so one failed attempt each
+  from many addresses left an entry per address behind forever. Expired windows
+  are now pruned and the table is capped — without letting an attacker evict
+  their own counter by filling it.
 - **MCP servers were vetted by name only.** The allowlist compared the command's
   basename, so a script called `npx` planted in any world-writable directory on
   `PATH` passed. Commands are now resolved to an absolute path, refused if that
