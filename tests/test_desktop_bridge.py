@@ -145,13 +145,20 @@ class BridgeHarness:
         TELECHAT_BRIDGE_INTERNAL, and so on.
         """
         log = self.home / "claude-invocations.log"
+        # One record, one write. Three separate printfs let a reader observe an
+        # entry that had its `argv:` line but not yet its `cwd:`/`internal:`
+        # lines — wait_for_invocation counts records, so it returned as soon as
+        # the first line landed and the assertion on a later line then failed at
+        # random. Building the whole record first and emitting it with a single
+        # printf makes the append atomic in practice.
         script = f"""#!/bin/sh
-{{
-  printf 'argv:'
-  for a in "$@"; do printf ' %s' "$a"; done
-  printf '\\ncwd: %s\\n' "$(pwd)"
-  printf 'internal: %s\\n' "${{TELECHAT_BRIDGE_INTERNAL:-}}"
-}} >> {log}
+record="argv:"
+for a in "$@"; do record="$record $a"; done
+record="$record
+cwd: $(pwd)
+internal: ${{TELECHAT_BRIDGE_INTERNAL:-}}
+"
+printf '%s' "$record" >> {log}
 cat <<'CLAUDE_STDOUT_EOF'
 {stdout}
 CLAUDE_STDOUT_EOF
@@ -165,10 +172,20 @@ exit {exit_code}
 
     @property
     def invocations(self) -> list[str]:
+        """Complete invocation records, oldest first.
+
+        Only records carrying every field are returned. Belt to the atomic
+        write's braces: a half-written entry must never be counted, or a test
+        asserting on a field can win the race to the file.
+        """
         log = self.home / "claude-invocations.log"
         if not log.exists():
             return []
-        return [b.strip() for b in log.read_text().split("argv:") if b.strip()]
+        return [
+            block.strip()
+            for block in log.read_text().split("argv:")
+            if block.strip() and "internal:" in block
+        ]
 
     def wait_for_invocation(self, count: int = 1, timeout: float = 10.0) -> bool:
         """The resume path runs on a daemon thread — wait for it rather than sleeping."""

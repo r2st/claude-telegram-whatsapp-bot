@@ -216,16 +216,20 @@ WHATSAPP_ALLOWED_NUMBERS=919876543210   # your number without the +
 |----------|---------|-------------|
 | `CLAUDE_MODE` | `cli` | `cli` or `api` |
 | `ANTHROPIC_API_KEY` | — | Required for API mode |
-| `CLAUDE_MODEL` | `claude-sonnet-5` | API mode model |
+| `CLAUDE_API_MODEL` | current Sonnet | API mode model |
 | `MODEL_HAIKU` / `MODEL_SONNET` / `MODEL_OPUS` | current IDs | Model tier overrides (smart routing, planner, memory, judge) |
-| `SYSTEM_PROMPT` | _(generic)_ | Your personal instructions to Claude |
+| `CLAUDE_SYSTEM_PROMPT` | _(generic)_ | Your personal instructions to Claude |
 | `CLAUDE_CLI_WORK_DIR` | `~` | Working directory for CLI |
-| `CLAUDE_CLI_ADD_DIRS` | — | Comma-separated extra dirs Claude can access |
-| `CLAUDE_CLI_PERMISSION_MODE` | — | `acceptEdits` / `auto` / `bypassPermissions` |
+| `CLAUDE_ADD_DIRS` | — | Comma-separated extra dirs Claude can access |
+| `CLAUDE_CLI_PERMISSION_MODE` | `auto` | `acceptEdits` / `auto` / `bypassPermissions` |
 | `CLAUDE_CLI_MODEL` | `sonnet` | CLI model: `haiku` / `sonnet` / `opus` |
 | `CLAUDE_TIMEOUT` | `180` | Seconds to wait for Claude |
 | `RATE_LIMIT_REQUESTS` | `20` | Max messages per window |
 | `RATE_LIMIT_WINDOW` | `60` | Rate limit window (seconds) |
+
+This is the subset you are most likely to touch. **[`docs/configuration.md`](docs/configuration.md) is the full reference** — every one of the 137 variables the code reads, with its real default, generated from the source so it cannot drift.
+
+> Two of these used to be documented under names the code never read: `SYSTEM_PROMPT` (now `CLAUDE_SYSTEM_PROMPT`) and `CLAUDE_CLI_ADD_DIRS` (now `CLAUDE_ADD_DIRS`). If your `.env` uses the old names they still work — they are read as fallbacks — but the ones above are canonical.
 
 **CLI mode** — requires Claude Code CLI installed and authenticated:
 

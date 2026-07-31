@@ -31,6 +31,83 @@ cc.init_db()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 0. Config resolution
+#
+# `.env.example` shipped two variable names the code never read, so a user who
+# followed the template got the stock system prompt and no extra directories,
+# with nothing to indicate why. The template is fixed; these fallbacks make the
+# .env files already out there start working.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestLegacyConfigNames:
+    @staticmethod
+    def _reload(monkeypatch, **env):
+        import importlib
+        for key in ("CLAUDE_SYSTEM_PROMPT", "SYSTEM_PROMPT",
+                    "CLAUDE_ADD_DIRS", "CLAUDE_CLI_ADD_DIRS"):
+            monkeypatch.delenv(key, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        return importlib.reload(cc)
+
+    def test_canonical_system_prompt_is_used(self, monkeypatch):
+        mod = self._reload(monkeypatch, CLAUDE_SYSTEM_PROMPT="be terse")
+        assert mod.CLAUDE_SYSTEM == "be terse"
+
+    def test_legacy_system_prompt_name_still_works(self, monkeypatch):
+        mod = self._reload(monkeypatch, SYSTEM_PROMPT="from the old template")
+        assert mod.CLAUDE_SYSTEM == "from the old template"
+
+    def test_canonical_system_prompt_wins_over_the_legacy_one(self, monkeypatch):
+        mod = self._reload(
+            monkeypatch, CLAUDE_SYSTEM_PROMPT="canonical", SYSTEM_PROMPT="legacy"
+        )
+        assert mod.CLAUDE_SYSTEM == "canonical"
+
+    def test_neither_set_falls_back_to_the_stock_prompt(self, monkeypatch):
+        mod = self._reload(monkeypatch)
+        assert "helpful AI assistant" in mod.CLAUDE_SYSTEM
+
+    def test_canonical_add_dirs_is_used(self, monkeypatch):
+        mod = self._reload(monkeypatch, CLAUDE_ADD_DIRS="/a,/b")
+        assert mod.CLAUDE_ADD_DIRS == "/a,/b"
+
+    def test_legacy_add_dirs_name_still_works(self, monkeypatch):
+        mod = self._reload(monkeypatch, CLAUDE_CLI_ADD_DIRS="/legacy")
+        assert mod.CLAUDE_ADD_DIRS == "/legacy"
+
+    def test_canonical_add_dirs_wins_over_the_legacy_one(self, monkeypatch):
+        mod = self._reload(monkeypatch, CLAUDE_ADD_DIRS="/new", CLAUDE_CLI_ADD_DIRS="/old")
+        assert mod.CLAUDE_ADD_DIRS == "/new"
+
+    def test_neither_set_means_no_extra_directories(self, monkeypatch):
+        mod = self._reload(monkeypatch)
+        assert mod.CLAUDE_ADD_DIRS == ""
+
+    def test_the_env_template_only_names_variables_the_code_reads(self):
+        # The bug this class exists for, caught at its source: every KEY= in
+        # .env.example must be something telechat_pkg actually reads.
+        import sys
+        from pathlib import Path
+        repo = Path(__file__).resolve().parent.parent
+        sys.path.insert(0, str(repo / "scripts"))
+        import env_reference
+
+        known = set(env_reference.discover())
+        declared = {
+            line.split("=", 1)[0].strip()
+            for line in (repo / ".env.example").read_text().splitlines()
+            if "=" in line and not line.strip().startswith("#")
+        }
+        unread = {k for k in declared if k and k.isupper()} - known
+        assert not unread, (
+            ".env.example sets variables telechat_pkg never reads — a user "
+            f"following the template would be silently ignored: {sorted(unread)}"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 1. _build_prompt
 # ══════════════════════════════════════════════════════════════════════════════
 

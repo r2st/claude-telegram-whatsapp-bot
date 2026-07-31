@@ -43,6 +43,17 @@ jobs:
       - name: Check every version derives from pyproject.toml
         run: bash scripts/sync-version.sh --check
 
+      # ~60 environment variables were read by the code and documented nowhere.
+      # docs/configuration.md is generated, so it can only stay honest if
+      # something regenerates it and compares. tests/test_config_docs.py does
+      # the same thing; this is the fast, dependency-free version.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the configuration reference is current
+        run: python scripts/env_reference.py --check
+
   docker:
     name: docker build
     runs-on: ubuntu-latest

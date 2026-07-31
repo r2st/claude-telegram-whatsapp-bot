@@ -59,11 +59,18 @@ log = logging.getLogger(__name__)
 # ─── Config ──────────────────────────────────────────────────────────────────────
 
 CLAUDE_MODEL      = os.getenv("CLAUDE_MODEL", "sonnet")
-CLAUDE_SYSTEM     = os.getenv(
-    "CLAUDE_SYSTEM_PROMPT",
+
+# Two names each, because `.env.example` shipped the wrong one for both settings
+# and the code silently ignored it: a user who set SYSTEM_PROMPT (as the
+# template told them to) got the stock prompt, and CLAUDE_CLI_ADD_DIRS granted
+# access to nothing. The template now names the canonical variable; these
+# fallbacks mean the .env files already out there start working rather than
+# staying quietly broken.
+CLAUDE_SYSTEM     = os.getenv("CLAUDE_SYSTEM_PROMPT") or os.getenv(
+    "SYSTEM_PROMPT",
     "You are a helpful AI assistant. Be concise unless asked for detail.",
 )
-CLAUDE_ADD_DIRS   = os.getenv("CLAUDE_ADD_DIRS", "")
+CLAUDE_ADD_DIRS   = os.getenv("CLAUDE_ADD_DIRS") or os.getenv("CLAUDE_CLI_ADD_DIRS", "")
 CLAUDE_WORK_DIR   = os.getenv("CLAUDE_CLI_WORK_DIR", os.path.expanduser("~"))
 CLAUDE_TIMEOUT    = int(os.getenv("CLAUDE_TIMEOUT", "180"))
 CLAUDE_MODE       = os.getenv("CLAUDE_MODE", "cli")   # cli | api | sdk
