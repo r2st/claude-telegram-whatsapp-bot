@@ -1300,21 +1300,17 @@ class TestToMarkdownV2:
         assert "•" in result
 
     def test_heading_converted(self):
-        result = to_markdown_v2("# My Heading")
-        # Headings are converted to bold (*text*), which then passes through
-        # the italic-capture pass, so the final output wraps in _ or *
-        assert "My Heading" in result
-        # Should be formatted (not plain)
-        assert result.strip() != "My Heading"
+        # Bold, not italic. The heading rule used to emit a bare *text*, which
+        # the italic pass then captured and turned into _text_.
+        assert to_markdown_v2("# My Heading") == "*My Heading*"
 
     def test_subheading_converted(self):
-        result = to_markdown_v2("## Sub Heading")
-        assert "Sub Heading" in result
-        assert result.strip() != "Sub Heading"
+        assert to_markdown_v2("## Sub Heading") == "*Sub Heading*"
 
     def test_blockquote_preserved(self):
-        result = to_markdown_v2("> quoted text")
-        assert "quoted text" in result
+        # A real blockquote: '>' unescaped. escape_md2 used to turn it into
+        # '\>', which renders as a literal greater-than sign.
+        assert to_markdown_v2("> quoted text") == ">quoted text"
 
     def test_inline_code_preserved(self):
         result = to_markdown_v2("`code`")
@@ -1342,6 +1338,57 @@ class TestToMarkdownV2:
         result = to_markdown_v2("3.14 and 2+2=4!")
         # Special chars should be escaped
         assert "3" in result and "14" in result
+
+
+class TestHeadingsAndQuotesActuallyRender:
+    """Two formatting features were advertised and silently did nothing.
+
+    Headings came out italic because the rule emitted a bare ``*text*`` that
+    the italic pass then captured. Blockquotes came out as a literal ``>``
+    because escaping ran after the marker was inserted. Both appear in most
+    non-trivial Claude replies, on the platform that is the product.
+    """
+
+    def test_every_heading_level_becomes_bold(self):
+        for hashes in ("#", "##", "###", "####", "#####", "######"):
+            assert to_markdown_v2(f"{hashes} Title") == "*Title*", hashes
+
+    def test_deep_headings_do_not_leak_hashes(self):
+        """`####` was past the old 1–3 limit, so the hashes were left in."""
+        assert "#" not in to_markdown_v2("#### Deep heading")
+
+    def test_a_heading_that_is_already_bold_does_not_nest(self):
+        # `## **Important**` must not become `*\*\*Important\*\**`.
+        assert to_markdown_v2("## **Important**") == "*Important*"
+
+    def test_heading_content_is_still_escaped(self):
+        assert to_markdown_v2("## Version 1.2") == "*Version 1\\.2*"
+
+    def test_a_hash_that_is_not_a_heading_is_left_alone(self):
+        assert to_markdown_v2("issue #42") == "issue \\#42"
+
+    def test_multi_line_quote_marks_every_line(self):
+        assert to_markdown_v2("> one\n> two") == ">one\n>two"
+
+    def test_formatting_inside_a_quote_survives(self):
+        result = to_markdown_v2("> a **bold** word")
+        assert result == ">a *bold* word"
+
+    def test_a_link_inside_a_quote_survives(self):
+        result = to_markdown_v2("> see [docs](https://example.com)")
+        assert result == ">see [docs](https://example.com)"
+
+    def test_quote_content_is_still_escaped(self):
+        assert to_markdown_v2("> costs 1.50") == ">costs 1\\.50"
+
+    def test_a_greater_than_mid_line_is_still_escaped(self):
+        """Only a line-leading '>' is a quote; a comparison is literal text."""
+        assert to_markdown_v2("if a > b") == "if a \\> b"
+
+    def test_the_quote_marker_cannot_leak_into_output(self):
+        """The sentinel is swapped back after escaping, never left behind."""
+        for src in ("> quoted", "plain text", "## Heading", "a > b"):
+            assert "\x00" not in to_markdown_v2(src), src
 
 
 class TestTryMarkdownV2:

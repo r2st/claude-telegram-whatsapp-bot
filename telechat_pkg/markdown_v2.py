@@ -29,8 +29,14 @@ _ITALIC_RE = re.compile(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)')
 _STRIKE_RE = re.compile(r'~~(.+?)~~')
 # Blockquote lines starting with >
 _BLOCKQUOTE_RE = re.compile(r'^> ?(.*)$', re.MULTILINE)
-# Heading lines starting with # ## ###
-_HEADING_RE = re.compile(r'^#{1,3}\s+(.+)$', re.MULTILINE)
+# Heading lines starting with # through ######. Claude writes #### and deeper
+# often enough that stopping at three left literal hashes in the output.
+_HEADING_RE = re.compile(r'^#{1,6}\s+(.+)$', re.MULTILINE)
+# Leading/trailing emphasis inside a heading ("## **Important**"), which would
+# otherwise end up nested inside the bold the heading itself becomes.
+_HEADING_EMPHASIS_RE = re.compile(r'^[*_]+|[*_]+$')
+# Stand-in for the '>' of a blockquote while the rest of the line is escaped.
+_QUOTE_MARK = "\x00QUOTE\x00"
 # Horizontal rule
 _HR_RE = re.compile(r'^-{3,}$', re.MULTILINE)
 # Bullet lists
@@ -89,20 +95,29 @@ def to_markdown_v2(text: str) -> str:
 
     result = _LINK_RE.sub(_save_link, result)
 
-    # Convert headings to bold
-    result = _HEADING_RE.sub(lambda m: f"*{m.group(1).strip()}*", result)
+    # Bold, declared before headings because a heading *becomes* bold text.
+    bolds: list[str] = []
+
+    def _save_bold_text(raw: str) -> str:
+        placeholder = f"\x00BOLD{len(bolds)}\x00"
+        bolds.append(raw)
+        return placeholder
+
+    def _save_bold(m: re.Match) -> str:
+        return _save_bold_text(m.group(1))
+
+    # Convert headings to bold — through the same placeholder as **bold**.
+    # Emitting a bare *text* here instead left it to be matched by the italic
+    # rule further down, so every heading Claude wrote came out italic.
+    result = _HEADING_RE.sub(
+        lambda m: _save_bold_text(_HEADING_EMPHASIS_RE.sub("", m.group(1).strip())),
+        result,
+    )
 
     # Convert horizontal rules
     result = _HR_RE.sub("—" * 20, result)
 
     # Convert bold **text** → *text*
-    bolds: list[str] = []
-
-    def _save_bold(m: re.Match) -> str:
-        placeholder = f"\x00BOLD{len(bolds)}\x00"
-        bolds.append(m.group(1))
-        return placeholder
-
     result = _BOLD_RE.sub(_save_bold, result)
 
     # Convert strikethrough ~~text~~ → ~text~
@@ -125,14 +140,19 @@ def to_markdown_v2(text: str) -> str:
 
     result = _ITALIC_RE.sub(_save_italic, result)
 
-    # Convert blockquotes
-    result = _BLOCKQUOTE_RE.sub(lambda m: f">{m.group(1)}", result)
+    # Convert blockquotes. The '>' goes behind a marker: escape_md2 turns a
+    # bare one into '\>', which MarkdownV2 renders as a literal greater-than
+    # sign, so quoted text never actually became a blockquote.
+    result = _BLOCKQUOTE_RE.sub(lambda m: f"{_QUOTE_MARK}{m.group(1)}", result)
 
     # Convert bullet points
     result = _BULLET_RE.sub(r'\1• ', result)
 
     # Now escape all remaining special chars
     result = escape_md2(result)
+
+    # ...and put the blockquote markers back, now that escaping is done.
+    result = result.replace(_QUOTE_MARK, ">")
 
     # Restore bold
     for i, bold_text in enumerate(bolds):

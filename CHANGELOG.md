@@ -11,6 +11,12 @@ not which function moved.
 
 ### Fixed
 
+- **Headings came out italic on Telegram, and blockquotes did not exist.** A
+  heading was converted to `*text*`, which the italic pass then picked up and
+  turned into `_text_`; and the `>` of a blockquote was escaped to `\>`, which
+  renders as a literal greater-than sign. Both appear in most non-trivial Claude
+  replies. Headings are bold now, quotes are quotes, and `####`–`######` are
+  recognised instead of leaving their hashes in the text.
 - **Long replies were split into far more messages than necessary.** The
   chunker took the first paragraph break past a third of the message limit
   instead of the last one, so a reply made of short paragraphs — which is most
