@@ -1544,3 +1544,206 @@ class TestHTMLStripping:
         source = inspect.getsource(web_fetch._fetch_raw)
         assert "nav" in source.lower()
         assert "footer" in source.lower()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# net_guard — one place that decides whether a URL may be fetched
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestNetGuardAddressRules:
+    """The literal-address rules, shared by every module that fetches a URL."""
+
+    @pytest.mark.parametrize("host", [
+        "127.0.0.1", "::1", "[::1]",
+        "10.0.0.1", "172.16.0.1", "192.168.1.1",
+        "169.254.169.254",          # cloud metadata
+        "0.0.0.0", "224.0.0.1",     # unspecified, multicast
+    ])
+    def test_blocked(self, host):
+        from telechat_pkg.net_guard import is_blocked_address
+        assert is_blocked_address(host), host
+
+    @pytest.mark.parametrize("host", ["8.8.8.8", "93.184.216.34", "2606:2800:220:1::1"])
+    def test_allowed(self, host):
+        from telechat_pkg.net_guard import is_blocked_address
+        assert not is_blocked_address(host), host
+
+    def test_a_hostname_is_not_an_address(self):
+        """Names need DNS; this function must not guess."""
+        from telechat_pkg.net_guard import is_blocked_address
+        assert not is_blocked_address("example.com")
+
+    @pytest.mark.parametrize("url", [
+        "http://localhost/admin",
+        "http://127.0.0.1:8484/health",
+        "http://169.254.169.254/latest/meta-data/",
+        "file:///etc/passwd",           # scheme
+        "ftp://example.com/x",
+        "notaurl",
+    ])
+    def test_url_level_rejects(self, url):
+        from telechat_pkg.net_guard import is_blocked_url
+        assert is_blocked_url(url), url
+
+    @pytest.mark.parametrize("url", ["https://example.com", "http://api.github.com/repos"])
+    def test_url_level_allows_public(self, url):
+        from telechat_pkg.net_guard import is_blocked_url
+        assert not is_blocked_url(url)
+
+
+class TestNetGuardResolvesHostnames:
+    """A name pointing at a private address used to sail straight through."""
+
+    def test_a_name_resolving_to_loopback_is_blocked(self):
+        from telechat_pkg import net_guard
+
+        async def fake_getaddrinfo(host, port, **kw):
+            return [(2, 1, 6, "", ("127.0.0.1", port or 0))]
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.getaddrinfo = fake_getaddrinfo          # type: ignore[method-assign]
+            reason = loop.run_until_complete(
+                net_guard.check_url_allowed("https://totally-public.example/")
+            )
+        finally:
+            loop.close()
+        assert reason and "resolves" in reason
+
+    def test_any_bad_address_blocks_even_if_another_is_public(self):
+        """A name with both records must not be fetched on the strength of one."""
+        from telechat_pkg import net_guard
+
+        async def fake_getaddrinfo(host, port, **kw):
+            return [
+                (2, 1, 6, "", ("93.184.216.34", port or 0)),
+                (2, 1, 6, "", ("10.1.2.3", port or 0)),
+            ]
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.getaddrinfo = fake_getaddrinfo          # type: ignore[method-assign]
+            reason = loop.run_until_complete(
+                net_guard.check_url_allowed("https://split-horizon.example/")
+            )
+        finally:
+            loop.close()
+        assert reason is not None
+
+    def test_a_public_name_is_allowed(self):
+        from telechat_pkg import net_guard
+
+        async def fake_getaddrinfo(host, port, **kw):
+            return [(2, 1, 6, "", ("93.184.216.34", port or 0))]
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.getaddrinfo = fake_getaddrinfo          # type: ignore[method-assign]
+            reason = loop.run_until_complete(net_guard.check_url_allowed("https://example.com/"))
+        finally:
+            loop.close()
+        assert reason is None
+
+    def test_a_name_that_does_not_resolve_is_left_to_the_request(self):
+        """DNS failure is not evidence of an internal address."""
+        from telechat_pkg import net_guard
+
+        async def boom(host, port, **kw):
+            raise OSError("no such host")
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.getaddrinfo = boom                      # type: ignore[method-assign]
+            blocked = loop.run_until_complete(net_guard.resolves_to_blocked("nope.invalid"))
+        finally:
+            loop.close()
+        assert blocked is False
+
+    def test_the_reason_does_not_leak_the_resolved_address(self):
+        """Otherwise the bot maps an internal network one paste at a time."""
+        from telechat_pkg import net_guard
+
+        async def fake_getaddrinfo(host, port, **kw):
+            return [(2, 1, 6, "", ("10.11.12.13", port or 0))]
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.getaddrinfo = fake_getaddrinfo          # type: ignore[method-assign]
+            reason = loop.run_until_complete(net_guard.check_url_allowed("https://x.example/"))
+        finally:
+            loop.close()
+        assert "10.11.12.13" not in (reason or "")
+
+
+class TestLinkUnderstandingSsrf:
+    """`link_understanding` fetches any link in an incoming message, unprompted."""
+
+    def test_blocked_hosts_are_never_extracted(self):
+        from telechat_pkg.link_understanding import extract_links
+        message = (
+            "look at http://169.254.169.254/latest/meta-data/ and "
+            "http://127.0.0.1:8484/health and http://10.0.0.5/router "
+            "and https://example.com/ok"
+        )
+        assert extract_links(message) == ["https://example.com/ok"]
+
+    def test_a_redirect_to_a_private_address_is_refused(self):
+        """The hole this closes: only the pasted URL used to be checked."""
+        from telechat_pkg import link_understanding as lu
+
+        result = run_async(_fetch_through_redirect(lu, "http://169.254.169.254/latest/meta-data/"))
+        assert result.error, "the redirect was followed"
+        assert "Blocked" in result.error
+        assert result.content == ""
+
+    def test_a_redirect_to_a_public_address_still_works(self):
+        from telechat_pkg import link_understanding as lu
+
+        result = run_async(_fetch_through_redirect(lu, "https://example.com/moved", allow=True))
+        assert result.error is None
+        assert "hello" in result.content
+
+
+async def _fetch_through_redirect(lu, location: str, allow: bool = False):
+    """Drive fetch_link_content against a server that answers 302 → `location`."""
+    from unittest.mock import patch
+
+    class _Resp:
+        def __init__(self, status, headers=None, body=b""):
+            self.status = status
+            self.headers = headers or {}
+            self.url = "http://start.example/"
+            self.content_type = "text/html"
+            self.content = self
+            self._body = body
+
+        async def read(self, _n=None):
+            return self._body
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    calls = {"n": 0}
+
+    class _Session:
+        def get(self, url, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _Resp(302, {"Location": location})
+            return _Resp(200, body=b"hello from the redirect target")
+
+    async def fake_check(url):
+        # Real rules, but with DNS stubbed out: the literal check is enough
+        # for these cases and keeps the test offline.
+        from telechat_pkg import net_guard
+        if net_guard.is_blocked_url(url):
+            return "Blocked: local or private address"
+        return None if allow or url == "http://start.example/" else None
+
+    with patch.object(lu, "_get_session", return_value=_Session()), \
+         patch.object(lu.net_guard, "check_url_allowed", side_effect=fake_check):
+        return await lu.fetch_link_content("http://start.example/")

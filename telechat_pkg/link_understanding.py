@@ -10,10 +10,11 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from ipaddress import ip_address
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
+
+from . import net_guard
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ ENABLED = os.getenv("LINK_UNDERSTANDING_ENABLED", "true").lower() in ("1", "true
 _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]*]\((https?://\S+?)\)", re.IGNORECASE)
 _BARE_LINK_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
-_BLOCKED_HOSTS = {"localhost", "0.0.0.0"}
+_BLOCKED_HOSTS = net_guard.BLOCKED_HOSTS
 
 
 @dataclass
@@ -46,13 +47,14 @@ class LinkResult:
 
 
 def _is_blocked_host(hostname: str) -> bool:
-    if hostname in _BLOCKED_HOSTS:
-        return True
-    try:
-        addr = ip_address(hostname)
-        return addr.is_private or addr.is_loopback or addr.is_reserved
-    except ValueError:
-        return False
+    """Cheap reject for `extract_links`, which is synchronous.
+
+    This only sees literal addresses and known names. The authoritative check —
+    which resolves the hostname and re-runs on every redirect — is in
+    `fetch_link_content`, because it needs an event loop.
+    """
+    host = hostname.lower()
+    return host in _BLOCKED_HOSTS or net_guard.is_blocked_address(host)
 
 
 def extract_links(message: str, max_links: int = MAX_LINKS) -> list[str]:
@@ -87,10 +89,28 @@ async def fetch_link_content(url: str, timeout: int = FETCH_TIMEOUT) -> LinkResu
     }
     try:
         session = _get_session()
-        async with session.get(
-            url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout),
-            allow_redirects=True, max_redirects=5,
-        ) as resp:
+        current = url
+        # Redirects are followed by hand so every hop gets checked. With
+        # allow_redirects=True only the URL the user pasted was ever vetted,
+        # and a public link answering `302 Location: http://169.254.169.254/`
+        # — or this machine's own health port — was fetched and fed to Claude.
+        for _hop in range(net_guard.MAX_REDIRECTS + 1):
+            blocked = await net_guard.check_url_allowed(current)
+            if blocked:
+                return LinkResult(url=url, content="", final_url=current, error=blocked)
+
+            async with session.get(
+                current, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=False,
+            ) as resp:
+                if resp.status in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("Location")
+                    if not location:
+                        return LinkResult(url=url, content="", final_url=str(resp.url),
+                                          error=f"HTTP {resp.status} without a location")
+                    current = str(urljoin(current, location))
+                    continue
+
                 if resp.status != 200:
                     return LinkResult(url=url, content="", final_url=str(resp.url),
                                      error=f"HTTP {resp.status}")
@@ -104,6 +124,8 @@ async def fetch_link_content(url: str, timeout: int = FETCH_TIMEOUT) -> LinkResu
                     return LinkResult(url=url, content="", final_url=str(resp.url),
                                      error="Empty response")
                 return LinkResult(url=url, content=text, final_url=str(resp.url))
+
+        return LinkResult(url=url, content="", final_url=current, error="Too many redirects")
     except asyncio.TimeoutError:
         return LinkResult(url=url, content="", final_url=url, error="Timeout")
     except Exception as e:

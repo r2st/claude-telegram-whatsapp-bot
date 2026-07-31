@@ -12,26 +12,22 @@ import os
 import re
 from dataclasses import dataclass
 
-from ipaddress import ip_address
-from urllib.parse import urlparse
-
 import aiohttp
+
+from . import net_guard
 
 log = logging.getLogger(__name__)
 
-_BLOCKED_HOSTS = {"localhost", "0.0.0.0"}
+_BLOCKED_HOSTS = net_guard.BLOCKED_HOSTS
 
 
 def _is_blocked_url(url: str) -> bool:
-    try:
-        parsed = urlparse(url)
-        hostname = parsed.hostname or ""
-        if hostname in _BLOCKED_HOSTS:
-            return True
-        addr = ip_address(hostname)
-        return addr.is_private or addr.is_loopback or addr.is_reserved
-    except ValueError:
-        return False
+    """Synchronous reject on scheme, known names and IP literals.
+
+    See `net_guard`: this cannot see through a hostname, so `fetch_readable`
+    follows it with the resolving check before making a request.
+    """
+    return net_guard.is_blocked_url(url)
 
 JINA_API_KEY = os.getenv("JINA_API_KEY", "")
 WEB_FETCH_ENABLED = os.getenv("WEB_FETCH_ENABLED", "false").lower() in ("1", "true", "yes")
@@ -68,9 +64,11 @@ async def fetch_readable(url: str) -> FetchResult:
     Uses Jina Reader API if JINA_API_KEY is set, otherwise falls back
     to raw HTML fetch + tag stripping.
     """
-    if _is_blocked_url(url):
-        return FetchResult(url=url, title="", content="", word_count=0,
-                           error="Blocked: private/internal address")
+    # Resolves the hostname too: blocking only IP literals let any name
+    # pointing at 127.0.0.1 or a metadata endpoint straight through.
+    blocked = await net_guard.check_url_allowed(url)
+    if blocked:
+        return FetchResult(url=url, title="", content="", word_count=0, error=blocked)
     if JINA_API_KEY:
         return await _fetch_jina(url)
     return await _fetch_raw(url)
@@ -111,6 +109,34 @@ async def _fetch_jina(url: str) -> FetchResult:
         return FetchResult(url=url, title="", content="", word_count=0, error=str(e)[:200])
 
 
+async def _follow_redirects(session, url: str, headers: dict) -> str:
+    """Walk redirects by hand, checking every hop, and return the final URL.
+
+    Raises `PermissionError` if a hop lands somewhere the bot must not fetch —
+    caught by the caller's `except Exception` and reported as the fetch error.
+    """
+    from urllib.parse import urljoin
+
+    current = url
+    for _hop in range(net_guard.MAX_REDIRECTS):
+        blocked = await net_guard.check_url_allowed(current)
+        if blocked:
+            raise PermissionError(blocked)
+        async with session.get(
+            current, headers=headers,
+            timeout=aiohttp.ClientTimeout(total=FETCH_TIMEOUT),
+            allow_redirects=False,
+        ) as resp:
+            if resp.status not in (301, 302, 303, 307, 308):
+                return current
+            location = resp.headers.get("Location")
+            if not location:
+                return current
+            current = urljoin(current, location)
+
+    raise PermissionError("Too many redirects")
+
+
 async def _fetch_raw(url: str) -> FetchResult:
     """Basic HTML fetch with tag stripping."""
     headers = {
@@ -120,9 +146,12 @@ async def _fetch_raw(url: str) -> FetchResult:
 
     try:
         session = _get_session()
+        # Redirects are followed by hand so each hop is re-checked; see
+        # net_guard. Following them automatically vetted only the first URL.
+        url = await _follow_redirects(session, url, headers)
         async with session.get(url, headers=headers,
                                timeout=aiohttp.ClientTimeout(total=FETCH_TIMEOUT),
-                               allow_redirects=True) as resp:
+                               allow_redirects=False) as resp:
                 if resp.status != 200:
                     return FetchResult(url=url, title="", content="", word_count=0,
                                        error=f"HTTP {resp.status}")

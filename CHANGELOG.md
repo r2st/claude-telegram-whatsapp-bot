@@ -11,6 +11,15 @@ not which function moved.
 
 ### Fixed
 
+- **A link in a message could reach addresses on your own network.** Link
+  understanding fetches any URL you paste, and only the URL itself was checked —
+  redirects were followed automatically and never re-checked, so a public link
+  answering `302 Location: http://169.254.169.254/…` (cloud metadata) or
+  `http://127.0.0.1:8484/` (this bot's own health endpoint) was fetched, and the
+  response went to Claude as context. Only literal IP addresses were rejected
+  too, so any *hostname* pointing at a private address passed. Redirects are now
+  followed one hop at a time with every hop re-checked, hostnames are resolved
+  and every resolved address is checked, and the same rules apply to `/fetch`.
 - **Smart routing sent refactors and debugging to Haiku.** Two rules ran
   before any complexity check: "five words or fewer is simple", and a
   simple-keyword rule. So "Refactor this codebase" was routed on its length, and
