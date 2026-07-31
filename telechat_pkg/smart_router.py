@@ -7,9 +7,14 @@ fastest model and complex ones to the most capable.
 
 Usage:
     from telechat_pkg.smart_router import route_model, classify_complexity
-    model = route_model("What time is it?")         # → "haiku"
-    model = route_model("Refactor this codebase...")  # → "sonnet"
-    model = route_model("Design a distributed system with fault tolerance...")  # → "opus"
+    model = route_model("What time is it?")           # → "haiku"
+    model = route_model("Refactor this codebase")     # → "sonnet"
+    model = route_model("Write a full comprehensive security audit of "
+                        "this distributed pipeline architecture")  # → "opus"
+
+Opus needs three independent complexity signals (or one Opus-level one), which
+is deliberate: it is several times the price of Sonnet, and the routing is
+invisible to the person asking.
 """
 from __future__ import annotations
 
@@ -62,37 +67,48 @@ _compiled_opus = [re.compile(p, re.IGNORECASE) for p in _OPUS_PATTERNS]
 
 
 def classify_complexity(text: str) -> str:
-    """Classify query complexity: 'simple', 'moderate', or 'complex'."""
-    text = text.strip()
-    words = text.split()
-    word_count = len(words)
+    """Classify query complexity: 'simple', 'moderate', or 'complex'.
 
-    # Very short queries are simple
+    Complexity signals are checked before length and before the "looks simple"
+    keywords, because both of those used to override them:
+
+    * "Refactor this codebase" is three words, and the length shortcut returned
+      ``simple`` without looking at the text — this module's own docstring gave
+      that exact query as a ``sonnet`` example.
+    * "Refactor the payment pipeline and convert it to async" matched the
+      simple-keyword rule on *convert* and returned before the rule that
+      matches *refactor* and *pipeline* ever ran.
+
+    Both routed a refactor to Haiku. The failure is silent: nobody sees a
+    routing decision, only a worse answer than the same question got yesterday.
+    Erring towards the larger model is the cheaper mistake.
+    """
+    text = text.strip()
+    word_count = len(text.split())
+
+    opus_score = sum(1 for p in _compiled_opus if p.search(text))
+    complex_score = sum(1 for p in _compiled_complex if p.search(text))
+
+    # An explicit complexity signal outranks both length and any incidental
+    # simple-sounding keyword.
+    if opus_score >= 2 or (opus_score >= 1 and word_count > OPUS_MIN_TOKENS):
+        return "complex"
+    if complex_score >= 3:
+        return "complex"
+    if complex_score >= 1:
+        return "moderate"
+
+    # Nothing suggests complexity, so length and phrasing decide.
     if word_count <= 5:
         return "simple"
 
-    # Check for opus-level complexity
-    opus_score = sum(1 for p in _compiled_opus if p.search(text))
-    if opus_score >= 2 or (opus_score >= 1 and word_count > OPUS_MIN_TOKENS):
-        return "complex"
-
-    # Check for explicit simplicity
     simple_score = sum(1 for p in _compiled_simple if p.search(text))
     if simple_score >= 1 and word_count <= HAIKU_MAX_TOKENS:
         return "simple"
-
-    # Check for moderate/complex patterns
-    complex_score = sum(1 for p in _compiled_complex if p.search(text))
-    if complex_score >= 3:
-        return "complex"
-    if complex_score >= 1 or word_count > HAIKU_MAX_TOKENS:
+    if word_count > HAIKU_MAX_TOKENS:
         return "moderate"
 
-    # Short-ish factual queries
-    if word_count <= HAIKU_MAX_TOKENS:
-        return "simple"
-
-    return "moderate"  # pragma: no cover — unreachable; kept as safety fallback
+    return "simple"
 
 
 def route_model(text: str) -> str:

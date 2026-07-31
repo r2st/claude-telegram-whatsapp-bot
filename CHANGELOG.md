@@ -11,6 +11,13 @@ not which function moved.
 
 ### Fixed
 
+- **Smart routing sent refactors and debugging to Haiku.** Two rules ran
+  before any complexity check: "five words or fewer is simple", and a
+  simple-keyword rule. So "Refactor this codebase" was routed on its length, and
+  "Refactor the payment pipeline and convert it to async" was routed on the word
+  *convert*. Complexity signals are checked first now. A misroute is silent —
+  you get a worse answer with no indication why — and with `SMART_ROUTING`
+  enabled this affected every message.
 - **Headings came out italic on Telegram, and blockquotes did not exist.** A
   heading was converted to `*text*`, which the italic pass then picked up and
   turned into `_text_`; and the `>` of a blockquote was escaped to `\>`, which

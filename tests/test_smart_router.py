@@ -10,6 +10,7 @@ Run:
 
 import os
 
+import pytest
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-api-key")
@@ -131,3 +132,69 @@ class TestRouteModelApi:
         monkeypatch.setenv("SMART_ROUTE_HAIKU_API", "custom-haiku-id")
         # route_model_api reads env at call time
         assert route_model_api("hi") == "custom-haiku-id"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. Complexity signals outrank length and incidental keywords
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestComplexityWinsOverLengthAndKeywords:
+    """A misroute is silent: you get a worse answer, never a reason.
+
+    Two rules used to run before any complexity check — a "five words or fewer
+    is simple" shortcut and a simple-keyword rule — so a short refactor request,
+    or a long one that happened to contain the word "convert", went to Haiku.
+    """
+
+    @pytest.mark.parametrize("query", [
+        "Refactor this codebase",
+        "Debug this crash",
+        "Architect the ingest pipeline",
+        "Optimize this query",
+    ])
+    def test_a_short_request_with_a_complexity_signal_is_not_simple(self, query):
+        assert len(query.split()) <= 5, "this case is meant to test the length shortcut"
+        assert classify_complexity(query) != "simple"
+        assert route_model(query) != "haiku"
+
+    @pytest.mark.parametrize("query", [
+        "Refactor the payment pipeline and convert it to async",
+        "Debug this crash and translate the stack trace for me",
+        "Analyze the auth module and list the security issues you find",
+    ])
+    def test_an_incidental_simple_keyword_does_not_win(self, query):
+        # Each of these matches a _SIMPLE_PATTERNS keyword (convert / translate
+        # / list) *and* a complexity pattern. The complexity signal wins.
+        assert route_model(query) != "haiku", query
+
+    @pytest.mark.parametrize("query", [
+        "hi",
+        "thanks!",
+        "What time is it?",
+        "What is the capital of France?",
+        "translate this to french: bonjour",
+    ])
+    def test_genuinely_simple_queries_still_go_to_haiku(self, query):
+        assert route_model(query) == "haiku", query
+
+    def test_the_module_docstring_examples_are_true(self):
+        """The docstring promised sonnet for a query that routed to haiku."""
+        assert route_model("What time is it?") == "haiku"
+        assert route_model("Refactor this codebase") == "sonnet"
+        assert route_model(
+            "Write a full comprehensive security audit of "
+            "this distributed pipeline architecture"
+        ) == "opus"
+
+    def test_opus_still_needs_real_evidence(self):
+        """Opus costs several times Sonnet, so one keyword must not reach it."""
+        assert route_model("design the schema") != "opus"
+        assert route_model("please refactor the login handler for clarity now") != "opus"
+
+    def test_a_long_query_with_no_signal_is_moderate(self):
+        assert classify_complexity(" ".join(["word"] * 80)) == "moderate"
+
+    def test_empty_and_whitespace_are_handled(self):
+        for text in ("", "   ", "\n\n"):
+            assert classify_complexity(text) == "simple"
