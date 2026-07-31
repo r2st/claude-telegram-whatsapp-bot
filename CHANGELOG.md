@@ -1,0 +1,92 @@
+# Changelog
+
+`telechat update` ships in-product, so this is where you find out what an
+update changed. Format follows [Keep a Changelog](https://keepachangelog.com/);
+versions follow [Semantic Versioning](https://semver.org/).
+
+Entries are written for the person running the bot: what changes for you,
+not which function moved.
+
+## [Unreleased]
+
+### Fixed
+
+- **`SYSTEM_PROMPT` and `CLAUDE_CLI_ADD_DIRS` did nothing.** `.env.example`
+  documented both names; the code reads `CLAUDE_SYSTEM_PROMPT` and
+  `CLAUDE_ADD_DIRS`. Anyone who set a custom system prompt or extra Claude
+  directories from the template was silently ignored. Both legacy names are now
+  read as fallbacks, so existing `.env` files start working — no edit required.
+  The template documents `CLAUDE_API_MODEL` for API mode as well; `CLAUDE_MODEL`
+  is the CLI alias and was never the API model.
+- **Starting the bot could kill unrelated processes.** `pgrep -f
+  telechat_pkg.main` matched an editor with `main.py` open, a `grep` for the
+  string, or a test run — and SIGTERMed every match, for any user. The bot now
+  records itself in `~/.telechat/.telechat.pid` (the file the npm wrapper
+  already used, so `telechat stop` and a pip-started bot finally agree) and
+  verifies each candidate's own command line before signalling it. A health port
+  held by something that is not telechat is reported instead of killed.
+- **MCP servers were vetted by name only.** The allowlist compared the command's
+  basename, so a script called `npx` planted in any world-writable directory on
+  `PATH` passed. Commands are now resolved to an absolute path, refused if that
+  path or its directory is world-writable, and the resolved path is what gets
+  executed.
+
+### Added
+
+- **`docs/configuration.md`** — every one of the 137 environment variables the
+  code reads, with its real default. Generated from source and checked in CI, so
+  it cannot fall behind again.
+- **Bridge approval timeout policy.** `BRIDGE_APPROVAL_TIMEOUT` and
+  `BRIDGE_APPROVAL_TIMEOUT_ACTION` (`fallthrough` | `deny` | `allow`). The
+  default is the previous fail-open behaviour; `deny` is for when you turn
+  approval on *because* you are away from the machine. Approval cards now state
+  what inaction will do.
+- **`MCP_ALLOWED_COMMAND_PATHS`** — opt-in strict mode restricting MCP
+  executables to named directory prefixes.
+- **`scripts/dev-setup.sh`** — one command to a working development environment.
+
+### Changed
+
+- Lint (`ruff`) and a pytest configuration now run in CI. The first pass found a
+  duplicated test class that shadowed another and had never run, ~130 unused
+  imports, and a handful of dead locals.
+
+## [1.2.0]
+
+### Added
+
+- Self-improving loop: LLM-as-judge scoring, per-user preference learning,
+  system-prompt A/B testing, and an auto-update checker.
+- Claude Desktop bridge: hooks push your desktop Claude sessions to Telegram as
+  triaged cards, replies inject back via `claude --resume`, and Bash/Write/Edit
+  can be gated behind a phone approval.
+- Slack adapter (Socket Mode) and a local web chat UI.
+
+### Fixed
+
+- **Every API-mode turn was recorded as costing $0**, so `/budget` enforced
+  nothing. Pricing now lives in `models.py` alongside the model registry.
+- **Default model IDs were past their announced retirement.** All model IDs come
+  from one registry and can be overridden per tier.
+- **Three different version numbers shipped in one release** (pyproject 1.2.0,
+  `__init__` 1.1.5, npm 1.1.1), which left the updater nagging npm users
+  permanently. Every version now derives from `pyproject.toml`, checked in CI.
+- **The Docker image could not build** — the Dockerfile still copied loose
+  modules from the repository root, including one that never existed. It now
+  installs the package, runs as a non-root user, and declares a healthcheck. CI
+  builds it.
+- **The database could silently lose writes.** The writer thread dropped whole
+  batches on any error, leaked its connection, and never shut down; a full queue
+  inverted write ordering; `save_turn` was three unrelated writes so a crash
+  could half-apply it; sub-millisecond turns overwrote each other; and history
+  reads could serve a conversation missing its newest turns, which presented as
+  the bot forgetting what you had just said.
+- The Python floor is 3.10, which is what the code actually requires — 3.9
+  installs failed in ways that looked like bugs elsewhere.
+
+## [1.1.x] and earlier
+
+Initial public releases: Telegram and WhatsApp adapters, CLI and API modes,
+multi-session conversations, FTS5 memory, knowledge base, cost budgets, smart
+model routing, media generation, MCP, and the watchdog. See
+`git log` for the detail — this changelog starts at 1.2.0.

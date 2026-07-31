@@ -1,0 +1,55 @@
+name: Feature request
+description: Suggest something telechat should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        telechat is a **personal, single-operator** tool — one person's Claude
+        credentials, one working directory, one permission mode. Features that
+        assume a shared multi-tenant deployment are usually out of scope unless
+        they come with the isolation to match. See
+        [SECURITY.md](../blob/main/SECURITY.md) for the trust boundary.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: >
+        The situation, not the solution. What do you do today, and what makes it
+        annoying or impossible?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: If you already know the shape of the fix, describe it. Optional.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of telechat
+      multiple: true
+      options:
+        - Telegram
+        - WhatsApp
+        - Slack
+        - Web chat
+        - Claude Desktop bridge
+        - Memory / knowledge base
+        - Cost, budgets, model routing
+        - Media (voice, images, music, video)
+        - Setup and packaging
+        - Something else
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked `docs/improvements.md` and `agents/inbox/` — it may already be queued.
+        - label: I searched existing issues.

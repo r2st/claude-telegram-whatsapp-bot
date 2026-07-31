@@ -481,13 +481,45 @@ Removes the hook entries from `~/.claude/settings.json`. Bridge tables stay in `
 │   └── ...
 ├── scripts/
 │   ├── watchdog.py          Auto-restart and self-healing
+│   ├── dev-setup.sh         One command to a working dev environment
+│   ├── env_reference.py     Generates docs/configuration.md from the source
 │   └── publish.sh           PyPI + npm release script
 ├── npm/bin/telechat.js      CLI entry point
+├── docs/configuration.md    Every environment variable, generated
 ├── Dockerfile               (API mode only)
 ├── docker-compose.yml
 ├── requirements.txt
 └── .env.example
 ```
+
+---
+
+## How this project is built
+
+Most of the work here is done by AI agents coordinating through a file-based
+ticket system, and that record is public:
+
+- **`agents/inbox/`** — unclaimed tickets, i.e. what happens next.
+  **`agents/tasks/`** — claimed. **`agents/done/`** — shipped, each with an
+  outcome summary and test evidence.
+- Every ticket declares a `touches:` list of the files it will modify, and
+  `agents/check-overlap.sh <NNNN>` refuses a claim that collides with an active
+  one. That is what lets several agents work the same tree at once.
+- **`docs/decisions/`** holds ADRs for anything someone might later
+  second-guess; **`docs/improvements.md`** is the current standing review —
+  what is broken, what is worth doing, in priority order, with the fixed items
+  annotated in place.
+
+The guardrails are mechanical rather than honour-system: CI runs the full
+pytest suite across Python 3.10–3.13 with a coverage floor, `ruff`, a
+version-consistency check, a Docker build, and a check that
+`docs/configuration.md` still matches the code.
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Security
+issues go through [SECURITY.md](SECURITY.md), which also states the trust
+boundary plainly: **this is a single-operator tool, and in CLI mode the bot runs
+with your Claude authentication and your filesystem access.** Read that before
+adding a second person to the allowlist.
 
 ---
 
@@ -524,6 +556,13 @@ Removes the hook entries from `~/.claude/settings.json`. Bridge tables stay in `
 - Clear all credentials with `telechat clean`
 - Never commit `.env` — it is in `.gitignore`
 - In CLI mode the bot inherits your Claude auth — don't run on untrusted machines
+
+**[SECURITY.md](SECURITY.md) states the trust boundary in full**, and it is
+worth two minutes: access control is a flat allowlist, so everyone on it shares
+one Claude authentication, one working directory, and one permission ceiling
+that any of them can raise. That is fine for you and your phone. It is not a
+multi-tenant deployment. It also covers how to report a vulnerability — please
+do that privately rather than in a public issue.
 
 ---
 
