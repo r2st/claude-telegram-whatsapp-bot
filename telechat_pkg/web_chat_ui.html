@@ -555,6 +555,7 @@ body {
         <button type="button" class="cmd" onclick="insertCmd('/help')">/help</button>
         <button type="button" class="cmd" onclick="insertCmd('/clear')">/clear</button>
         <button type="button" class="cmd" onclick="insertCmd('/new')">/new</button>
+        <button type="button" class="cmd" onclick="insertCmd('/export')">/export</button>
       </div>
     </div>
   </div>
@@ -636,6 +637,11 @@ function handleMessage(data) {
       addSystemMessage(data.text);
       enableInput();
       break;
+    case 'download':
+      triggerDownload(data.filename, data.content, data.mime);
+      addSystemMessage(`Exported ${data.message_count} message(s) as ${data.filename}`);
+      enableInput();
+      break;
     case 'error':
       hideThinking(data.msg_id);
       addSystemMessage('Error: ' + data.text);
@@ -643,6 +649,18 @@ function handleMessage(data) {
       enableInput();
       break;
   }
+}
+
+function triggerDownload(filename, content, mime) {
+  const blob = new Blob([content], { type: mime || 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'chat_export.txt';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function onAuthenticated() {

@@ -327,6 +327,70 @@ class TestHandleCommand(unittest.TestCase):
         asyncio.run(_handle_command(ws, send, "user1", "/unknown"))
         self.assertIn("Unknown", send.call_args[0][0]["text"])
 
+    def test_help_mentions_export(self):
+        from telechat_pkg.web_chat import _handle_command
+        ws = MagicMock()
+        send = AsyncMock()
+        asyncio.run(_handle_command(ws, send, "user1", "/help"))
+        self.assertIn("/export", send.call_args[0][0]["text"])
+
+    def test_export_no_history(self):
+        from telechat_pkg.web_chat import _handle_command
+        ws = MagicMock()
+        send = AsyncMock()
+        with patch("telechat_pkg.web_chat.cc") as mock_cc:
+            mock_cc._session_mgr.get_or_create_active.return_value = MagicMock(name="default")
+            mock_cc.load_history.return_value = []
+            asyncio.run(_handle_command(ws, send, "user1", "/export"))
+        msg = send.call_args[0][0]
+        self.assertEqual(msg["type"], "system")
+        self.assertIn("No conversation", msg["text"])
+
+    def test_export_default_format_sends_download(self):
+        from telechat_pkg.web_chat import _handle_command
+        ws = MagicMock()
+        send = AsyncMock()
+        history = [{"role": "user", "content": "hi", "timestamp": 0},
+                   {"role": "assistant", "content": "hello", "timestamp": 0}]
+        with patch("telechat_pkg.web_chat.cc") as mock_cc:
+            mock_cc._session_mgr.get_or_create_active.return_value = MagicMock(name="default")
+            mock_cc.load_history.return_value = history
+            asyncio.run(_handle_command(ws, send, "user1", "/export"))
+        msg = send.call_args[0][0]
+        self.assertEqual(msg["type"], "download")
+        self.assertTrue(msg["filename"].endswith(".txt"))
+        self.assertEqual(msg["mime"], "text/plain")
+        self.assertEqual(msg["message_count"], 2)
+        self.assertIn("hello", msg["content"])
+
+    def test_export_json_format(self):
+        from telechat_pkg.web_chat import _handle_command
+        ws = MagicMock()
+        send = AsyncMock()
+        history = [{"role": "user", "content": "hi", "timestamp": 0}]
+        with patch("telechat_pkg.web_chat.cc") as mock_cc:
+            mock_cc._session_mgr.get_or_create_active.return_value = MagicMock(name="default")
+            mock_cc.load_history.return_value = history
+            asyncio.run(_handle_command(ws, send, "user1", "/export json"))
+        msg = send.call_args[0][0]
+        self.assertEqual(msg["type"], "download")
+        self.assertEqual(msg["mime"], "application/json")
+        self.assertTrue(msg["filename"].endswith(".json"))
+        json.loads(msg["content"])  # valid JSON
+
+    def test_export_unknown_format(self):
+        from telechat_pkg.web_chat import _handle_command
+        ws = MagicMock()
+        send = AsyncMock()
+        history = [{"role": "user", "content": "hi", "timestamp": 0}]
+        with patch("telechat_pkg.web_chat.cc") as mock_cc:
+            mock_cc._session_mgr.get_or_create_active.return_value = MagicMock(name="default")
+            mock_cc.load_history.return_value = history
+            asyncio.run(_handle_command(ws, send, "user1", "/export pdf"))
+        msg = send.call_args[0][0]
+        self.assertEqual(msg["type"], "system")
+        self.assertIn("Unknown format", msg["text"])
+
 
 class TestHandleChat(unittest.TestCase):
     def _run_chat(self, engine="cli", reply="test reply", stats=None):
@@ -410,6 +474,10 @@ class TestHandleChat(unittest.TestCase):
 
         types = [c[0][0]["type"] for c in send.call_args_list]
         self.assertIn("error", types)
+        error_msg = next(c[0][0] for c in send.call_args_list if c[0][0]["type"] == "error")
+        # The raw exception text must never reach the client — only the
+        # server log (see _friendly_error_text below).
+        self.assertNotIn("boom", error_msg["text"])
 
     def test_streamed_response(self):
         """When on_text is called, should send 'done' instead of 'reply'."""
@@ -444,6 +512,48 @@ class TestHandleChat(unittest.TestCase):
         self.assertIn("stream", types)
         self.assertIn("done", types)
         self.assertNotIn("reply", types)
+
+
+class TestFriendlyErrorText(unittest.TestCase):
+    """A raw `str(exc)` from an SDK/network failure must never reach the
+    browser client — see the comment on _friendly_error_text for why."""
+
+    def test_timeout(self):
+        from telechat_pkg.web_chat import _friendly_error_text
+        msg = _friendly_error_text(asyncio.TimeoutError())
+        self.assertIn("too long", msg)
+
+    def test_rate_limit_by_class_name(self):
+        from telechat_pkg.web_chat import _friendly_error_text
+        RateLimitError = type("RateLimitError", (Exception,), {})
+        msg = _friendly_error_text(RateLimitError("429 too many requests, retry-after: 30s"))
+        self.assertIn("too many requests", msg.lower())
+        self.assertNotIn("retry-after", msg)
+
+    def test_auth_error_by_class_name(self):
+        from telechat_pkg.web_chat import _friendly_error_text
+        AuthenticationError = type("AuthenticationError", (Exception,), {})
+        msg = _friendly_error_text(AuthenticationError("invalid x-api-key: sk-ant-secret123"))
+        self.assertIn("credentials", msg)
+        self.assertNotIn("sk-ant-secret123", msg)
+
+    def test_connection_error(self):
+        from telechat_pkg.web_chat import _friendly_error_text
+        msg = _friendly_error_text(ConnectionError("Connection reset by peer"))
+        self.assertIn("connection", msg.lower())
+        self.assertNotIn("reset by peer", msg)
+
+    def test_api_connection_error_by_class_name(self):
+        from telechat_pkg.web_chat import _friendly_error_text
+        APIConnectionError = type("APIConnectionError", (Exception,), {})
+        msg = _friendly_error_text(APIConnectionError("Connection to api.anthropic.com timed out"))
+        self.assertIn("connection", msg.lower())
+
+    def test_generic_fallback_hides_message(self):
+        from telechat_pkg.web_chat import _friendly_error_text
+        msg = _friendly_error_text(RuntimeError("/Users/dev/secret/path traceback detail"))
+        self.assertNotIn("/Users/dev/secret/path", msg)
+        self.assertIn("try again", msg.lower())
 
 
 class TestCreateApp(unittest.TestCase):

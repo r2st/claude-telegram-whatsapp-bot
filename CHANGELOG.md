@@ -47,9 +47,23 @@ not which function moved.
   `PATH` passed. Commands are now resolved to an absolute path, refused if that
   path or its directory is world-writable, and the resolved path is what gets
   executed.
+- **A failed Claude call in web chat showed the raw exception to the browser**
+  — SDK/network error text (hosts, status bodies, sometimes header values)
+  verbatim, prefixed "Error: Error: " (the client already adds one "Error: ").
+  Replaced with a small classifier that turns timeouts, rate limits, auth
+  failures, and connection errors into a plain-language message; the real
+  exception still goes to the server log.
 
 ### Added
 
+- **`telechat doctor`** — the same configuration/connectivity checks the
+  Telegram `/doctor` command runs, now reachable from the CLI for when the bot
+  won't start in the first place. Also flags settings in `.env` that nothing in
+  telechat reads (the `SYSTEM_PROMPT`/`CLAUDE_SYSTEM_PROMPT` kind of typo, so
+  it's caught immediately instead of looking like a broken feature).
+- **`/export` in the web chat UI**, matching the Telegram command: downloads
+  the current conversation as text, Markdown, HTML, or JSON directly from the
+  browser.
 - **`docs/configuration.md`** — every one of the 137 environment variables the
   code reads, with its real default. Generated from source and checked in CI, so
   it cannot fall behind again.

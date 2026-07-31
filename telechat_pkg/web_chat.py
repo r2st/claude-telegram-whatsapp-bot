@@ -338,6 +338,9 @@ async def _handle_command(
         else:
             await send_json({"type": "system", "text": f"Current model: {cc.CLAUDE_MODEL}"})
 
+    elif cmd == "/export":
+        await _handle_export(send_json, user_id, args)
+
     elif cmd == "/help":
         await send_json({
             "type": "system",
@@ -346,11 +349,46 @@ async def _handle_command(
                 "- `/clear` — clear conversation history\n"
                 "- `/new [name]` — start a new session\n"
                 "- `/model [name]` — show/set model\n"
+                "- `/export [text|md|html|json]` — download this conversation\n"
                 "- `/help` — show this help"
             ),
         })
     else:
         await send_json({"type": "system", "text": f"Unknown command: {cmd}. Type /help."})
+
+
+_EXPORT_MIME = {
+    "text": "text/plain",
+    "markdown": "text/markdown",
+    "html": "text/html",
+    "json": "application/json",
+}
+
+
+async def _handle_export(send_json, user_id: str, fmt_arg: str) -> None:
+    sess = cc._session_mgr.get_or_create_active(PLATFORM, user_id)
+    history = cc.load_history(PLATFORM, user_id, session_name=sess.name)
+    if not history:
+        await send_json({"type": "system", "text": "No conversation to export."})
+        return
+
+    from . import conversation_export
+    fmt = (fmt_arg or "text").strip().lower()
+    try:
+        result = conversation_export.export_conversation(
+            history, fmt, title=f"TeleChat web session: {sess.name}"
+        )
+    except ValueError as exc:
+        await send_json({"type": "system", "text": str(exc)})
+        return
+
+    await send_json({
+        "type": "download",
+        "filename": result.filename,
+        "content": result.content,
+        "mime": _EXPORT_MIME.get(result.format, "text/plain"),
+        "message_count": result.message_count,
+    })
 
 
 async def _handle_chat(
@@ -481,8 +519,37 @@ async def _handle_chat(
         await send_json({
             "type": "error",
             "msg_id": msg_id,
-            "text": f"Error: {exc}",
+            "text": _friendly_error_text(exc),
         })
+
+
+# Anthropic SDK exception class names, matched by name rather than imported so
+# this module doesn't need `anthropic` installed just to classify an error
+# that only occurs when it is (e.g. the CLI/SDK engines never raise these).
+_RATE_LIMIT_ERRORS = {"RateLimitError"}
+_AUTH_ERRORS = {"AuthenticationError", "PermissionDeniedError"}
+_CONNECTION_ERRORS = {"APIConnectionError", "APITimeoutError"}
+
+
+def _friendly_error_text(exc: Exception) -> str:
+    """A message safe to show a browser client.
+
+    `str(exc)` on an SDK/network failure can include request internals (host,
+    status body, timeouts) that mean nothing to the person chatting and were
+    previously shown verbatim as "Error: <that>". The real exception is still
+    in the server log via `log.exception` above; this is only what the client
+    sees.
+    """
+    name = type(exc).__name__
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "Claude took too long to respond. Please try again."
+    if name in _RATE_LIMIT_ERRORS:
+        return "Claude is receiving too many requests right now. Please wait a moment and try again."
+    if name in _AUTH_ERRORS:
+        return "The server's Claude credentials aren't working. Please contact the operator."
+    if isinstance(exc, (ConnectionError, OSError)) or name in _CONNECTION_ERRORS:
+        return "Lost connection to Claude. Please try again in a moment."
+    return "Something went wrong processing your message. Please try again."
 
 
 def _create_app() -> web.Application:
