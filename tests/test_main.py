@@ -1812,3 +1812,99 @@ class TestCmdDoctor:
         monkeypatch.setattr(sys, "argv", ["telechat", "help"])
         main_mod.cli_entry()
         assert "doctor" in capsys.readouterr().out
+
+
+# ─── shutdown drains the write queue on every path ───────────────────────────
+
+
+class TestShutdownWriterQuietly:
+    """The last chance to get queued writes onto disk must not itself explode.
+
+    These import ``telechat_pkg.main`` rather than the bare ``main`` the rest of
+    this file uses: the helper reaches the store through a relative import,
+    which is what the shipped package does and what the path-hacked top-level
+    import cannot resolve.
+    """
+
+    def test_delegates_to_the_store(self):
+        from telechat_pkg import main as pkg_main
+
+        with patch("telechat_pkg.store.shutdown_writer", return_value=True) as shutdown:
+            assert pkg_main._shutdown_writer_quietly(timeout=1.5) is True
+        shutdown.assert_called_once_with(timeout=1.5)
+
+    def test_reports_a_writer_that_would_not_stop(self):
+        from telechat_pkg import main as pkg_main
+
+        with patch("telechat_pkg.store.shutdown_writer", return_value=False):
+            assert pkg_main._shutdown_writer_quietly() is False
+
+    def test_swallows_failures_rather_than_replacing_the_users_error(self, caplog):
+        from telechat_pkg import main as pkg_main
+
+        with patch("telechat_pkg.store.shutdown_writer", side_effect=RuntimeError("db gone")):
+            assert pkg_main._shutdown_writer_quietly() is False
+        # Logged, not silent: this is the last chance to learn that queued
+        # writes did not make it to disk.
+        assert "writer shutdown failed" in caplog.text
+
+
+class TestStartupAlwaysDrainsTheWriteQueue:
+    """A boot that aborts must not strand writes the startup itself queued.
+
+    Startup does real database work — schema creation, session state, health —
+    before any adapter is reachable. Only the Ctrl-C path used to drain the
+    writer, so a missing token or an adapter raising on the way up killed the
+    writer thread's SQLite connection at interpreter exit with the queue still
+    holding rows. See ``docs/improvements.md`` item 11.
+    """
+
+    @contextmanager
+    def _startup(self, tmp_path, monkeypatch, run_effect):
+        """Run `_cmd_start()` far enough to reach (and leave) `asyncio.run`."""
+        import main as main_mod
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("BOT_MODE", "web")          # skips the WhatsApp preflight
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+        with ExitStack() as stack:
+            stack.enter_context(patch("main._terminate_previous_instances", return_value=[]))
+            stack.enter_context(patch("main._write_pid_file"))
+            stack.enter_context(patch("main._find_env_file", return_value=str(tmp_path / ".env")))
+            stack.enter_context(patch("asyncio.run", side_effect=run_effect))
+            drain = stack.enter_context(patch("main._shutdown_writer_quietly", return_value=True))
+            yield main_mod, drain
+
+    def test_drains_after_a_clean_run(self, tmp_path, monkeypatch):
+        with self._startup(tmp_path, monkeypatch, lambda coro: None) as (main_mod, drain):
+            main_mod._cmd_start()
+        drain.assert_called_once()
+
+    def test_drains_on_ctrl_c(self, tmp_path, monkeypatch):
+        with self._startup(tmp_path, monkeypatch, KeyboardInterrupt) as (main_mod, drain):
+            with pytest.raises(SystemExit) as exc:
+                main_mod._cmd_start()
+        assert exc.value.code == 0
+        drain.assert_called_once()
+
+    def test_drains_on_a_configuration_error(self, tmp_path, monkeypatch):
+        effect = RuntimeError("TELEGRAM_BOT_TOKEN not set")
+        with self._startup(tmp_path, monkeypatch, effect) as (main_mod, drain):
+            with pytest.raises(SystemExit) as exc:
+                main_mod._cmd_start()
+        assert exc.value.code == 1
+        drain.assert_called_once()
+
+    def test_drains_on_an_unexpected_crash(self, tmp_path, monkeypatch):
+        """The traceback still reaches the user; the queue still reaches disk."""
+        with self._startup(tmp_path, monkeypatch, ValueError("boom")) as (main_mod, drain):
+            with pytest.raises(ValueError, match="boom"):
+                main_mod._cmd_start()
+        drain.assert_called_once()
+
+    def test_drains_on_a_runtime_error_that_is_not_a_config_problem(self, tmp_path, monkeypatch):
+        effect = RuntimeError("event loop is closed")
+        with self._startup(tmp_path, monkeypatch, effect) as (main_mod, drain):
+            with pytest.raises(RuntimeError, match="event loop"):
+                main_mod._cmd_start()
+        drain.assert_called_once()

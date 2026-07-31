@@ -809,6 +809,28 @@ def _cmd_doctor() -> int:
 
 # ─── Start command (heavy setup deferred here) ───────────────────────────────
 
+def _shutdown_writer_quietly(timeout: float = 3.0) -> bool:
+    """Drain the write queue and stop the writer thread. Never raises.
+
+    Called from shutdown paths, where the process is already on its way out and
+    an exception here would replace whatever message the user actually needs to
+    see with a traceback about the database. Returns True if the writer stopped
+    or was never running.
+    """
+    try:
+        from . import store
+        return store.shutdown_writer(timeout=timeout)
+    except Exception as e:  # noqa: BLE001
+        # Logged rather than swallowed: this is the last chance to know that
+        # queued writes did not make it to disk.
+        try:
+            import logging
+            logging.getLogger("telechat").warning("writer shutdown failed: %s", e)
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+
 def _cmd_start() -> None:
     """Load config and start the bot."""
     import asyncio
@@ -952,13 +974,6 @@ def _cmd_start() -> None:
         asyncio.run(_main())
     except KeyboardInterrupt:
         print("\nShutting down…")
-        try:
-            from . import store
-            # Drains the queue *and* stops the writer thread so its SQLite
-            # connection is closed rather than killed at interpreter exit.
-            store.shutdown_writer(timeout=3.0)
-        except Exception:  # noqa: BLE001
-            pass
         sys.exit(0)
     except RuntimeError as e:
         # Missing token or similar misconfiguration — clean message, no traceback
@@ -968,6 +983,13 @@ def _cmd_start() -> None:
             _print_setup_guidance()
             sys.exit(1)
         raise
+    finally:
+        # Every exit from here drains the writer, not just Ctrl-C. Startup does
+        # real database work before any adapter is reachable — schema creation,
+        # session state, health — so a boot that aborts on a missing token or an
+        # adapter that raises would otherwise strand those writes in the queue
+        # and kill the writer thread's SQLite connection at interpreter exit.
+        _shutdown_writer_quietly()
 
 
 # ─── CLI entry point ─────────────────────────────────────────────────────────

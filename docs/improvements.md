@@ -520,6 +520,17 @@ path, where an aborted boot can now strand queued writes. Replace with a raised
 `SystemExit` and a `finally` that drains the writer.
 *(Remainder of `CODE_REVIEW.md` #5.)*
 
+> **Done (2026-07-31).** The line the item names is gone — that path already used
+> `sys.exit(1)` — but the hole it describes was still open: only the `KeyboardInterrupt`
+> branch drained the writer, so a boot aborting on a missing token, an adapter raising on
+> the way up, or any other exception left queued writes in the queue and the writer thread's
+> SQLite connection to be killed at interpreter exit. The drain now sits in a `finally`, so
+> every exit from `asyncio.run()` takes it, and it lives in `_shutdown_writer_quietly()`
+> which logs rather than raises — a shutdown-path exception must not replace the error the
+> user actually needs to read. The only surviving `os._exit(1)` is the second Ctrl-C, which
+> is deliberate: it is the force-quit. 8 tests in `tests/test_main.py`
+> (`TestShutdownWriterQuietly`, `TestStartupAlwaysDrainsTheWriteQueue`).
+
 ### 12. No dev-environment bootstrap documented
 
 **S (~1h).** `AGENTS.md` rule 8 says "run `pytest -q`", but the default `python3` on a
