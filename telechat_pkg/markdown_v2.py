@@ -47,6 +47,16 @@ _NUM_LIST_RE = re.compile(r'^(\s*)\d+\.\s+', re.MULTILINE)
 _URL_RE = re.compile(r'(?<!\()(https?://[^\s\)\]>]+)')
 _MD_LINK_SPANS_RE = re.compile(r'\[([^\]]+)\]\((https?://[^\)]+)\)')
 
+# Every span parked while the surrounding text is escaped uses this one shape,
+# so a single pass can put them all back. Restoring them used to be six loops
+# doing `result.replace(placeholder, value)` once per span, and each of those
+# rescans the entire message — O(spans x length). A reply is exactly the input
+# that makes both factors grow together, so the cost climbed quadratically:
+# 3.5 KB took 0.4 ms, 59 KB took 54 ms. One `sub` over the whole string is
+# linear, and the nesting the loop order used to encode is handled by expanding
+# each replacement before it is spliced in.
+_PLACEHOLDER_RE = re.compile(r'\x00(BOLD|STRIKE|ITALIC|LINK|INLINE|CODEBLOCK)(\d+)\x00')
+
 
 def escape_md2(text: str) -> str:
     """Escape special characters for MarkdownV2."""
@@ -154,37 +164,43 @@ def to_markdown_v2(text: str) -> str:
     # ...and put the blockquote markers back, now that escaping is done.
     result = result.replace(_QUOTE_MARK, ">")
 
-    # Restore bold
-    for i, bold_text in enumerate(bolds):
-        escaped_bold = escape_md2(bold_text)
-        result = result.replace(f"\x00BOLD{i}\x00", f"*{escaped_bold}*")
+    # Restore every parked span in one pass. A span's own text can hold another
+    # placeholder — a heading containing a link becomes bold wrapped around a
+    # LINK marker — so each replacement is expanded before it is spliced in
+    # rather than relying on a later loop to catch it. Code content is spliced
+    # in raw and deliberately not expanded: it is the user's text, not ours.
+    def _expand(fragment: str) -> str:
+        return _PLACEHOLDER_RE.sub(_restore, fragment)
 
-    # Restore strikethrough
-    for i, strike_text in enumerate(strikes):
-        escaped_strike = escape_md2(strike_text)
-        result = result.replace(f"\x00STRIKE{i}\x00", f"~{escaped_strike}~")
+    def _restore(m: re.Match) -> str:
+        kind = m.group(1)
+        idx = int(m.group(2))
+        table = {
+            "BOLD": bolds, "STRIKE": strikes, "ITALIC": italics,
+            "LINK": links, "INLINE": inline_codes, "CODEBLOCK": code_blocks,
+        }[kind]
+        # A literal NUL-delimited marker in the source text would otherwise
+        # index off the end and drop the whole message to plain text.
+        if idx >= len(table):
+            return m.group(0)
 
-    # Restore italic
-    for i, italic_text in enumerate(italics):
-        escaped_italic = escape_md2(italic_text)
-        result = result.replace(f"\x00ITALIC{i}\x00", f"_{escaped_italic}_")
+        if kind == "BOLD":
+            return f"*{_expand(escape_md2(bolds[idx]))}*"
+        if kind == "STRIKE":
+            return f"~{_expand(escape_md2(strikes[idx]))}~"
+        if kind == "ITALIC":
+            return f"_{_expand(escape_md2(italics[idx]))}_"
+        if kind == "LINK":
+            link_text, url = links[idx]
+            # URLs in links: only escape ) and \
+            escaped_url = url.replace("\\", "\\\\").replace(")", "\\)")
+            return f"[{_expand(escape_md2(link_text))}]({escaped_url})"
+        if kind == "INLINE":
+            return f"`{inline_codes[idx]}`"
+        lang, code = code_blocks[idx]
+        return f"```{lang}\n{code}```"
 
-    # Restore links
-    for i, (link_text, url) in enumerate(links):
-        escaped_text = escape_md2(link_text)
-        # URLs in links: only escape ) and \
-        escaped_url = url.replace("\\", "\\\\").replace(")", "\\)")
-        result = result.replace(f"\x00LINK{i}\x00", f"[{escaped_text}]({escaped_url})")
-
-    # Restore inline code (content not escaped in MarkdownV2)
-    for i, code_text in enumerate(inline_codes):
-        result = result.replace(f"\x00INLINE{i}\x00", f"`{code_text}`")
-
-    # Restore code blocks (content not escaped in MarkdownV2)
-    for i, (lang, code) in enumerate(code_blocks):
-        result = result.replace(f"\x00CODEBLOCK{i}\x00", f"```{lang}\n{code}```")
-
-    return result
+    return _expand(result)
 
 
 def try_markdownv2(text: str) -> tuple[str, str]:

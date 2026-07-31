@@ -1272,6 +1272,63 @@ class TestEscapeMd2:
         assert r"\(" in result and r"\)" in result
 
 
+class TestPlaceholderRestoration:
+    """The parked-span markers must never reach the chat.
+
+    Spans are parked behind NUL-delimited markers while the rest of the text is
+    escaped. Restoring them used to be one loop per span *kind*, in a fixed
+    order, which meant a marker that ended up nested inside a span restored
+    earlier was never looked at again — it shipped to Telegram as a literal
+    "\\x00BOLD0\\x00". One stray "**" is enough to cause that, and Claude
+    writes plenty of them.
+    """
+
+    def test_unclosed_bold_does_not_leak_a_heading_marker(self):
+        # The unclosed "**" makes the bold rule span forward and swallow the
+        # marker the heading was parked behind.
+        result = to_markdown_v2("**unclosed bold\n\n## A heading\n\n**real bold**")
+        assert "\x00" not in result
+        assert "BOLD0" not in result
+        assert "A heading" in result
+
+    def test_no_marker_survives_a_corpus_of_mixed_syntax(self):
+        pieces = [
+            "**unclosed bold", "## Heading with [link](https://e.com)",
+            "> quote with **bold** and `code`", "*italic with [l](https://x.com)*",
+            "~~strike~~", "```python\nx = 1\n```", "###### deep heading",
+        ]
+        for i in range(len(pieces)):
+            # Every rotation puts a different fragment first, which changes
+            # which spans end up nested inside which.
+            text = "\n\n".join(pieces[i:] + pieces[:i])
+            assert "\x00" not in to_markdown_v2(text)
+
+    def test_literal_marker_in_source_text_is_left_alone(self):
+        # Nothing indexes off the end and drops the message to plain text.
+        result = to_markdown_v2("a \x00BOLD7\x00 b")
+        assert "BOLD7" in result
+
+    def test_conversion_cost_stays_linear(self):
+        # Restoring span-by-span rescanned the whole message each time, so cost
+        # grew with spans x length. Quadratic here means a long reply — the one
+        # case that matters — pays the worst price, so assert the shape.
+        import time
+
+        block = "## S{i}\n**b{i}** and `c{i}` and [l](https://e.com/{i}).\n\n"
+
+        def elapsed(n):
+            doc = "".join(block.format(i=i) for i in range(n))
+            start = time.perf_counter()
+            to_markdown_v2(doc)
+            return time.perf_counter() - start
+
+        elapsed(200)  # warm any regex caches
+        small, large = elapsed(200), elapsed(1600)
+        # 8x the input. Linear would be ~8x; the old code was ~64x. A generous
+        # ceiling keeps this from flaking on a loaded CI box.
+        assert large < small * 25, f"{small=:.4f}s {large=:.4f}s — looks superlinear"
+
+
 class TestToMarkdownV2:
     def test_bold_text(self):
         result = to_markdown_v2("**bold**")

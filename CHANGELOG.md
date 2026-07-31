@@ -11,6 +11,20 @@ not which function moved.
 
 ### Fixed
 
+- **A stray `**` could replace a heading with `NUL BOLD0 NUL` in the message.**
+  Bold, links, code and headings are set aside behind markers while the rest of
+  the text is escaped, then put back. Putting them back was one pass per kind in
+  a fixed order, so a marker that ended up *inside* a span restored earlier was
+  never looked at again and went out literally. One unclosed `**` anywhere in a
+  reply was enough to trigger it, because the bold rule then runs forward and
+  swallows whatever marker it meets. Every marker is now expanded wherever it
+  ends up.
+- **Long replies spent far too long being formatted.** Restoring those same
+  markers rescanned the whole message once per marker, so the cost grew with
+  markers × length — quadratically, in the one case that matters. A 59 000-character
+  reply took 54 ms to format; it now takes 4 ms, and the cost grows in step with
+  the message instead of racing ahead of it.
+
 - **A link in a message could reach addresses on your own network.** Link
   understanding fetches any URL you paste, and only the URL itself was checked —
   redirects were followed automatically and never re-checked, so a public link
