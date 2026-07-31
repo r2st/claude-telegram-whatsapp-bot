@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telechat — self-hosted Claude bot for Telegram, WhatsApp &amp; Slack</title>
+<meta name="description" content="Self-hosted Claude bot for Telegram, WhatsApp, Slack and a local web chat — one process, no API key needed, MIT licensed. Install with one command.">
+<meta name="author" content="telechatai">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#0b0c0e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<link rel="canonical" href="https://telechat.fyi/">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="sitemap" type="application/xml" href="sitemap.xml">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Telechat">
+<meta property="og:url" content="https://telechat.fyi/">
+<meta property="og:title" content="Telechat — Claude on Telegram, WhatsApp &amp; Slack">
+<meta property="og:description" content="A self-hosted bot that runs Claude on every messenger you already use — and pages you on Telegram when a Claude Code session on your desktop needs a decision. One command to install.">
+<meta property="og:image" content="https://telechat.fyi/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Telechat — Claude on Telegram, WhatsApp and Slack. Self-hosted, one command.">
+<meta property="og:locale" content="en_US">
+
+<!-- Twitter / X -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Telechat — Claude on Telegram, WhatsApp &amp; Slack">
+<meta name="twitter:description" content="Self-hosted Claude bot for Telegram, WhatsApp, Slack and local web chat. Plus a Desktop bridge that pages you when Claude Code needs a decision.">
+<meta name="twitter:image" content="https://telechat.fyi/og.png">
+<meta name="twitter:image:alt" content="Telechat — Claude on Telegram, WhatsApp and Slack. Self-hosted, one command.">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Telechat",
+  "alternateName": "telechatai",
+  "description": "Self-hosted personal bot that runs Claude on Telegram, WhatsApp, Slack and a local web chat from a single process, with a Claude Code Desktop bridge for remote notifications and control.",
+  "url": "https://telechat.fyi/",
+  "applicationCategory": "DeveloperApplication",
+  "applicationSubCategory": "Chatbot",
+  "operatingSystem": "macOS, Linux, Windows (WSL)",
+  "softwareVersion": "1.2.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "downloadUrl": "https://www.npmjs.com/package/telechat",
+  "installUrl": "https://telechat.fyi/#install",
+  "softwareHelp": "https://github.com/telechatai/telechat#readme",
+  "codeRepository": "https://github.com/telechatai/telechat",
+  "programmingLanguage": "Python",
+  "isAccessibleForFree": true,
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "author": {
+    "@type": "Organization",
+    "name": "telechatai",
+    "url": "https://github.com/telechatai"
+  },
+  "featureList": [
+    "Telegram, WhatsApp, Slack and local web chat from one process",
+    "Claude Code Desktop bridge with AI triage digests and remote replies",
+    "CLI mode — no API key needed with a Claude subscription",
+    "Per-user memory with SQLite FTS5 search",
+    "Multi-session conversations",
+    "Knowledge base with document upload and search",
+    "Cost tracking and daily/monthly budgets",
+    "Smart model routing across Haiku, Sonnet and Opus"
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Do I need an Anthropic API key?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. In CLI mode Telechat shells out to the Claude Code CLI, which uses your existing Claude subscription, so there is no API key and no per-token bill. API mode with an ANTHROPIC_API_KEY is available if you prefer it, and is what the Docker image runs."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Where does my data go?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Nowhere you do not control. Telechat runs on your machine and stores conversations, memories and costs in a local SQLite database. There is no Telechat server, no account and no telemetry — messages go from the messenger's API to your process to Anthropic."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it need a public URL, a webhook or a tunnel?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. Telegram and WhatsApp use polling, Slack uses Socket Mode over an outbound WebSocket, and the web chat binds to loopback. Telechat works behind NAT, on hotel Wi-Fi and on a laptop that sleeps."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What exactly is the Claude Desktop bridge?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "It hooks into Claude Code on your machine. When a session finishes a turn or needs input, you get a triage card on Telegram summarising what happened and what decision is pending. Reply to the card and your message is injected into that session with claude --resume. Optionally every Bash, Write and Edit call can require approval from your phone."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can more than one person use it?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Technically yes — the allowlist accepts several IDs — but it is a single-operator tool. Everyone on the allowlist shares one Claude authentication, one working directory and one permission ceiling. Read SECURITY.md before adding a second person."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What does it cost?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Telechat is free and MIT licensed. In CLI mode your Claude subscription covers usage. In API mode you pay Anthropic per token, and Telechat tracks spend with daily and monthly budget limits."
+      }
+    }
+  ]
+}
+</script>
+
+<style>
+:root{
+  --bg:#0b0c0e; --bg-2:#101216; --surface:#14171c; --surface-2:#1a1e25;
+  --line:#252a33; --line-soft:#1d2128;
+  --fg:#eef1f5; --fg-2:#b8c0cc; --muted:#8a93a1;
+  --accent:#ff7a45; --accent-soft:rgba(255,122,69,.13); --accent-line:rgba(255,122,69,.35);
+  --blue:#5aa2ff; --green:#4ec98a; --yellow:#f0c05a;
+  --radius:14px; --radius-sm:10px;
+  --mono:ui-monospace,'SF Mono',SFMono-Regular,'JetBrains Mono','Fira Code',Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 12px 32px -12px rgba(0,0,0,.6);
+  --maxw:1120px;
+}
+:root[data-theme="light"]{
+  --bg:#ffffff; --bg-2:#f7f8fa; --surface:#ffffff; --surface-2:#f4f6f9;
+  --line:#e3e7ee; --line-soft:#edf0f5;
+  --fg:#0d1117; --fg-2:#414b58; --muted:#69727f;
+  --accent:#d84a12; --accent-soft:rgba(216,74,18,.08); --accent-line:rgba(216,74,18,.28);
+  --blue:#1f6feb; --green:#1a7f4b; --yellow:#9a6b00;
+  --shadow:0 1px 2px rgba(16,24,40,.06),0 12px 28px -14px rgba(16,24,40,.22);
+}
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.001ms!important;transition-duration:.001ms!important}
+}
+body{
+  margin:0;background:var(--bg);color:var(--fg);font-family:var(--sans);
+  font-size:16px;line-height:1.6;-webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+h1,h2,h3,h4{line-height:1.15;margin:0;letter-spacing:-.02em;font-weight:700}
+p{margin:0}
+a{color:inherit}
+img,svg{max-width:100%}
+hr{border:0;border-top:1px solid var(--line-soft);margin:0}
+::selection{background:var(--accent-soft);color:var(--fg)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+.skip{position:absolute;left:-9999px;top:0;background:var(--accent);color:#fff;padding:10px 16px;border-radius:0 0 8px 0;z-index:100}
+.skip:focus{left:0}
+
+/* ── nav ─────────────────────────────────────────────── */
+header.nav{
+  position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--bg) 82%,transparent);
+  backdrop-filter:saturate(180%) blur(14px);border-bottom:1px solid var(--line-soft);
+}
+.nav-in{display:flex;align-items:center;gap:20px;height:60px}
+.brand{display:flex;align-items:center;gap:9px;font-weight:750;letter-spacing:-.03em;font-size:17px;text-decoration:none}
+.brand .mark{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;background:var(--fg);color:var(--bg);font-size:12px;font-weight:800;font-family:var(--sans)}
+.nav-links{display:flex;gap:4px;margin-left:auto;align-items:center}
+.nav-links a{
+  text-decoration:none;color:var(--fg-2);font-size:14px;padding:7px 11px;border-radius:8px;
+  transition:color .15s,background .15s;
+}
+.nav-links a:hover{color:var(--fg);background:var(--surface-2)}
+.nav-cta{
+  display:inline-flex;align-items:center;gap:7px;background:var(--fg);color:var(--bg)!important;
+  font-weight:600;padding:8px 14px!important;border-radius:9px;text-decoration:none;font-size:14px;
+}
+.nav-cta:hover{opacity:.88;background:var(--fg)!important}
+.icon-btn{
+  background:transparent;border:1px solid var(--line);color:var(--fg-2);width:34px;height:34px;
+  border-radius:9px;display:grid;place-items:center;cursor:pointer;transition:.15s;flex:none;
+}
+.icon-btn:hover{color:var(--fg);border-color:var(--muted)}
+@media(max-width:820px){ .nav-links .hide-sm{display:none} }
+
+/* ── hero ────────────────────────────────────────────── */
+.hero{position:relative;padding:76px 0 64px;overflow:hidden}
+.hero::before{
+  content:"";position:absolute;inset:-40% 0 auto 0;height:640px;pointer-events:none;
+  background:radial-gradient(60% 60% at 50% 0%,var(--accent-soft),transparent 70%);
+}
+.hero-grid{position:relative;display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:56px;align-items:center}
+@media(max-width:940px){ .hero{padding:52px 0 48px} .hero-grid{grid-template-columns:1fr;gap:44px} }
+
+.pill{
+  display:inline-flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;
+  border:1px solid var(--accent-line);background:var(--accent-soft);color:var(--accent);
+  padding:5px 12px;border-radius:99px;letter-spacing:.01em;text-decoration:none;
+}
+.pill .dot{width:6px;height:6px;border-radius:99px;background:var(--accent)}
+h1.hero-h1{font-size:clamp(34px,5.2vw,58px);font-weight:800;letter-spacing:-.035em;margin:20px 0 0}
+h1.hero-h1 .grad{
+  background:linear-gradient(100deg,var(--accent),var(--yellow));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.hero-sub{font-size:clamp(16px,1.9vw,19px);color:var(--fg-2);margin-top:18px;max-width:34em}
+.hero-sub strong{color:var(--fg);font-weight:600}
+
+.cmd{
+  display:flex;align-items:center;gap:12px;margin-top:28px;background:var(--surface);
+  border:1px solid var(--line);border-radius:var(--radius);padding:14px 14px 14px 18px;
+  box-shadow:var(--shadow);max-width:520px;
+}
+.cmd code{font-family:var(--mono);font-size:13.5px;color:var(--fg);overflow-x:auto;white-space:nowrap;flex:1;scrollbar-width:none}
+.cmd code::-webkit-scrollbar{display:none}
+.cmd .pr{color:var(--muted);user-select:none}
+.copy{
+  flex:none;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);
+  background:var(--surface-2);color:var(--fg-2);font-size:12.5px;font-weight:600;font-family:var(--sans);
+  padding:7px 11px;border-radius:8px;cursor:pointer;transition:.15s;
+}
+.copy:hover{color:var(--fg);border-color:var(--muted)}
+.copy.done{color:var(--green);border-color:var(--green)}
+
+.cta-row{display:flex;flex-wrap:wrap;gap:12px;margin-top:18px;align-items:center}
+.btn{
+  display:inline-flex;align-items:center;gap:8px;text-decoration:none;font-weight:600;font-size:14.5px;
+  padding:11px 18px;border-radius:10px;border:1px solid transparent;transition:.15s;
+}
+.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn-primary:hover{filter:brightness(1.07)}
+.btn-ghost{border-color:var(--line);color:var(--fg-2);background:var(--surface)}
+.btn-ghost:hover{color:var(--fg);border-color:var(--muted)}
+.hero-note{font-size:13px;color:var(--muted);margin-top:16px}
+.hero-note code{font-family:var(--mono);font-size:12px;color:var(--fg-2)}
+
+/* ── phone mock ──────────────────────────────────────── */
+.mock{
+  position:relative;background:var(--surface);border:1px solid var(--line);border-radius:22px;
+  box-shadow:var(--shadow);padding:14px;
+}
+.mock-bar{display:flex;align-items:center;gap:8px;padding:2px 6px 12px;border-bottom:1px solid var(--line-soft);margin-bottom:14px}
+.mock-bar .d{width:9px;height:9px;border-radius:99px;background:var(--line)}
+.mock-bar .t{margin-left:6px;font-size:12px;color:var(--muted);font-family:var(--mono)}
+.bubble{border-radius:14px;padding:12px 14px;font-size:13.5px;line-height:1.55;max-width:88%;margin-bottom:10px}
+.bubble.me{margin-left:auto;background:var(--accent);color:#fff;border-bottom-right-radius:5px}
+.bubble.bot{background:var(--surface-2);border:1px solid var(--line-soft);border-bottom-left-radius:5px}
+.card-tri{background:var(--surface-2);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:10px;max-width:100%}
+.card-tri .hd{font-size:12.5px;color:var(--muted);font-family:var(--mono);margin-bottom:9px}
+.tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.06em;padding:3px 8px;border-radius:6px;margin-bottom:8px}
+.tag.warn{background:rgba(240,192,90,.14);color:var(--yellow);border:1px solid rgba(240,192,90,.3)}
+.card-tri p{font-size:13px;color:var(--fg-2);margin-bottom:10px}
+.card-tri .ask{font-size:13px;color:var(--fg);border-left:2px solid var(--yellow);padding-left:10px;margin-bottom:12px}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap}
+.mini{font-size:12px;padding:6px 11px;border-radius:8px;background:var(--surface);border:1px solid var(--line);color:var(--fg-2)}
+.typing{display:inline-flex;gap:4px;align-items:center;font-size:12px;color:var(--muted);padding-left:4px}
+.typing i{width:5px;height:5px;border-radius:99px;background:var(--muted);display:inline-block;animation:bl 1.3s infinite}
+.typing i:nth-child(2){animation-delay:.18s} .typing i:nth-child(3){animation-delay:.36s}
+@keyframes bl{0%,60%,100%{opacity:.25}30%{opacity:1}}
+
+/* ── trust strip ─────────────────────────────────────── */
+.strip{border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);background:var(--bg-2)}
+.strip-in{display:grid;grid-template-columns:repeat(4,1fr);gap:24px;padding:26px 0}
+.stat .n{font-size:22px;font-weight:750;letter-spacing:-.02em}
+.stat .l{font-size:12.5px;color:var(--muted);margin-top:2px}
+@media(max-width:700px){ .strip-in{grid-template-columns:repeat(2,1fr);gap:20px} }
+
+/* ── sections ────────────────────────────────────────── */
+section{padding:84px 0}
+@media(max-width:760px){ section{padding:60px 0} }
+.eyebrow{font-size:12.5px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:var(--accent)}
+h2{font-size:clamp(26px,3.4vw,38px);font-weight:780;margin-top:12px}
+.lede{color:var(--fg-2);font-size:17px;margin-top:14px;max-width:62ch}
+.sec-head{margin-bottom:44px}
+.sec-head.center{text-align:center;margin-left:auto;margin-right:auto}
+.sec-head.center .lede{margin-left:auto;margin-right:auto}
+
+/* bridge */
+.bridge-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:52px;align-items:center}
+@media(max-width:940px){ .bridge-grid{grid-template-columns:1fr;gap:36px} }
+.checks{list-style:none;padding:0;margin:26px 0 0;display:grid;gap:14px}
+.checks li{display:flex;gap:12px;font-size:15px;color:var(--fg-2)}
+.checks b{color:var(--fg);font-weight:650}
+.tick{flex:none;width:20px;height:20px;border-radius:6px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-size:12px;margin-top:2px}
+
+/* features */
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+@media(max-width:940px){ .cards{grid-template-columns:repeat(2,1fr)} }
+@media(max-width:620px){ .cards{grid-template-columns:1fr} }
+.card{
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:22px;
+  transition:border-color .18s,transform .18s;
+}
+.card:hover{border-color:var(--accent-line);transform:translateY(-2px)}
+.card .ic{width:34px;height:34px;border-radius:9px;background:var(--surface-2);border:1px solid var(--line-soft);display:grid;place-items:center;margin-bottom:14px;font-size:16px}
+.card h3{font-size:15.5px;font-weight:680;margin-bottom:7px}
+.card p{font-size:14px;color:var(--muted);line-height:1.6}
+.card code{font-family:var(--mono);font-size:12.5px;color:var(--fg-2)}
+
+/* table */
+.table-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface)}
+table{border-collapse:collapse;width:100%;min-width:660px;font-size:14px}
+th,td{text-align:left;padding:14px 18px;border-bottom:1px solid var(--line-soft)}
+thead th{font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:650;background:var(--surface-2)}
+tbody tr:last-child td{border-bottom:0}
+td:first-child,th:first-child{color:var(--fg);font-weight:600}
+td{color:var(--fg-2)}
+.yes{color:var(--green);font-weight:650}
+.no{color:var(--muted)}
+
+/* steps */
+.steps{display:grid;gap:18px;counter-reset:s}
+.step{
+  display:grid;grid-template-columns:38px minmax(0,1fr);gap:18px;align-items:start;
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:22px;
+}
+.step .num{
+  width:32px;height:32px;border-radius:9px;background:var(--accent-soft);color:var(--accent);
+  border:1px solid var(--accent-line);display:grid;place-items:center;font-weight:750;font-size:14px;font-family:var(--mono);
+}
+.step h3{font-size:16.5px;margin-bottom:6px}
+.step p{color:var(--muted);font-size:14.5px}
+pre{
+  margin:14px 0 0;background:var(--bg-2);border:1px solid var(--line-soft);border-radius:var(--radius-sm);
+  padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.7;color:var(--fg-2);
+}
+pre .c{color:var(--muted)}
+pre .k{color:var(--accent)}
+p code,li code,td code{font-family:var(--mono);font-size:.88em;background:var(--surface-2);border:1px solid var(--line-soft);border-radius:5px;padding:1px 5px}
+
+/* use cases */
+.uses{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+@media(max-width:760px){ .uses{grid-template-columns:1fr} }
+.use{background:var(--surface);border:1px solid var(--line);border-left:2px solid var(--accent);border-radius:var(--radius);padding:22px}
+.use h3{font-size:16px;margin-bottom:8px}
+.use p{color:var(--muted);font-size:14.5px}
+
+/* feedback */
+.wall{
+  border:1px dashed var(--line);border-radius:var(--radius);background:var(--surface);
+  padding:38px 28px;text-align:center;
+}
+.wall p{color:var(--muted);max-width:56ch;margin:12px auto 0;font-size:15px}
+
+/* faq */
+details{border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);margin-bottom:10px;overflow:hidden}
+details[open]{border-color:var(--accent-line)}
+summary{
+  cursor:pointer;list-style:none;padding:18px 22px;font-weight:620;font-size:15.5px;
+  display:flex;align-items:center;justify-content:space-between;gap:16px;
+}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";color:var(--accent);font-size:20px;font-weight:400;line-height:1;flex:none}
+details[open] summary::after{content:"−"}
+details .body{padding:0 22px 20px;color:var(--fg-2);font-size:14.5px;max-width:76ch}
+
+/* final cta */
+.final{
+  border:1px solid var(--line);border-radius:22px;background:
+    radial-gradient(80% 140% at 50% 0%,var(--accent-soft),transparent 65%),var(--surface);
+  padding:56px 28px;text-align:center;
+}
+.final h2{margin-top:0}
+.final .cmd{margin-left:auto;margin-right:auto}
+.qr{margin-top:34px;display:inline-flex;flex-direction:column;align-items:center;gap:8px}
+.qr img{width:104px;height:104px;border-radius:10px;background:#fff;padding:6px}
+.qr span{font-size:12px;color:var(--muted);font-family:var(--mono);letter-spacing:.04em}
+
+/* footer */
+footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px 0 40px;margin-top:20px}
+.foot{display:grid;grid-template-columns:1.4fr repeat(3,1fr);gap:32px}
+@media(max-width:760px){ .foot{grid-template-columns:1fr 1fr;gap:28px} }
+.foot h4{font-size:12.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:14px;font-weight:650}
+.foot a{display:block;color:var(--fg-2);text-decoration:none;font-size:14px;padding:4px 0}
+.foot a:hover{color:var(--accent)}
+.foot .about{color:var(--muted);font-size:14px;margin-top:12px;max-width:34ch}
+.legal{margin-top:36px;padding-top:22px;border-top:1px solid var(--line-soft);display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="/"><span class="mark" aria-hidden="true">TC</span> Telechat</a>
+    <nav class="nav-links" aria-label="Primary">
+      <a class="hide-sm" href="#bridge">Bridge</a>
+      <a class="hide-sm" href="#features">Features</a>
+      <a class="hide-sm" href="#platforms">Platforms</a>
+      <a class="hide-sm" href="#compare">Compare</a>
+      <a href="#install">Install</a>
+      <button class="icon-btn" id="theme" type="button" aria-label="Toggle colour theme" title="Toggle colour theme">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+      </button>
+      <a class="nav-cta" href="https://github.com/telechatai/telechat" rel="noopener">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        Star
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ── HERO ────────────────────────────────────────────── -->
+<div class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <a class="pill" href="#bridge"><span class="dot" aria-hidden="true"></span> New — Claude Code Desktop bridge</a>
+      <h1 class="hero-h1">Claude on every messenger you already use.<br><span class="grad">Running on your machine.</span></h1>
+      <p class="hero-sub">Telechat is a self-hosted bot that puts Claude on <strong>Telegram</strong>, <strong>WhatsApp</strong>, <strong>Slack</strong> and a local <strong>web chat</strong> — all from one process. No server, no account, and with a Claude subscription, <strong>no API key</strong>.</p>
+
+      <div class="cmd">
+        <code id="cmd-hero"><span class="pr">$ </span>npm install -g telechat &amp;&amp; telechat init</code>
+        <button class="copy" type="button" data-copy="npm install -g telechat &amp;&amp; telechat init">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span>Copy</span>
+        </button>
+      </div>
+
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#install">Get started
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/telechatai/telechat" rel="noopener">Read the source</a>
+      </div>
+      <p class="hero-note">Also on <code>pip install telechatai</code> · Python 3.10–3.13 · MIT licensed · v1.2.0</p>
+    </div>
+
+    <!-- Telegram-style preview of a bridge triage card -->
+    <div class="mock" role="img" aria-label="A Telegram chat showing Telechat: a user asks for the failing test, Claude replies, and a Desktop bridge triage card reports that a session needs a decision, with Full output and Use session buttons.">
+      <div class="mock-bar" aria-hidden="true">
+        <span class="d"></span><span class="d"></span><span class="d"></span>
+        <span class="t">Telegram · @your_bot</span>
+      </div>
+      <div class="bubble me">which test is failing on main?</div>
+      <div class="bubble bot"><b>test_store.py::test_write_queue_drain</b> — the writer thread exits before the queue drains, so the last 2 rows land through the sync fallback. Want me to patch it?</div>
+      <div class="card-tri">
+        <div class="hd">💬 Reply from apprend-backend [b2ca0347]</div>
+        <span class="tag warn">⚠ NEEDS DECISION</span>
+        <p>Migrated password hashing to argon2id, consolidated token paths, added refresh rotation. All 31 tests pass, staging verified.</p>
+        <div class="ask"><b>Needs you:</b> migrate OAuth1 to the new flow, or drop legacy support?</div>
+        <div class="btn-row"><span class="mini">📄 Full output</span><span class="mini">💬 Use session</span></div>
+      </div>
+      <div class="typing" aria-hidden="true"><i></i><i></i><i></i> Claude is typing…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── STRIP ───────────────────────────────────────────── -->
+<div class="strip">
+  <div class="wrap strip-in">
+    <div class="stat"><div class="n">4</div><div class="l">Platforms, one process</div></div>
+    <div class="stat"><div class="n">0</div><div class="l">Servers to run</div></div>
+    <div class="stat"><div class="n">$0</div><div class="l">In CLI mode</div></div>
+    <div class="stat"><div class="n">MIT</div><div class="l">Fully open source</div></div>
+  </div>
+</div>
+
+<!-- ── BRIDGE ──────────────────────────────────────────── -->
+<section id="bridge">
+  <div class="wrap">
+    <div class="bridge-grid">
+      <div>
+        <p class="eyebrow">The differentiator</p>
+        <h2>Your Claude Code sessions can page you.</h2>
+        <p class="lede">Telechat hooks into Claude Code on your desktop. When a session finishes a turn or stalls on a question, you get a triage card on Telegram — status first, decision pulled to the top. Reply to the card and your answer is injected straight back into that session.</p>
+        <ul class="checks">
+          <li><span class="tick" aria-hidden="true">✓</span><span><b>Glanceable digests.</b> A fast model turns a wall of output into ✅ DONE / ⚠ NEEDS DECISION / ❌ BLOCKED — with the full text one tap away, never lost.</span></li>
+          <li><span class="tick" aria-hidden="true">✓</span><span><b>Reply from anywhere.</b> Your message resumes the session with <code>claude --resume</code>. Broadcast to every running session with <code>/desktop_all</code>.</span></li>
+          <li><span class="tick" aria-hidden="true">✓</span><span><b>Approve tools from your phone.</b> Opt in per project and every Bash, Write and Edit call waits for your tap — with an explicit timeout policy, not an accident.</span></li>
+          <li><span class="tick" aria-hidden="true">✓</span><span><b>One command.</b> <code>telechat bridge install</code> writes the hooks, installs a launchd service and runs preflight checks.</span></li>
+        </ul>
+        <div class="cta-row">
+          <a class="btn btn-ghost" href="https://github.com/telechatai/telechat#claude-desktop-bridge" rel="noopener">Bridge documentation</a>
+        </div>
+      </div>
+      <div>
+        <div class="mock">
+          <div class="mock-bar" aria-hidden="true"><span class="d"></span><span class="d"></span><span class="d"></span><span class="t">~ · telechat bridge</span></div>
+<pre aria-label="Terminal session installing the Telechat desktop bridge"><span class="c">$</span> telechat bridge install --approval
+
+<span class="k">✓</span> Registered hooks in ~/.claude/settings.json
+  Stop · Notification · SubagentStop · PreToolUse
+<span class="k">✓</span> Installed launchd service (auto-start at login)
+<span class="k">✓</span> Preflight: claude CLI 2.1.4 found
+<span class="k">✓</span> Preflight: Telegram credentials present
+<span class="k">✓</span> Preflight: long-lived OAuth token present
+
+  Approval mode is <span class="k">off</span> per project by default.
+  Reply <span class="k">/desktop_approve_on</span> to any session card
+  to gate Bash/Write/Edit on that project.
+
+<span class="c">$</span> <span class="c"># now go make coffee — your phone has the rest</span></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<!-- ── FEATURES ────────────────────────────────────────── -->
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head center">
+      <p class="eyebrow">Features</p>
+      <h2>A personal assistant, not a demo</h2>
+      <p class="lede">Everything runs in one process against one local SQLite file. Nothing here needs a second service.</p>
+    </div>
+    <div class="cards">
+      <div class="card"><div class="ic" aria-hidden="true">💬</div><h3>Four surfaces, one process</h3><p>Telegram, WhatsApp (Green API), Slack (Socket Mode) and a local web chat. Set <code>BOT_MODE=all</code> and they share the same sessions, memory and history.</p></div>
+      <div class="card"><div class="ic" aria-hidden="true">🔑</div><h3>No API key required</h3><p>CLI mode shells out to the Claude Code CLI, so your existing subscription covers it. Prefer the API? Set <code>CLAUDE_MODE=api</code> and a key.</p></div>
+      <div class="card"><div class="ic" aria-hidden="true">🧠</div><h3>Memory that persists</h3><p><code>/remember</code> anything and it survives every reset — per-user memories with SQLite FTS5 search, export and import.</p></div>
+      <div class="card"><div class="ic" aria-hidden="true">🗂️</div><h3>Multi-session conversations</h3><p>Create, switch, rename, pin, archive and fork named sessions. Resume a Claude CLI session by id from your phone.</p></div>
+      <div class="card"><div class="ic" aria-hidden="true">📚</div><h3>Knowledge base</h3><p>Upload PDFs and docs with <code>/kb</code>; they're chunked, indexed and searchable, then quoted back with the answer.</p></div>
+      <div class="card"><div class="ic" aria-hidden="true">👨‍💻</div><h3>Coding agent</h3><p><code>/code</code> and <code>/project</code> run end-to-end development tasks in a directory you nominate, with progress streamed to the chat.</p></div>
+      <div class="card"><div class="ic" aria-hidden="true">🧭</div><h3>Smart model routing</h3><p>Trivial questions go to Haiku, hard ones to Opus, everything else to Sonnet — or pin a model with <code>/model</code>.</p></div>
+      <div class="card"><div class="ic" aria-hidden="true">💸</div><h3>Cost tracking &amp; budgets</h3><p>Per-day and per-month ceilings with alerts before you hit them, and <code>/usage</code> for where the money went.</p></div>
+      <div class="card"><div class="ic" aria-hidden="true">🎨</div><h3>Media generation</h3><p>Images, text-to-speech, music and video from a chat command — plus voice transcription and document extraction inbound.</p></div>
+      <div class="card"><div class="ic" aria-hidden="true">🔌</div><h3>MCP servers</h3><p>Attach Model Context Protocol servers and Claude can use them from any of your messengers, with the resolved binary vetted first.</p></div>
+      <div class="card"><div class="ic" aria-hidden="true">❤️‍🩹</div><h3>Health &amp; self-healing</h3><p>An HTTP <code>/health</code> endpoint with component status and DB write-path counters, circuit breakers, and a watchdog that restarts a wedged process.</p></div>
+      <div class="card"><div class="ic" aria-hidden="true">🔒</div><h3>Locked down by default</h3><p>Flat allowlist per platform, web chat bound to loopback and refusing to start exposed without a token, and secrets masked in every log.</p></div>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<!-- ── PLATFORMS ───────────────────────────────────────── -->
+<section id="platforms">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="eyebrow">Platforms</p>
+      <h2>Pick the one you already have open</h2>
+      <p class="lede">Telegram is the most complete adapter; the others cover the core chat loop. The web chat needs no account anywhere, which makes it the fastest way to try Telechat.</p>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <caption class="sr-only" style="position:absolute;left:-9999px">Feature comparison across Telegram, WhatsApp, Slack and the local web chat</caption>
+        <thead><tr><th scope="col">&nbsp;</th><th scope="col">Telegram</th><th scope="col">WhatsApp</th><th scope="col">Slack</th><th scope="col">Web chat</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Bridge</th><td>Bot API</td><td>Green API free tier</td><td>Bolt + Socket Mode</td><td>Local aiohttp</td></tr>
+          <tr><th scope="row">Setup</th><td>Talk to @BotFather</td><td>Scan a QR code</td><td>Create a Slack app</td><td class="yes">Nothing — open the URL</td></tr>
+          <tr><th scope="row">Photos &amp; files</th><td class="yes">Yes</td><td class="no">Text only</td><td class="no">Text only</td><td class="no">Text only</td></tr>
+          <tr><th scope="row">Interactive UI</th><td class="yes">Inline buttons</td><td class="no">—</td><td>Reactions as status</td><td class="yes">Full browser UI</td></tr>
+          <tr><th scope="row">Desktop bridge</th><td class="yes">Yes</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><th scope="row">Works without a public URL</th><td class="yes">Yes (polling)</td><td class="yes">Yes (polling)</td><td class="yes">Yes (WebSocket)</td><td class="yes">It <em>is</em> local</td></tr>
+          <tr><th scope="row">Works on corporate Wi-Fi</th><td>Depends</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<!-- ── COMPARE ─────────────────────────────────────────── -->
+<section id="compare">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="eyebrow">How it compares</p>
+      <h2>Against the other ways to get Claude in a chat</h2>
+      <p class="lede">Most Claude-on-Telegram projects are a single-file script around one API call. Hosted assistants are the opposite trade: no setup, but your conversations live on someone else's box.</p>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th scope="col">&nbsp;</th><th scope="col">Telechat</th><th scope="col">Typical bot script</th><th scope="col">Hosted AI assistant</th>
+        </tr></thead>
+        <tbody>
+          <tr><th scope="row">Where it runs</th><td class="yes">Your machine</td><td>Your machine</td><td class="no">Vendor cloud</td></tr>
+          <tr><th scope="row">Cost model</th><td class="yes">Free with a Claude subscription</td><td>API tokens</td><td class="no">Monthly seat</td></tr>
+          <tr><th scope="row">Messengers supported</th><td class="yes">Telegram + WhatsApp + Slack + web</td><td>One</td><td>Varies, usually one</td></tr>
+          <tr><th scope="row">Conversation storage</th><td class="yes">Local SQLite you can read</td><td>In memory, lost on restart</td><td class="no">Vendor database</td></tr>
+          <tr><th scope="row">Claude Code integration</th><td class="yes">Desktop bridge with remote replies</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><th scope="row">Access to your files</th><td class="yes">Yours, scoped by config</td><td class="no">Usually none</td><td class="no">None</td></tr>
+          <tr><th scope="row">Runs as a service</th><td class="yes">launchd / systemd + watchdog</td><td class="no">A terminal you can't close</td><td>Not yours to run</td></tr>
+          <tr><th scope="row">Auditable</th><td class="yes">MIT, tests in CI on 3.10–3.13</td><td>Varies</td><td class="no">Closed</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="hero-note">Telechat is a single-operator tool by design. If you need per-user isolation, roles or a shared workspace, use a hosted assistant — that is a different product, and <a href="https://github.com/telechatai/telechat/blob/main/SECURITY.md" rel="noopener">SECURITY.md</a> says so plainly.</p>
+  </div>
+</section>
+
+<hr>
+
+<!-- ── INSTALL ─────────────────────────────────────────── -->
+<section id="install">
+  <div class="wrap">
+    <div class="sec-head center">
+      <p class="eyebrow">Get started</p>
+      <h2>Running in about three minutes</h2>
+      <p class="lede">The only prerequisite is the Claude Code CLI, and only if you want the free CLI mode.</p>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="num">1</div>
+        <div>
+          <h3>Install the Claude Code CLI</h3>
+          <p>Skip this if you plan to use API mode with an <code>ANTHROPIC_API_KEY</code>.</p>
+<pre><span class="c">$</span> npm install -g @anthropic-ai/claude-code
+<span class="c">$</span> claude auth login</pre>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">2</div>
+        <div>
+          <h3>Install Telechat</h3>
+          <p>npm, pip, npx or from source — the CLI is the same either way.</p>
+<pre><span class="c"># npm (recommended)</span>
+<span class="c">$</span> npm install -g telechat
+
+<span class="c"># or pip</span>
+<span class="c">$</span> pip install telechatai
+
+<span class="c"># or no install at all</span>
+<span class="c">$</span> npx telechat init</pre>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">3</div>
+        <div>
+          <h3>Run the setup wizard</h3>
+          <p><code>telechat init</code> is AI-guided: it opens the right pages, collects your tokens, validates them and writes your <code>.env</code>. Prefer plain prompts? Use <code>telechat setup</code>.</p>
+<pre><span class="c">$</span> telechat init
+
+  Which platforms? <span class="k">[telegram]</span> whatsapp  slack  web
+  Claude mode?     <span class="k">[cli]</span> api
+  ✓ Token validated · ✓ Wrote ~/.telechat/.env
+  ✓ Try it now: http://127.0.0.1:8585</pre>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">4</div>
+        <div>
+          <h3>Start it — and forget it</h3>
+          <p>It runs detached, survives closing the terminal, and comes back after a crash. <code>telechat doctor</code> tells you what's wrong when something is.</p>
+<pre><span class="c">$</span> telechat            <span class="c"># start in the background</span>
+<span class="c">$</span> telechat status     <span class="c"># is it alive?</span>
+<span class="c">$</span> telechat logs       <span class="c"># tail the log</span>
+<span class="c">$</span> telechat doctor     <span class="c"># diagnose config + connectivity</span>
+<span class="c">$</span> telechat bridge install   <span class="c"># hook up Claude Code</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <p class="hero-note" style="margin-top:22px">Running in Docker? <code>docker compose up -d</code> starts it in API mode with a persistent volume for <code>bot.db</code> and a loopback-only health endpoint. Full reference: <a href="https://github.com/telechatai/telechat/blob/main/docs/configuration.md" rel="noopener">every environment variable, generated from the source</a>.</p>
+  </div>
+</section>
+
+<hr>
+
+<!-- ── USE CASES ───────────────────────────────────────── -->
+<section id="use-cases">
+  <div class="wrap">
+    <div class="sec-head center">
+      <p class="eyebrow">Use cases</p>
+      <h2>What people actually do with it</h2>
+    </div>
+    <div class="uses">
+      <div class="use"><h3>Babysit long Claude Code runs from the sofa</h3><p>Kick off a refactor, close the laptop lid on the question of whether to keep the legacy flow, and answer it from Telegram when the card arrives. The session resumes without you touching the keyboard.</p></div>
+      <div class="use"><h3>A second brain that survives restarts</h3><p><code>/remember</code> the things you keep re-explaining — stack, conventions, who owns what — and every future conversation on every platform starts with them already loaded.</p></div>
+      <div class="use"><h3>Ask your own documents anything</h3><p>Drop contracts, RFCs or a manual into the knowledge base and query them in the same thread where you ask everything else. The files never leave your disk except as prompt context.</p></div>
+      <div class="use"><h3>Claude in a team channel, without a vendor</h3><p>Socket Mode means no public URL and no inbound firewall rule. The bot lives on one laptop, answers in a channel, and the allowlist keeps it to the people you named.</p></div>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<!-- ── FEEDBACK ────────────────────────────────────────── -->
+<section id="feedback">
+  <div class="wrap">
+    <div class="sec-head center">
+      <p class="eyebrow">From the community</p>
+      <h2>Running Telechat? Tell us how</h2>
+    </div>
+    <div class="wall">
+      <p>This space is for real quotes from real users, so it stays empty until there are some. If Telechat is part of your setup, open a <a href="https://github.com/telechatai/telechat/discussions" rel="noopener">discussion</a> or an <a href="https://github.com/telechatai/telechat/issues" rel="noopener">issue</a> — what you built, what broke, what's missing. Both shape what ships next.</p>
+      <div class="cta-row" style="justify-content:center;margin-top:22px">
+        <a class="btn btn-ghost" href="https://github.com/telechatai/telechat/discussions" rel="noopener">Share your setup</a>
+        <a class="btn btn-ghost" href="https://github.com/telechatai/telechat/blob/main/CONTRIBUTING.md" rel="noopener">Contribute</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<!-- ── FAQ ─────────────────────────────────────────────── -->
+<section id="faq">
+  <div class="wrap" style="max-width:840px">
+    <div class="sec-head center">
+      <p class="eyebrow">FAQ</p>
+      <h2>Questions people ask first</h2>
+    </div>
+
+    <details open>
+      <summary>Do I need an Anthropic API key?</summary>
+      <div class="body">No. In CLI mode Telechat shells out to the Claude Code CLI, which uses your existing Claude subscription — no key, no per-token bill. API mode with an <code>ANTHROPIC_API_KEY</code> is available if you prefer it, and is what the Docker image runs, since the container has no host Claude authentication.</div>
+    </details>
+
+    <details>
+      <summary>Where does my data go?</summary>
+      <div class="body">Nowhere you don't control. Telechat runs on your machine and keeps conversations, memories and cost history in a local SQLite file. There is no Telechat server, no account and no telemetry — messages travel from the messenger's API to your process to Anthropic, and that's the whole path.</div>
+    </details>
+
+    <details>
+      <summary>Does it need a public URL, a webhook or a tunnel?</summary>
+      <div class="body">No. Telegram and WhatsApp poll, Slack opens an outbound WebSocket via Socket Mode, and the web chat binds to <code>127.0.0.1</code>. Telechat works behind NAT, on a corporate network, and on a laptop that sleeps.</div>
+    </details>
+
+    <details>
+      <summary>What exactly is the Claude Desktop bridge?</summary>
+      <div class="body">Hooks registered in <code>~/.claude/settings.json</code>. When a Claude Code session on your machine stops, needs input, or finishes a subagent, Telechat posts a triage card to Telegram summarising the result and surfacing any pending decision. Replying to the card injects your message into that session via <code>claude --resume</code>, and with <code>--approval</code> every Bash, Write and Edit call waits for a tap first.</div>
+    </details>
+
+    <details>
+      <summary>Can more than one person use it?</summary>
+      <div class="body">Technically yes — the allowlist takes several IDs — but treat it as single-operator. Everyone on the list shares one Claude authentication, one working directory and one permission ceiling that any of them can raise. That's fine for you and your phone; it is not a multi-tenant deployment.</div>
+    </details>
+
+    <details>
+      <summary>What does it cost?</summary>
+      <div class="body">Telechat itself is free and MIT licensed. In CLI mode your Claude subscription covers usage. In API mode you pay Anthropic per token — and Telechat tracks it, with <code>/budget</code> for daily and monthly ceilings plus alerts before you hit them.</div>
+    </details>
+
+    <details>
+      <summary>Which platform should I start with?</summary>
+      <div class="body">The web chat, if you just want to see it work — <code>BOT_MODE=web</code> needs no account anywhere. Telegram, if you want the full feature set: it is the only adapter with inline buttons, photo and file handling, and the Desktop bridge.</div>
+    </details>
+
+    <details>
+      <summary>Is it safe to run on my work laptop?</summary>
+      <div class="body">Read <a href="https://github.com/telechatai/telechat/blob/main/SECURITY.md" rel="noopener">SECURITY.md</a> first — it states the trust boundary rather than hiding it. In CLI mode the bot inherits your Claude authentication and your filesystem access, so anyone on the allowlist effectively has your shell. Scope <code>CLAUDE_CLI_WORK_DIR</code>, keep the allowlist to yourself, and don't run it on a machine you don't trust.</div>
+    </details>
+  </div>
+</section>
+
+<!-- ── FINAL CTA ───────────────────────────────────────── -->
+<section id="start" style="padding-top:20px">
+  <div class="wrap">
+    <div class="final">
+      <h2>One command. Then it's just a chat.</h2>
+      <p class="lede" style="margin-left:auto;margin-right:auto;text-align:center">Install it, answer four prompts, and message your own bot.</p>
+      <div class="cmd" style="margin-top:26px">
+        <code><span class="pr">$ </span>npm install -g telechat &amp;&amp; telechat init</code>
+        <button class="copy" type="button" data-copy="npm install -g telechat &amp;&amp; telechat init">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <span>Copy</span>
+        </button>
+      </div>
+      <div class="qr">
+        <img src="qrcode.svg" alt="QR code linking to telechat.fyi" width="104" height="104" loading="lazy">
+        <span>telechat.fyi</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div>
+        <a class="brand" href="/"><span class="mark" aria-hidden="true">TC</span> Telechat</a>
+        <p class="about">Claude on Telegram, WhatsApp, Slack and a local web chat. Self-hosted, single process, MIT licensed.</p>
+      </div>
+      <div>
+        <h4>Product</h4>
+        <a href="#features">Features</a>
+        <a href="#bridge">Desktop bridge</a>
+        <a href="#platforms">Platforms</a>
+        <a href="#compare">Comparison</a>
+      </div>
+      <div>
+        <h4>Docs</h4>
+        <a href="https://github.com/telechatai/telechat#readme" rel="noopener">README</a>
+        <a href="https://github.com/telechatai/telechat/blob/main/docs/configuration.md" rel="noopener">Configuration</a>
+        <a href="https://github.com/telechatai/telechat/blob/main/docs/architecture.md" rel="noopener">Architecture</a>
+        <a href="https://github.com/telechatai/telechat/blob/main/CHANGELOG.md" rel="noopener">Changelog</a>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <a href="https://github.com/telechatai/telechat" rel="noopener">GitHub</a>
+        <a href="https://www.npmjs.com/package/telechat" rel="noopener">npm</a>
+        <a href="https://pypi.org/project/telechatai/" rel="noopener">PyPI</a>
+        <a href="https://github.com/telechatai/telechat/blob/main/SECURITY.md" rel="noopener">Security</a>
+      </div>
+    </div>
+    <div class="legal">
+      <span>MIT licensed. Not affiliated with Anthropic, Telegram, Meta or Slack.</span>
+      <span>Built with agents, in public.</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  // Theme: honour the OS by default, remember an explicit choice.
+  var root = document.documentElement;
+  var saved = null;
+  try { saved = localStorage.getItem('tc-theme'); } catch (e) {}
+  var prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+  root.setAttribute('data-theme', saved || (prefersLight ? 'light' : 'dark'));
+
+  var toggle = document.getElementById('theme');
+  if (toggle) {
+    toggle.addEventListener('click', function () {
+      var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem('tc-theme', next); } catch (e) {}
+    });
+  }
+
+  // Copy-to-clipboard, with a fallback for pages not served over https.
+  function copy(text) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    return new Promise(function (resolve, reject) {
+      var el = document.createElement('textarea');
+      el.value = text;
+      el.setAttribute('readonly', '');
+      el.style.position = 'fixed';
+      el.style.opacity = '0';
+      document.body.appendChild(el);
+      el.select();
+      try { document.execCommand('copy') ? resolve() : reject(); }
+      catch (e) { reject(e); }
+      finally { document.body.removeChild(el); }
+    });
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (btn) {
+    btn.addEventListener('click', function () {
+      var label = btn.querySelector('span');
+      var was = label ? label.textContent : '';
+      copy(btn.getAttribute('data-copy')).then(function () {
+        btn.classList.add('done');
+        if (label) label.textContent = 'Copied';
+      }).catch(function () {
+        if (label) label.textContent = 'Press ⌘C';
+      }).then(function () {
+        setTimeout(function () {
+          btn.classList.remove('done');
+          if (label) label.textContent = was;
+        }, 1600);
+      });
+    });
+  });
+})();
+</script>
+</body>
+</html>
