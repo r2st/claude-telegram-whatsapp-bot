@@ -11,6 +11,7 @@ Set BOT_MODE in your .env to one or more platforms (comma-separated):
   BOT_MODE=telegram              — Telegram only  (default)
   BOT_MODE=whatsapp              — WhatsApp only
   BOT_MODE=slack                 — Slack only
+  BOT_MODE=discord               — Discord only
   BOT_MODE=web                   — Web chat only (browser)
   BOT_MODE=telegram,whatsapp     — Telegram + WhatsApp
   BOT_MODE=telegram,slack        — Telegram + Slack
@@ -108,6 +109,7 @@ def _has_any_platform(env: dict[str, str]) -> bool:
         env.get("TELEGRAM_BOT_TOKEN")
         or (env.get("GREEN_API_INSTANCE_ID") and env.get("GREEN_API_TOKEN"))
         or (env.get("SLACK_BOT_TOKEN") and env.get("SLACK_APP_TOKEN"))
+        or env.get("DISCORD_BOT_TOKEN")
         or "web" in platforms
     )
 
@@ -259,15 +261,16 @@ def _cmd_init() -> None:
     print("  1) telegram")
     print("  2) whatsapp")
     print("  3) slack")
-    print("  4) web (browser chat)")
-    print("  5) telegram,whatsapp")
-    print("  6) telegram,slack")
-    print("  7) telegram,web")
-    print("  8) all (telegram + whatsapp + slack + web)")
+    print("  4) discord")
+    print("  5) web (browser chat)")
+    print("  6) telegram,whatsapp")
+    print("  7) telegram,slack")
+    print("  8) telegram,web")
+    print("  9) all (telegram + whatsapp + slack + discord + web)")
     choice = input(f"\nChoose platforms [enter to keep '{current_mode}']: ").strip()
-    mode_map = {"1": "telegram", "2": "whatsapp", "3": "slack", "4": "web",
-                "5": "telegram,whatsapp", "6": "telegram,slack",
-                "7": "telegram,web", "8": "all"}
+    mode_map = {"1": "telegram", "2": "whatsapp", "3": "slack", "4": "discord",
+                "5": "web", "6": "telegram,whatsapp", "7": "telegram,slack",
+                "8": "telegram,web", "9": "all"}
     if choice in mode_map:
         current_mode = mode_map[choice]
         _set_env_var(env_path, "BOT_MODE", current_mode)
@@ -430,6 +433,40 @@ def _cmd_init() -> None:
         elif ids:
             _set_env_var(env_path, "SLACK_ALLOWED_USER_IDS", ids)
 
+    # ── Discord setup ─────────────────────────────────────────────────────
+    if "discord" in platforms:
+        print("\n── Discord ──")
+        print("  Create app: https://discord.com/developers/applications")
+        print("  Bot → Reset Token to get one.")
+
+        current = env.get("DISCORD_BOT_TOKEN", "")
+        if current:
+            print(f"  Bot Token: {current[:8]}...{current[-4:]}")
+            if input("  Change? [y/N]: ").strip().lower() == "y":
+                current = ""
+        if not current:
+            val = input("  Bot Token: ").strip()
+            if val:
+                _set_env_var(env_path, "DISCORD_BOT_TOKEN", val)
+                print("  ✓ Saved")
+            else:
+                print("  ⚠ Skipped — set DISCORD_BOT_TOKEN later")
+
+        # Worth stating plainly: with this intent off Discord still connects
+        # and delivers every message with an empty body, so the bot looks
+        # alive and silently ignores everything.
+        print("  ⚠ Bot → Privileged Gateway Intents → enable MESSAGE CONTENT INTENT")
+        print("    Without it the bot connects but never sees what you type.")
+
+        current_ids = env.get("DISCORD_ALLOWED_USER_IDS", "")
+        print(f"  Allowed Discord user IDs: {current_ids or '(everyone)'}")
+        print("  Find yours: Settings → Advanced → Developer Mode, then right-click yourself → Copy User ID")
+        ids = input("  Discord user IDs (comma-sep, enter to keep, 'none' for all): ").strip()
+        if ids.lower() == "none":
+            _set_env_var(env_path, "DISCORD_ALLOWED_USER_IDS", "")
+        elif ids:
+            _set_env_var(env_path, "DISCORD_ALLOWED_USER_IDS", ids)
+
     # ── Web chat setup ───────────────────────────────────────────────────
     if "web" in platforms:
         print("\n── Web Chat ──")
@@ -550,17 +587,19 @@ def _cmd_init() -> None:
     has_wa = bool(wa_id and final_env.get("GREEN_API_TOKEN"))
     sl_token = final_env.get("SLACK_BOT_TOKEN", "")
     has_sl = bool(sl_token and sl_token.startswith("xoxb-"))
+    has_dc = bool(final_env.get("DISCORD_BOT_TOKEN", ""))
     has_web = "web" in _parse_platforms(final_env.get("BOT_MODE", "telegram"))
 
     print(f"  Telegram : {'✓ configured' if has_tg else '── skipped'}")
     print(f"  WhatsApp : {'✓ configured' if has_wa else '── skipped'}")
     print(f"  Slack    : {'✓ configured' if has_sl else '── skipped'}")
+    print(f"  Discord  : {'✓ configured' if has_dc else '── skipped'}")
     web_port = final_env.get("WEB_CHAT_PORT", "8585")
     print(f"  Web      : {'✓ http://localhost:' + web_port if has_web else '── skipped'}")
     print(f"  Claude   : {final_env.get('CLAUDE_MODE', 'cli')} mode")
     print(f"  Config   : {env_path}")
 
-    if not has_tg and not has_wa and not has_sl and not has_web:
+    if not has_tg and not has_wa and not has_sl and not has_dc and not has_web:
         print("\n  ⚠ No platform configured. The bot won't start without credentials.")
         print("  Run 'telechat init' again or edit .env manually.")
     else:
@@ -572,6 +611,8 @@ def _cmd_init() -> None:
             warnings.append("WhatsApp: no number restriction (anyone can message the bot)")
         if has_sl and not final_env.get("SLACK_ALLOWED_USER_IDS"):
             warnings.append("Slack: no user restriction (anyone in workspace can use the bot)")
+        if has_dc and not final_env.get("DISCORD_ALLOWED_USER_IDS"):
+            warnings.append("Discord: no user restriction (anyone who can see the bot can use it)")
         if has_web and not final_env.get("WEB_CHAT_TOKEN"):
             warnings.append("Web: no access token (anyone with the URL can chat)")
         if warnings:
@@ -594,7 +635,7 @@ def _cmd_init() -> None:
 
 
 def _parse_platforms(mode: str) -> set[str]:
-    aliases = {"both": {"telegram", "whatsapp"}, "all": {"telegram", "whatsapp", "slack", "web"}}
+    aliases = {"both": {"telegram", "whatsapp"}, "all": {"telegram", "whatsapp", "slack", "discord", "web"}}
     mode = mode.lower().strip()
     if mode in aliases:
         return aliases[mode]
@@ -976,14 +1017,14 @@ def _cmd_start(overrides: dict[str, str] | None = None) -> None:
 
     # ── Parse BOT_MODE ────────────────────────────────────────────────────
     _raw_mode = os.getenv("BOT_MODE", "telegram").lower().strip()
-    _ALIASES = {"both": {"telegram", "whatsapp"}, "all": {"telegram", "whatsapp", "slack", "web"}}
+    _ALIASES = {"both": {"telegram", "whatsapp"}, "all": {"telegram", "whatsapp", "slack", "discord", "web"}}
 
     if _raw_mode in _ALIASES:
         PLATFORMS: set[str] = _ALIASES[_raw_mode]
     else:
         PLATFORMS = {p.strip() for p in _raw_mode.split(",") if p.strip()}
 
-    _VALID = {"telegram", "whatsapp", "slack", "web"}
+    _VALID = {"telegram", "whatsapp", "slack", "discord", "web"}
     _unknown = PLATFORMS - _VALID
     if _unknown:
         print(f"ERROR: Unknown platform(s) in BOT_MODE: {_unknown}")
@@ -1036,6 +1077,13 @@ def _cmd_start(overrides: dict[str, str] | None = None) -> None:
         except Exception:
             log.exception("Slack bot crashed")
 
+    def _run_discord() -> None:
+        from .discord_bot import run_discord
+        try:
+            run_discord()
+        except Exception:
+            log.exception("Discord bot crashed")
+
     # ── Async main ────────────────────────────────────────────────────────
     async def _main() -> None:
         await asyncio.sleep(1)
@@ -1061,6 +1109,9 @@ def _cmd_start(overrides: dict[str, str] | None = None) -> None:
 
         if "slack" in PLATFORMS:
             threading.Thread(target=_run_slack, daemon=True, name="slack").start()
+
+        if "discord" in PLATFORMS:
+            threading.Thread(target=_run_discord, daemon=True, name="discord").start()
 
         web_task = None
         if "web" in PLATFORMS:

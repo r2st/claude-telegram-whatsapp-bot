@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 > **Claude AI on your phone / desktop** — personal, self-hosted, zero-infrastructure.  
-> Supports **Telegram**, **WhatsApp**, **Slack**, and a **local web chat** simultaneously from a single process.
+> Supports **Telegram**, **WhatsApp**, **Slack**, **Discord**, and a **local web chat** simultaneously from a single process.
 
 [telechat.fyi](https://telechat.fyi) · [Blog](https://telechat.fyi/blog/)
 
@@ -88,16 +88,16 @@ The bot runs as a **background service** — it survives terminal close and Ctrl
 
 ## Platform comparison
 
-| | Telegram | WhatsApp | Slack | Web chat |
-|--|----------|----------|-------|----------|
-| Bridge | Telegram Bot API | [Green API](https://green-api.com) free tier | Slack Bolt + Socket Mode | Local aiohttp server |
-| Setup | Talk to @BotFather | Scan a QR code | Create a Slack app | Nothing — open the URL |
-| Photo / file support | Yes | Text only | Text only | Text only |
-| Interactive UI | Inline buttons | No | Reactions as status indicator | Full browser UI |
-| Works without public URL | Yes (polling) | Yes (polling) | Yes (WebSocket) | It *is* local |
-| Works on corporate Wi-Fi | Depends | Yes | Yes | Yes |
+| | Telegram | WhatsApp | Slack | Discord | Web chat |
+|--|----------|----------|-------|---------|----------|
+| Bridge | Telegram Bot API | [Green API](https://green-api.com) free tier | Slack Bolt + Socket Mode | discord.py gateway | Local aiohttp server |
+| Setup | Talk to @BotFather | Scan a QR code | Create a Slack app | Create a Discord app | Nothing — open the URL |
+| Photo / file support | Yes | Text only | Text only | Text only | Text only |
+| Interactive UI | Inline buttons | No | Reactions as status indicator | Typing indicator | Full browser UI |
+| Works without public URL | Yes (polling) | Yes (polling) | Yes (WebSocket) | Yes (WebSocket) | It *is* local |
+| Works on corporate Wi-Fi | Depends | Yes | Yes | Yes | Yes |
 
-Telegram is the most complete adapter; the others cover the core chat loop. The web chat needs no account anywhere, which makes it the fastest way to try telechat before setting up a messenger.
+Telegram is the most complete adapter; the others cover the core chat loop. Discord needs the `discord` extra (`pip install 'telechatai[discord]'`). The web chat needs no account anywhere, which makes it the fastest way to try telechat before setting up a messenger.
 
 ---
 
@@ -217,12 +217,13 @@ Set `BOT_MODE` in `.env` — accepts a comma-separated list or a shorthand:
 | `telegram` | Telegram only *(default)* |
 | `whatsapp` | WhatsApp only |
 | `slack` | Slack only |
+| `discord` | Discord only |
 | `web` | Local web chat only — no messenger account needed |
 | `telegram,slack` | Telegram + Slack |
 | `telegram,whatsapp` | Telegram + WhatsApp |
 | `telegram,web` | Telegram + web chat |
 | `both` | Telegram + WhatsApp (legacy alias) |
-| `all` | All four |
+| `all` | All five |
 
 ---
 

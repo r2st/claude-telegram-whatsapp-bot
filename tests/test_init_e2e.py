@@ -355,9 +355,9 @@ class TestE2EMultiPlatformInit:
     """Full init with multiple platforms configured together."""
 
     def test_telegram_whatsapp_init(self, tmp_path):
-        """Choice 5: Telegram + WhatsApp."""
+        """Choice 6: Telegram + WhatsApp."""
         inputs = [
-            "5",                    # telegram,whatsapp
+            "6",                    # telegram,whatsapp
             "tg-token-1234567",     # Telegram token
             "123456789",            # Telegram user ID
             "inst-42",              # WhatsApp instance
@@ -375,9 +375,9 @@ class TestE2EMultiPlatformInit:
         assert calls["GREEN_API_INSTANCE_ID"] == "inst-42"
 
     def test_all_platforms_init(self, tmp_path, capsys):
-        """Choice 8: All platforms (Telegram + WhatsApp + Slack + Web)."""
+        """Choice 9: All platforms (Telegram + WhatsApp + Slack + Discord + Web)."""
         inputs = [
-            "8",                        # all
+            "9",                        # all
             "tg-tok-1234567890",        # Telegram token
             "111222333",                # Telegram user IDs
             "inst-99",                  # WhatsApp instance
@@ -386,6 +386,8 @@ class TestE2EMultiPlatformInit:
             "xoxb-slack-bot-token",     # Slack bot token
             "xapp-slack-app-token",     # Slack app token
             "U999888",                  # Slack member ID
+            "discord-bot-token",        # Discord bot token
+            "D777666",                  # Discord user ID
             "",                         # Web chat port (keep default)
             "",                         # Web chat token (skip)
             "cli",                      # Claude mode
@@ -404,9 +406,9 @@ class TestE2EMultiPlatformInit:
         assert "Setup Complete" in out
 
     def test_telegram_slack_init(self, tmp_path):
-        """Choice 6: Telegram + Slack."""
+        """Choice 7: Telegram + Slack."""
         inputs = [
-            "6",                        # telegram,slack
+            "7",                        # telegram,slack
             "tg-tok-9999999",           # Telegram token
             "42",                       # Telegram user ID
             "xoxb-bot-slack",           # Slack bot token

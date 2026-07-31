@@ -61,22 +61,29 @@ def _chunk_smart(text: str, limit: int) -> list[TextChunk]:
     # Find all code fence spans so we don't break inside them
     fence_spans = _find_fence_spans(text)
 
+    # A code block that is itself longer than the limit cannot be moved whole,
+    # so the emergency break below lands inside it. Reserve room now for the
+    # fence we will have to close and reopen around that break — added
+    # afterwards, it could otherwise push a chunk back over the limit.
+    working = limit - _fence_reserve(text, fence_spans) if fence_spans else limit
+    working = max(working, limit // 2)
+
     chunks: list[str] = []
     pos = 0
 
     while pos < len(text):
         remaining = text[pos:]
-        if len(remaining) <= limit:
+        if len(remaining) <= working:
             chunks.append(remaining)
             break
 
         # Find the best break point within limit
-        candidate = text[pos:pos + limit]
+        candidate = text[pos:pos + working]
         break_at = _find_best_break(candidate, pos, fence_spans)
 
         if break_at <= 0:
             # Emergency: hard break at limit
-            break_at = limit
+            break_at = working
 
         chunk = text[pos:pos + break_at].rstrip()
         if chunk:
@@ -86,8 +93,71 @@ def _chunk_smart(text: str, limit: int) -> list[TextChunk]:
         while pos < len(text) and text[pos] in ("\n", "\r"):
             pos += 1
 
-    total = len(chunks)
-    return [TextChunk(text=c, index=i, total=total) for i, c in enumerate(chunks)]
+    balanced = _balance_fences(chunks) if fence_spans else chunks
+    total = len(balanced)
+    return [TextChunk(text=c, index=i, total=total) for i, c in enumerate(balanced)]
+
+
+_FENCE_LINE_RE = re.compile(r"(`{3,}|~{3,})")
+
+
+def _fence_reserve(text: str, fence_spans: list[tuple[int, int]]) -> int:
+    """Room to leave for closing and reopening a fence across a break.
+
+    The closing marker goes on the end of one chunk and the whole opening line
+    — ```` ```python ```` — on the front of the next, so budget for both.
+    """
+    longest = 0
+    for start, _end in fence_spans:
+        line_end = text.find("\n", start)
+        opener = text[start:line_end if line_end != -1 else len(text)]
+        longest = max(longest, len(opener))
+    return longest + len(str(longest)) + 4  # opener + closing marker + newlines
+
+
+def _unclosed_fence(text: str) -> str | None:
+    """The opening fence line still open at the end of ``text``, if any.
+
+    Returns the full line (``` ```python ```) rather than just the marker,
+    because the language has to survive onto the next chunk or the continuation
+    renders as plain text.
+    """
+    open_line: str | None = None
+    open_marker = ""
+    for match in _FENCE_RE.finditer(text):
+        marker = match.group(1)
+        if open_line is None:
+            line_end = text.find("\n", match.start())
+            open_line = text[match.start():line_end if line_end != -1 else len(text)]
+            open_marker = marker
+        elif marker[0] == open_marker[0] and len(marker) >= len(open_marker):
+            open_line = None
+            open_marker = ""
+    return open_line
+
+
+def _balance_fences(chunks: list[str]) -> list[str]:
+    """Close a fence left open at a chunk boundary, and reopen it on the next.
+
+    A code block longer than one chunk has to be split somewhere inside it.
+    Left alone, that ships one message holding an unterminated block and the
+    next opening with a stray ```` ``` ```` — on Telegram that can also fail
+    the MarkdownV2 parse and drop the whole message to plain text.
+    """
+    out: list[str] = []
+    carry: str | None = None
+    for chunk in chunks:
+        body = f"{carry}\n{chunk}" if carry else chunk
+        opener = _unclosed_fence(body)
+        if opener is not None:
+            marker_match = _FENCE_LINE_RE.match(opener.strip())
+            marker = marker_match.group(1) if marker_match else "```"
+            body = body.rstrip("\n") + "\n" + marker
+            carry = opener
+        else:
+            carry = None
+        out.append(body)
+    return out
 
 
 _FENCE_RE = re.compile(r"^(`{3,}|~{3,})", re.MULTILINE)

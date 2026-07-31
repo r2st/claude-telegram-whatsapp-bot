@@ -38,6 +38,7 @@ SECTIONS: list[tuple[str, str]] = [
     ("Telegram", "The primary adapter."),
     ("WhatsApp", "Via the Green API bridge."),
     ("Slack", "Socket Mode."),
+    ("Discord", "Gateway WebSocket. Needs the `discord` extra."),
     ("Web chat", "The built-in browser UI."),
     ("Claude Desktop bridge", "Hooks that push your desktop Claude sessions to your phone."),
     ("Storage and limits", "Database, rate limiting, write-queue behaviour."),
@@ -87,6 +88,8 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "SLACK_BOT_TOKEN": ("Slack", "`xoxb-` bot token. Required for the Slack adapter."),
     "SLACK_APP_TOKEN": ("Slack", "`xapp-` app token for Socket Mode."),
     "SLACK_ALLOWED_USER_IDS": ("Slack", "Comma-separated Slack user IDs allowed to use the bot. Empty means anyone in the workspace can."),
+    "DISCORD_BOT_TOKEN": ("Discord", "Bot token from the Discord developer portal. Required for the Discord adapter."),
+    "DISCORD_ALLOWED_USER_IDS": ("Discord", "Comma-separated Discord user IDs allowed to use the bot. Empty means anyone who can see the bot can."),
 
     # ── Web chat ──
     "WEB_CHAT_PORT": ("Web chat", "Port for the built-in web UI."),

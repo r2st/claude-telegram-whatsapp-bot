@@ -756,6 +756,21 @@ class TestCmdInitPlatformSelection:
             _cmd_init()
         return mock_set
 
+    @staticmethod
+    def _bot_mode(mock_set):
+        """The BOT_MODE actually written, or None.
+
+        Reads the call's arguments rather than matching a substring against
+        `str(call)`: the stringified call embeds the tmp_path, and pytest puts
+        the *test's own name* in that path — so `"all" in str(call)` was
+        satisfied by the directory `test_choice_8_sets_all0/` no matter what
+        the wizard wrote.
+        """
+        for call in mock_set.call_args_list:
+            if len(call.args) >= 3 and call.args[1] == "BOT_MODE":
+                return call.args[2]
+        return None
+
     def test_choice_1_sets_telegram(self, tmp_path):
         """Choice '1' sets BOT_MODE=telegram."""
         env_path = tmp_path / ".env"
@@ -763,8 +778,7 @@ class TestCmdInitPlatformSelection:
         mock_set = self._run_init_with_inputs(
             env_path, ["1", "", "", "", ""]
         )
-        calls = [str(c) for c in mock_set.call_args_list]
-        assert any("BOT_MODE" in c and "telegram" in c for c in calls)
+        assert self._bot_mode(mock_set) == "telegram"
 
     def test_choice_2_sets_whatsapp(self, tmp_path):
         """Choice '2' sets BOT_MODE=whatsapp."""
@@ -773,8 +787,7 @@ class TestCmdInitPlatformSelection:
         mock_set = self._run_init_with_inputs(
             env_path, ["2", "inst123", "tok456", "", "", ""]
         )
-        calls = [str(c) for c in mock_set.call_args_list]
-        assert any("BOT_MODE" in c and "whatsapp" in c for c in calls)
+        assert self._bot_mode(mock_set) == "whatsapp"
 
     def test_choice_3_sets_slack(self, tmp_path):
         """Choice '3' sets BOT_MODE=slack."""
@@ -783,37 +796,62 @@ class TestCmdInitPlatformSelection:
         mock_set = self._run_init_with_inputs(
             env_path, ["3", "xoxb-bot", "xapp-app", "", "", ""]
         )
-        calls = [str(c) for c in mock_set.call_args_list]
-        assert any("BOT_MODE" in c and "slack" in c for c in calls)
+        assert self._bot_mode(mock_set) == "slack"
 
-    def test_choice_5_sets_telegram_whatsapp(self, tmp_path):
-        """Choice '5' sets BOT_MODE=telegram,whatsapp."""
+    def test_choice_4_sets_discord(self, tmp_path):
+        """Choice '4' sets BOT_MODE=discord."""
+        env_path = tmp_path / ".env"
+        # inputs: platform=4, bot_token, discord_ids, claude_mode, features(skip)
+        mock_set = self._run_init_with_inputs(
+            env_path, ["4", "discord-tok", "", "", ""]
+        )
+        assert self._bot_mode(mock_set) == "discord"
+
+    def test_discord_token_is_saved(self, tmp_path):
         env_path = tmp_path / ".env"
         mock_set = self._run_init_with_inputs(
-            env_path, ["5", "", "", "inst", "tok", "", "", ""]
+            env_path, ["4", "discord-tok", "111,222", "", ""]
         )
-        calls = [str(c) for c in mock_set.call_args_list]
-        assert any("BOT_MODE" in c and "telegram,whatsapp" in c for c in calls)
+        written = {c.args[1]: c.args[2] for c in mock_set.call_args_list if len(c.args) >= 3}
+        assert written.get("DISCORD_BOT_TOKEN") == "discord-tok"
+        assert written.get("DISCORD_ALLOWED_USER_IDS") == "111,222"
 
-    def test_choice_6_sets_telegram_slack(self, tmp_path):
-        """Choice '6' sets BOT_MODE=telegram,slack."""
+    def test_choice_5_sets_web(self, tmp_path):
+        """Choice '5' sets BOT_MODE=web."""
         env_path = tmp_path / ".env"
         mock_set = self._run_init_with_inputs(
-            env_path, ["6", "", "", "xoxb-bot", "xapp-app", "", "", ""]
+            env_path, ["5", "", "", "", ""]
         )
-        calls = [str(c) for c in mock_set.call_args_list]
-        assert any("BOT_MODE" in c and "telegram,slack" in c for c in calls)
+        assert self._bot_mode(mock_set) == "web"
 
-    def test_choice_8_sets_all(self, tmp_path):
-        """Choice '8' sets BOT_MODE=all."""
+    def test_choice_6_sets_telegram_whatsapp(self, tmp_path):
+        """Choice '6' sets BOT_MODE=telegram,whatsapp."""
         env_path = tmp_path / ".env"
-        # inputs: platform=8, tg_token(skip), user_ids, inst, tok, wa_nums,
-        #         bot_token, app_token, slack_ids, web_port, web_token, claude_mode, features(skip)
         mock_set = self._run_init_with_inputs(
-            env_path, ["8", "", "", "inst", "tok", "", "xoxb-b", "xapp-a", "", "", "", "", ""]
+            env_path, ["6", "", "", "inst", "tok", "", "", ""]
         )
-        calls = [str(c) for c in mock_set.call_args_list]
-        assert any("BOT_MODE" in c and "all" in c for c in calls)
+        assert self._bot_mode(mock_set) == "telegram,whatsapp"
+
+    def test_choice_7_sets_telegram_slack(self, tmp_path):
+        """Choice '7' sets BOT_MODE=telegram,slack."""
+        env_path = tmp_path / ".env"
+        mock_set = self._run_init_with_inputs(
+            env_path, ["7", "", "", "xoxb-bot", "xapp-app", "", "", ""]
+        )
+        assert self._bot_mode(mock_set) == "telegram,slack"
+
+    def test_choice_9_sets_all(self, tmp_path):
+        """Choice '9' sets BOT_MODE=all."""
+        env_path = tmp_path / ".env"
+        # inputs: platform=9, tg_token(skip), user_ids, inst, tok, wa_nums,
+        #         bot_token, app_token, slack_ids, discord_tok, discord_ids,
+        #         web_port, web_token, claude_mode, features(skip)
+        mock_set = self._run_init_with_inputs(
+            env_path,
+            ["9", "", "", "inst", "tok", "", "xoxb-b", "xapp-a", "",
+             "dtok", "", "", "", "", ""],
+        )
+        assert self._bot_mode(mock_set) == "all"
 
     def test_custom_mode_string_saved(self, tmp_path):
         """Entering a custom mode string saves it as BOT_MODE."""
@@ -822,8 +860,7 @@ class TestCmdInitPlatformSelection:
         mock_set = self._run_init_with_inputs(
             env_path, ["whatsapp,slack", "inst", "tok", "", "xoxb-b", "xapp-a", "", "", ""]
         )
-        calls = [str(c) for c in mock_set.call_args_list]
-        assert any("BOT_MODE" in c and "whatsapp,slack" in c for c in calls)
+        assert self._bot_mode(mock_set) == "whatsapp,slack"
 
     def test_empty_choice_keeps_current_mode(self, tmp_path, capsys):
         """Pressing enter (empty input) keeps the existing BOT_MODE."""

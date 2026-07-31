@@ -281,6 +281,7 @@ def check_allowed_users() -> CheckResult:
     tg = os.getenv("TELEGRAM_ALLOWED_USER_IDS", "")
     wa = os.getenv("WHATSAPP_ALLOWED_NUMBERS", "")
     sl = os.getenv("SLACK_ALLOWED_USER_IDS", "")
+    dc = os.getenv("DISCORD_ALLOWED_USER_IDS", "")
     configured = []
     if tg:
         configured.append(f"Telegram ({len(tg.split(','))} users)")
@@ -288,12 +289,17 @@ def check_allowed_users() -> CheckResult:
         configured.append(f"WhatsApp ({len(wa.split(','))} numbers)")
     if sl:
         configured.append(f"Slack ({len(sl.split(','))} users)")
+    if dc:
+        configured.append(f"Discord ({len(dc.split(','))} users)")
 
     if configured:
         return CheckResult("Access control", True, ", ".join(configured))
     return CheckResult(
         "Access control", False, "No user allowlists configured — bot is open to anyone",
-        fix_hint="Set TELEGRAM_ALLOWED_USER_IDS, WHATSAPP_ALLOWED_NUMBERS, or SLACK_ALLOWED_USER_IDS",
+        fix_hint=(
+            "Set TELEGRAM_ALLOWED_USER_IDS, WHATSAPP_ALLOWED_NUMBERS, "
+            "SLACK_ALLOWED_USER_IDS, or DISCORD_ALLOWED_USER_IDS"
+        ),
         severity="warning",
     )
 

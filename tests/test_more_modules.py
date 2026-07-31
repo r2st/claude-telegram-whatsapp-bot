@@ -292,14 +292,49 @@ class TestCodeFencesSurviveChunking:
             )
 
     def test_a_block_that_does_not_fit_is_still_emitted(self):
-        """A fence longer than the limit cannot be kept whole — but nothing is lost."""
+        """A fence longer than the limit cannot be kept whole — but nothing is lost.
+
+        The chunks no longer concatenate back to the source byte for byte: a
+        block that has to be split mid-way is now closed at the end of one
+        chunk and reopened at the start of the next, so the added markers are
+        the difference. What must not change is the code itself.
+        """
         import re as _re
 
         text = "Intro.\n\n```\n" + ("y = 2\n" * 400) + "```\n"
         chunks = chunk_text(text, limit=500)
         joined = "".join(c.text for c in chunks)
-        assert _re.sub(r"\s", "", joined) == _re.sub(r"\s", "", text)
+
+        # Every line of code survives, in order and in full.
+        assert joined.count("y = 2") == 400
+        assert "Intro." in joined
+        # Only fence markers were added.
+        assert _re.sub(r"[`\s]", "", joined) == _re.sub(r"[`\s]", "", text)
         assert all(len(c.text) <= 500 for c in chunks)
+
+    def test_an_oversized_block_leaves_no_chunk_holding_an_open_fence(self):
+        """The reason the markers above are added at all.
+
+        A chunk that ends mid-block used to ship an unterminated fence, and the
+        next one opened with a stray ``` — broken rendering everywhere, and on
+        Telegram sometimes a MarkdownV2 parse failure that dropped the message
+        to plain text.
+        """
+        text = "Intro.\n\n```python\n" + ("y = 2\n" * 400) + "```\n"
+        chunks = chunk_text(text, limit=500)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert chunk.text.count("```") % 2 == 0, (
+                f"unbalanced fence in chunk: {chunk.text[:60]!r}"
+            )
+
+    def test_the_language_survives_onto_the_continuation(self):
+        # Reopening with a bare ``` would render the rest of the block as
+        # plain text rather than highlighted code.
+        text = "```python\n" + ("y = 2\n" * 400) + "```\n"
+        chunks = chunk_text(text, limit=500)
+        assert len(chunks) > 1
+        assert chunks[1].text.lstrip().startswith("```python")
 
     def test_break_prefers_the_start_of_a_block(self):
         """Given the choice, the whole block moves to the next chunk."""

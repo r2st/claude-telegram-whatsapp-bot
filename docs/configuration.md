@@ -67,6 +67,15 @@ Socket Mode.
 | `SLACK_APP_TOKEN` |  | `xapp-` app token for Socket Mode. |
 | `SLACK_BOT_TOKEN` |  | `xoxb-` bot token. Required for the Slack adapter. |
 
+## Discord
+
+Gateway WebSocket. Needs the `discord` extra.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DISCORD_ALLOWED_USER_IDS` |  | Comma-separated Discord user IDs allowed to use the bot. Empty means anyone who can see the bot can. |
+| `DISCORD_BOT_TOKEN` |  | Bot token from the Discord developer portal. Required for the Discord adapter. |
+
 ## Web chat
 
 The built-in browser UI.
@@ -242,4 +251,4 @@ Health endpoint, debugging, MCP.
 
 ---
 
-137 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.
+139 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.

@@ -9,7 +9,36 @@ not which function moved.
 
 ## [Unreleased]
 
+### Added
+
+- **Discord is now a fifth platform.** `BOT_MODE=discord` (or add it to a
+  comma-separated list, or use `all`) runs it alongside the others in the same
+  process and against the same conversation store, so a session you started on
+  Telegram is there when you ask from Discord. In a server the bot answers when
+  you mention it; in a DM it answers anything. It speaks the same command set
+  the Slack adapter does, under `!` — `!help`, `!model`, `!engine`, `!reset`,
+  `!sessions`, `!remember`, `!recall`. Like every other adapter it is outbound
+  only: discord.py opens a gateway WebSocket, so there is still no public URL,
+  no tunnel, and nothing to expose.
+
+  Install it with `pip install 'telechatai[discord]'`, set `DISCORD_BOT_TOKEN`,
+  and — this one bites — enable the **Message Content Intent** in the Discord
+  developer portal. Without it Discord connects happily and delivers every
+  message with an empty body, so the bot looks alive and ignores you; `telechat
+  init` says so, and the adapter names it explicitly if it happens.
+  `DISCORD_ALLOWED_USER_IDS` is the allowlist, and as on every other platform,
+  empty means anyone who can see the bot can use it.
+
 ### Fixed
+
+- **A code block longer than one message came out broken.** Splitting a reply
+  avoids breaking inside a code block, but a block bigger than the whole message
+  limit cannot be moved out of the way — so the split landed inside it, leaving
+  one message holding an unterminated fence and the next opening with a stray
+  ```` ``` ````. On Telegram that could also fail the MarkdownV2 parse and drop
+  the message to plain text. The block is now closed at the end of one message
+  and reopened — with its language — at the start of the next. This affects
+  Discord most (2 000 characters a message), but Telegram had it too.
 
 - **"Lost connection to Claude" when the `claude` CLI was simply not installed.**
   Starting the CLI can fail before there is anything to connect to, and only the
