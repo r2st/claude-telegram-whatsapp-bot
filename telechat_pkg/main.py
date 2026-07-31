@@ -191,8 +191,13 @@ def _validate_telegram_token(token: str) -> str | None:
             data = json.loads(resp.read())
             if data.get("ok"):
                 return f"@{data['result'].get('username', '???')}"
-    except Exception:
-        pass
+    except Exception as exc:
+        # An unreachable network and a rejected token both land here and look
+        # identical to the user, so name the cause even though the caller only
+        # gets None. Printed, not logged: `telechat init` runs before logging
+        # is configured.
+        if os.getenv("TELECHAT_DEBUG", "").lower() in ("1", "true", "yes"):
+            print(f"  (telegram validation failed: {exc})")
     return None
 
 
@@ -204,8 +209,9 @@ def _validate_green_api(instance_id: str, token: str) -> str | None:
         with urllib.request.urlopen(url, timeout=10) as resp:
             data = json.loads(resp.read())
             return data.get("stateInstance", "unknown")
-    except Exception:
-        pass
+    except Exception as exc:
+        if os.getenv("TELECHAT_DEBUG", "").lower() in ("1", "true", "yes"):
+            print(f"  (green-api validation failed: {exc})")
     return None
 
 
@@ -221,8 +227,9 @@ def _validate_slack_token(token: str) -> str | None:
             data = json.loads(resp.read())
             if data.get("ok"):
                 return data.get("team", "???")
-    except Exception:
-        pass
+    except Exception as exc:
+        if os.getenv("TELECHAT_DEBUG", "").lower() in ("1", "true", "yes"):
+            print(f"  (slack validation failed: {exc})")
     return None
 
 

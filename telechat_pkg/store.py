@@ -81,7 +81,8 @@ def _reset_conn_state() -> None:
         if getattr(_local, "conn", None) is not None:
             _local.conn.close()
     except Exception:
-        pass
+        # Closing an already-broken handle; the point is to drop it either way.
+        log.debug("closing cached connection failed", exc_info=True)
     _local = threading.local()
 
 
@@ -698,7 +699,11 @@ def init_db() -> None:
         desktop_bridge.init_bridge_schema(conn)
         conn.commit()
     except Exception:
-        pass
+        # Not fatal — the bot runs fine without the bridge — but every bridge
+        # feature will fail later with a confusing "no such table", so say so
+        # once, here, where the cause is still visible.
+        log.warning("bridge schema not initialised; bridge features unavailable",
+                    exc_info=True)
 
 
 def load_history(platform: str, user_id: str, limit: int = 20, session_name: str = "") -> list[dict]:

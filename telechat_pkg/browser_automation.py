@@ -203,7 +203,10 @@ class BrowserAgent:
                     await page.click('button[type="submit"], input[type="submit"]', timeout=5000)
                     await page.wait_for_load_state("networkidle", timeout=BROWSER_TIMEOUT)
                 except Exception:
-                    pass
+                    # No submit button, or the navigation never settled. The
+                    # fields were still filled, which is what the caller asked
+                    # for — but "why didn't it submit?" needs an answer.
+                    log.warning("form submit did not complete", exc_info=True)
 
             # Screenshot the result
             filename = f"form_{int(time.time())}.png"

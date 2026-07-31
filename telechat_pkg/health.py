@@ -96,7 +96,8 @@ def get_health() -> dict:
         if update_status:
             result["update"] = update_status
     except Exception:  # pragma: no cover - defensive, updater is optional
-        pass
+        # The updater is optional; health must report without it.
+        log.debug("update status unavailable", exc_info=True)
 
     return result
 
@@ -316,7 +317,11 @@ class Watchdog:
         try:
             WATCHDOG_STATE_PATH.write_text(json.dumps(state, indent=2))
         except Exception:
-            pass
+            # State that can't be persisted means the fix-rate limit resets on
+            # restart — the watchdog would then be free to retry a fix it had
+            # already given up on. Worth a warning, not a crash.
+            log.warning("could not persist watchdog state to %s",
+                        WATCHDOG_STATE_PATH, exc_info=True)
 
     def get_status(self) -> dict:
         """Get watchdog status for display."""

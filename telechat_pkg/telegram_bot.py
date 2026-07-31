@@ -171,7 +171,8 @@ async def _typing_loop(chat_id: int, ctx: ContextTypes.DEFAULT_TYPE, stop: async
         try:
             await ctx.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         except Exception:
-            pass
+            # Cosmetic. Never let the typing indicator take down a turn.
+            log.debug("send_chat_action failed", exc_info=True)
         try:
             await asyncio.wait_for(stop.wait(), timeout=4.5)
         except asyncio.TimeoutError:
@@ -366,7 +367,9 @@ class TaskSession:
                     reply_markup=cancel_btn,
                 )
             except Exception:
-                pass
+                # Both the markdown edit and its plain-text fallback failed —
+                # usually a deleted message or an unchanged body.
+                log.debug("progress edit failed (both attempts)", exc_info=True)
 
     async def _heartbeat(self):
         """Periodic updates to keep elapsed time fresh."""
@@ -396,7 +399,7 @@ class TaskSession:
                             text=f"📝 Interim update ({self._elapsed()}):\n\n{preview}",
                         )
                     except Exception:
-                        pass
+                        log.debug("interim update failed (both attempts)", exc_info=True)
 
             if elapsed < 30:
                 interval = 4
@@ -574,7 +577,7 @@ async def _send(placeholder, update: Update, text: str):
             try:
                 await placeholder.edit_text("✅ Done — see reply below.", reply_markup=None)
             except Exception:
-                pass
+                log.debug("placeholder cleanup edit failed", exc_info=True)
             try:
                 if len(text) <= chunk:
                     await update.effective_message.reply_text(text)
@@ -2466,7 +2469,9 @@ async def cmd_code(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         await placeholder.edit_text(reply[:4096])
     except Exception as e:
-        log.error("cmd_code error: %s", e)
+        # log.error() hid the traceback; the operator of a self-hosted bot is
+        # the person debugging it, so they get both the message and the trace.
+        log.exception("cmd_code failed")
         await placeholder.edit_text(f"❌ Error: {e}")
     finally:
         stop.set()
@@ -2677,7 +2682,9 @@ async def _send_paginated(update: Update, uid: int, prompt: str, text: str, plac
                     await placeholder.edit_text(text[:chunk], reply_markup=markup)
                     return
                 except Exception:
-                    pass
+                    # Markdown and plain both refused; the caller falls through
+                    # to sending a fresh message.
+                    log.debug("reply edit failed (both attempts)", exc_info=True)
 
         # Fallback: always try a new message
         try:
@@ -2705,7 +2712,7 @@ async def _send_paginated(update: Update, uid: int, prompt: str, text: str, plac
                 )
                 return
             except Exception:
-                pass
+                log.debug("paged reply edit failed (both attempts)", exc_info=True)
 
     # Fallback: always send as new message (never silently lose a response)
     try:
@@ -2910,7 +2917,9 @@ async def _run_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, uid: int, us
                     disable_notification=False,
                 )
             except Exception:
-                pass
+                # The completion ping is a courtesy; the answer itself already
+                # went out above.
+                log.debug("completion notification failed", exc_info=True)
 
     except asyncio.CancelledError:
         await placeholder.edit_text(
@@ -3277,14 +3286,16 @@ async def cmd_plan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 text = _two_agent.format_plan(plan)
                 await placeholder.edit_text(text, parse_mode=ParseMode.MARKDOWN)
             except Exception:
-                pass
+                # Plan progress is a live-updating card; a rejected edit (most
+                # often "message is not modified") must not abort the plan.
+                log.debug("plan progress edit failed", exc_info=True)
 
         async def on_step_done(step):
             try:
                 text = _two_agent.format_plan(plan)
                 await placeholder.edit_text(text, parse_mode=ParseMode.MARKDOWN)
             except Exception:
-                pass
+                log.debug("plan progress edit failed", exc_info=True)
 
         plan = await _two_agent.execute(plan, on_step_start=on_step_start, on_step_done=on_step_done)
 

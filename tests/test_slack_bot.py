@@ -310,3 +310,44 @@ class TestRunSlack:
         monkeypatch.setattr(cc, "init_db", lambda: None)
         sb.run_slack()
         assert started["start"] is True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. Cosmetic failures stay survivable — and stop being invisible
+#
+# Reactions and the status card are decoration: a Slack API refusal must not
+# take down the turn. It used to vanish entirely, though, so "why does the ⏳
+# never appear?" (usually a missing reactions:write scope) had no answer
+# anywhere in the log.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class _RaisingClient:
+    """A Slack client whose every method raises."""
+
+    def __getattr__(self, _name):
+        def raise_it(*_args, **_kwargs):
+            raise RuntimeError("invalid_auth")
+        return raise_it
+
+
+class TestCosmeticFailuresAreLoggedNotSwallowed:
+    def test_add_reaction_survives_and_logs(self, caplog):
+        import logging
+        with caplog.at_level(logging.DEBUG, logger="telechat_pkg.slack_bot"):
+            sb._add_reaction(_RaisingClient(), "C1", "1.0", "hourglass")
+        assert caplog.records, "a failed reaction must leave a trace"
+
+    def test_remove_reaction_survives_and_logs(self, caplog):
+        import logging
+        with caplog.at_level(logging.DEBUG, logger="telechat_pkg.slack_bot"):
+            sb._remove_reaction(_RaisingClient(), "C1", "1.0", "hourglass")
+        assert caplog.records
+
+    def test_the_traceback_is_kept_not_just_the_message(self, caplog):
+        # exc_info is the difference between "reactions_add failed" and knowing
+        # it was a missing scope.
+        import logging
+        with caplog.at_level(logging.DEBUG, logger="telechat_pkg.slack_bot"):
+            sb._add_reaction(_RaisingClient(), "C1", "1.0", "x")
+        assert any(r.exc_info for r in caplog.records)

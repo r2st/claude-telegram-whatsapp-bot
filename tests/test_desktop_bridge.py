@@ -30,6 +30,7 @@ routing.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import stat
@@ -1036,3 +1037,102 @@ class TestNotifyHook:
         db.hook_notify("Stop", {"session_id": "abcd1234-session", "cwd": ""})
         # Nothing to resume into, so offering "Use this session" would dead-end.
         assert bridge.tg.callback_data() == []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7. The background watcher
+#
+# It runs on a daemon thread and used to swallow every exception silently, so a
+# watcher failing on every pass looked exactly like a quiet one: no session
+# pings, no /follow mirroring, nothing in the log to say why.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestWatcherLoop:
+    """`_watch_once` is one pass of the daemon-thread loop, factored out so it
+    can be driven directly — patching `time.sleep` to escape the real loop
+    patches it for everything else in the process, including test teardown."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_counter(self):
+        db._watch_failures = 0
+        yield
+        db._watch_failures = 0
+
+    @staticmethod
+    def _run_passes(monkeypatch, n: int, lifecycle=None, follows=None):
+        monkeypatch.setattr(db, "_watch_lifecycle", lifecycle or (lambda: None))
+        monkeypatch.setattr(db, "_watch_follows", follows or (lambda: None))
+        return [db._watch_once() for _ in range(n)]
+
+    def test_a_failing_watch_does_not_stop_the_loop(self, bridge, monkeypatch):
+        # The property that mattered before and still matters: one bad read
+        # must not end the watcher for the life of the process.
+        calls = {"n": 0}
+
+        def always_fails():
+            calls["n"] += 1
+            raise RuntimeError("transcript vanished")
+
+        results = self._run_passes(monkeypatch, 3, lifecycle=always_fails)
+        assert results == [False, False, False]   # reported, never raised
+        assert calls["n"] == 3
+
+    def test_the_first_failure_is_reported(self, bridge, monkeypatch, caplog):
+        def always_fails():
+            raise RuntimeError("boom")
+
+        with caplog.at_level(logging.WARNING, logger="telechat_pkg.desktop_bridge"):
+            self._run_passes(monkeypatch, 1, lifecycle=always_fails)
+        assert any("lifecycle" in r.message for r in caplog.records)
+
+    def test_repeat_failures_do_not_flood_the_log(self, bridge, monkeypatch, caplog):
+        # At a 4-second poll, warning on every pass is ~900 lines an hour.
+        def always_fails():
+            raise RuntimeError("boom")
+
+        with caplog.at_level(logging.WARNING, logger="telechat_pkg.desktop_bridge"):
+            self._run_passes(monkeypatch, 5, lifecycle=always_fails)
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+
+    def test_a_persistently_broken_watcher_escalates(self, bridge, monkeypatch, caplog):
+        def always_fails():
+            raise RuntimeError("boom")
+
+        with caplog.at_level(logging.DEBUG, logger="telechat_pkg.desktop_bridge"):
+            self._run_passes(monkeypatch, 10, lifecycle=always_fails)
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert errors, "10 consecutive failed passes should escalate past debug"
+        assert "not working" in errors[0].message
+
+    def test_recovery_resets_the_failure_count(self, bridge, monkeypatch, caplog):
+        state = {"pass": 0}
+
+        def fails_once():
+            state["pass"] += 1
+            if state["pass"] == 1:
+                raise RuntimeError("boom")
+
+        with caplog.at_level(logging.DEBUG, logger="telechat_pkg.desktop_bridge"):
+            results = self._run_passes(monkeypatch, 12, lifecycle=fails_once)
+        assert results[0] is False and all(results[1:])
+        # One failure then recovery must never reach the escalation threshold.
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+    def test_both_watches_run_even_when_the_first_fails(self, bridge, monkeypatch):
+        # They used to be independent try blocks; keep that property.
+        followed = {"n": 0}
+
+        def failing_lifecycle():
+            raise RuntimeError("boom")
+
+        def counting_follows():
+            followed["n"] += 1
+
+        self._run_passes(monkeypatch, 3, lifecycle=failing_lifecycle,
+                         follows=counting_follows)
+        assert followed["n"] == 3
+
+    def test_a_clean_pass_reports_success(self, bridge, monkeypatch):
+        assert self._run_passes(monkeypatch, 2) == [True, True]

@@ -64,7 +64,9 @@ def current_version() -> str:
         from importlib.metadata import version
         return version("telechatai")
     except Exception:
-        pass
+        # Not installed as a package (source checkout) — fall through to
+        # parsing pyproject.toml below.
+        log.debug("package metadata lookup failed", exc_info=True)
     try:
         import pathlib
         root = pathlib.Path(__file__).resolve().parent.parent
@@ -73,7 +75,7 @@ def current_version() -> str:
         if m:
             return m.group(1)
     except Exception:
-        pass
+        log.debug("pyproject version parse failed", exc_info=True)
     return "0.0.0"
 
 

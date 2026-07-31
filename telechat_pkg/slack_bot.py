@@ -199,7 +199,9 @@ class SlackTask:
                 )
                 self._status_ts = resp["ts"]
         except Exception:
-            pass
+            # The status card is a nicety; losing it must not fail the turn.
+            # Logged so "why did the progress card stop updating?" is answerable.
+            log.debug("Slack status post failed", exc_info=True)
 
     def finish_status(self, summary: str):
         if not self._status_ts:
@@ -211,7 +213,7 @@ class SlackTask:
                 blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": summary}}],
             )
         except Exception:
-            pass
+            log.debug("Slack status update failed", exc_info=True)
 
     def delete_status(self):
         if not self._status_ts:
@@ -219,7 +221,7 @@ class SlackTask:
         try:
             self.client.chat_delete(channel=self.channel, ts=self._status_ts)
         except Exception:
-            pass
+            log.debug("Slack status delete failed", exc_info=True)
 
     def on_tool(self, tool_name: str, detail: str = ""):
         self._phase = "working"
@@ -275,14 +277,16 @@ def _add_reaction(client, channel: str, ts: str, emoji: str) -> None:
     try:
         client.reactions_add(channel=channel, timestamp=ts, name=emoji)
     except Exception:
-        pass
+        # Usually already_reacted or a missing reactions:write scope — both
+        # cosmetic, both worth seeing when someone asks why the ⏳ never appears.
+        log.debug("Slack reactions_add(%s) failed", emoji, exc_info=True)
 
 
 def _remove_reaction(client, channel: str, ts: str, emoji: str) -> None:
     try:
         client.reactions_remove(channel=channel, timestamp=ts, name=emoji)
     except Exception:
-        pass
+        log.debug("Slack reactions_remove(%s) failed", emoji, exc_info=True)
 
 
 def _post_reply(client, channel: str, thread_ts: str, text: str, blocks=None) -> str | None:

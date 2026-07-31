@@ -281,7 +281,9 @@ async def ask_claude_async(
                                     if delta.get("type") == "text_delta":
                                         await on_text(delta.get("text", ""))
                             except Exception:
-                                pass
+                                # Partial/non-JSON line, or a raising callback.
+                                # Either way the turn continues.
+                                log.debug("stream event ignored", exc_info=True)
 
             await asyncio.wait_for(_read_retry(), timeout=timeout)
             await proc2.wait()
@@ -424,7 +426,9 @@ async def ask_claude_api_async(
                 try:
                     await on_text(text_chunk)
                 except Exception:
-                    pass
+                    # The callback is the caller's code — its failure must not
+                    # abort a turn that is otherwise succeeding.
+                    log.debug("on_text callback raised", exc_info=True)
         final = await stream.get_final_message()
         stats["input_tokens"] = final.usage.input_tokens
         stats["output_tokens"] = final.usage.output_tokens
@@ -505,14 +509,14 @@ async def ask_claude_sdk(
                                 detail = _extract_tool_detail({"input": inp})
                                 await on_progress(block.name, detail)
                             except Exception:
-                                pass
+                                log.debug("on_progress callback raised", exc_info=True)
                     elif isinstance(block, TextBlock):
                         result_text = block.text
                         if on_text:
                             try:
                                 await on_text(block.text)
                             except Exception:
-                                pass
+                                log.debug("on_text callback raised", exc_info=True)
 
             elif isinstance(message, ResultMessage):
                 if message.result:

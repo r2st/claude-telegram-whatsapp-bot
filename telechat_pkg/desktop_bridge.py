@@ -20,6 +20,7 @@ All persistent state lives in telechat's bot.db via three new tables created by
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -33,6 +34,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 HOME = Path.home()
 TELECHAT_HOME = Path(os.environ.get("TELECHAT_HOME") or HOME / ".telechat")
@@ -190,7 +193,9 @@ def _db() -> sqlite3.Connection:
             init_bridge_schema(conn)
             conn.commit()
         except Exception:
-            pass
+            # Every bridge query after this fails with "no such table"; say why
+            # once, here, rather than N times without a cause.
+            log.warning("bridge schema init failed", exc_info=True)
         _SCHEMA_READY = True
     return conn
 
@@ -451,8 +456,10 @@ def _resolve_session_cwd(sid: str, fallback: Optional[str] = None) -> Optional[s
                 continue
             if cwd:
                 return cwd
-    except Exception:
-        pass
+    except OSError:
+        # Transcript vanished or is unreadable — the caller falls back to the
+        # stored cwd, which is the whole point of the fallback argument.
+        log.debug("could not read transcript for cwd", exc_info=True)
     return fallback
 
 
@@ -505,8 +512,8 @@ def _session_status(sid: str) -> dict:
     try:
         import time as _t
         busy = (_t.time() - tpath.stat().st_mtime) < _BUSY_WINDOW_SECS
-    except Exception:
-        pass
+    except OSError:
+        log.debug("could not stat transcript %s", tpath, exc_info=True)
     return {"busy": busy, "last": _tail_last_assistant(tpath, max_chars=70)}
 
 
@@ -550,8 +557,9 @@ def _proc_cwd(pid: str) -> Optional[str]:
         for line in out.splitlines():
             if line.startswith("n"):
                 return line[1:]
-    except Exception:
-        pass
+    except (OSError, subprocess.SubprocessError):
+        # lsof missing (common in containers) or the process is gone.
+        log.debug("could not resolve cwd of pid via lsof", exc_info=True)
     return None
 
 
@@ -758,17 +766,51 @@ def _follow_format_entry(raw: str, sid: str) -> Optional[str]:
     return f"👁 `[{sid[:8]}]`\n" + "\n".join(_md(p) if not p.startswith("🔧") else p for p in parts)
 
 
+#: Consecutive watcher passes in which something failed. Drives the escalation
+#: in :func:`_watch_once` — see the comment there.
+_watch_failures = 0
+
+
+def _watch_once() -> bool:
+    """Run one watcher pass. Returns True if every watch succeeded.
+
+    Never raises: this runs on a daemon thread, and a transient read error must
+    not stop the watcher for the rest of the process's life. It used to swallow
+    those errors *silently*, though, which made a permanently broken watcher
+    indistinguishable from a quiet one — session pings and `/follow` mirrors
+    simply never arrived and nothing said why.
+    """
+    global _watch_failures
+    failed = False
+    for name, watch in (("lifecycle", _watch_lifecycle), ("follows", _watch_follows)):
+        try:
+            watch()
+        except Exception:
+            failed = True
+            # First failure gets a warning; the rest are debug. At a 4-second
+            # poll, warning every pass is ~900 lines an hour for one broken
+            # transcript.
+            if _watch_failures == 0:
+                log.warning("bridge %s watch failed", name, exc_info=True)
+            else:
+                log.debug("bridge %s watch failed", name, exc_info=True)
+    if failed:
+        _watch_failures += 1
+        if _watch_failures in (10, 100, 1000):
+            log.error(
+                "bridge watcher has failed %d consecutive passes — "
+                "session pings and /follow mirroring are not working",
+                _watch_failures,
+            )
+    else:
+        _watch_failures = 0
+    return not failed
+
+
 def _watcher_loop() -> None:
     import time as _t
     while True:
-        try:
-            _watch_lifecycle()
-        except Exception:
-            pass
-        try:
-            _watch_follows()
-        except Exception:
-            pass
+        _watch_once()
         _t.sleep(_WATCH_POLL_SECS)
 
 
@@ -1415,8 +1457,9 @@ async def try_handle_callback(update, ctx) -> bool:
         try:
             await q.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
         except Exception:
-            # Telegram rejects edits with identical content — ignore.
-            pass
+            # Telegram rejects edits with identical content, which is the
+            # common case here: nothing changed since the last refresh.
+            log.debug("panel refresh edit rejected", exc_info=True)
         return True
     if body.startswith("act:"):
         # Quick action: bridge:act:<short>:<proceed|status>
@@ -1490,7 +1533,8 @@ async def try_handle_callback(update, ctx) -> bool:
                 )
             )
         except Exception:
-            pass
+            # Cosmetic button relabel; Telegram rejects a no-op edit.
+            log.debug("could not relabel approval button", exc_info=True)
         return True
     if body.startswith("full:"):
         token = body[len("full:"):]
