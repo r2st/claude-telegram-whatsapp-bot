@@ -18,7 +18,6 @@ start so a previous developer's shell environment can't change test outcomes
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 import threading
 
@@ -98,6 +97,17 @@ def env_snapshot(monkeypatch):
 
 
 def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
-    """Best-effort cleanup of the session temp home directory."""
+    """Best-effort cleanup of the session temp home directory.
+
+    Stop the writer thread *first*. Removing the temp home out from under a
+    live writer makes it raise ``sqlite3.OperationalError: unable to open
+    database file`` into the console after the summary line — alarming output
+    for a run that actually passed.
+    """
     import shutil
+    try:
+        from telechat_pkg import store
+        store.shutdown_writer(timeout=2.0)
+    except Exception:  # noqa: BLE001 — teardown must not fail the run
+        pass
     shutil.rmtree(_TMP_HOME, ignore_errors=True)

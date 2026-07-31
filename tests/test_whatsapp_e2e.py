@@ -15,10 +15,8 @@ import os
 import sys
 import tempfile
 import threading
-import time
 from pathlib import Path
-from typing import Optional
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -262,21 +260,17 @@ class TestGreenAPI:
         assert result is None
 
     def test_receive_notification_calls_api(self):
-        from telechat_pkg import whatsapp_bot as wb
         with patch("telechat_pkg.whatsapp_bot._api", return_value={"receiptId": 5}) as mock_api:
             result = receive_notification()
         mock_api.assert_called_once_with("GET", "receiveNotification")
         assert result == {"receiptId": 5}
 
     def test_receive_notification_returns_none(self):
-        from telechat_pkg import whatsapp_bot as wb
         with patch("telechat_pkg.whatsapp_bot._api", return_value=None):
             result = receive_notification()
         assert result is None
 
     def test_delete_notification_success(self):
-        import requests as req_lib
-        from telechat_pkg import whatsapp_bot as wb
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
         with patch("telechat_pkg.whatsapp_bot.requests.request", return_value=mock_resp) as mock_req:
@@ -287,13 +281,11 @@ class TestGreenAPI:
 
     def test_delete_notification_error_logged(self):
         import requests as req_lib
-        from telechat_pkg import whatsapp_bot as wb
         with patch("telechat_pkg.whatsapp_bot.requests.request", side_effect=req_lib.RequestException("err")):
             # Should not raise
             delete_notification(99)
 
     def test_send_message_calls_api(self):
-        from telechat_pkg import whatsapp_bot as wb
         with patch("telechat_pkg.whatsapp_bot._api") as mock_api:
             send_message(CHAT_ID, "Hello!")
         mock_api.assert_called_once_with(
@@ -302,7 +294,6 @@ class TestGreenAPI:
         )
 
     def test_send_typing_calls_api(self):
-        from telechat_pkg import whatsapp_bot as wb
         with patch("telechat_pkg.whatsapp_bot._api") as mock_api:
             send_typing(CHAT_ID)
         mock_api.assert_called_once_with(
@@ -415,7 +406,6 @@ class TestFormatBrowse:
         assert "only.txt" in result
 
     def test_permission_error(self, tmp_path):
-        import telechat_pkg.whatsapp_bot as wb
         with patch("telechat_pkg.whatsapp_bot.Path.iterdir", side_effect=PermissionError):
             result = _format_browse(SENDER, tmp_path)
         assert "Permission denied" in result
@@ -982,7 +972,7 @@ class TestCommandBrowse:
         try:
             with patch("telechat_pkg.whatsapp_bot.send_message") as mock_send, \
                  patch("telechat_pkg.whatsapp_bot._format_browse", return_value="listing") as mock_fmt:
-                result = _handle_command(CHAT_ID, SENDER, f"!browse sub")
+                result = _handle_command(CHAT_ID, SENDER, "!browse sub")
         finally:
             wb.BROWSE_ROOT = orig_root
         assert result is True
@@ -1042,7 +1032,6 @@ class TestCommandCd:
         mock_fmt.assert_called_once_with(SENDER, subdir)
 
     def test_cd_file_shows_error(self, tmp_path):
-        import telechat_pkg.whatsapp_bot as wb
         f = tmp_path / "file.txt"
         f.write_text("x")
         _browse_items[SENDER] = [f]
@@ -1579,7 +1568,6 @@ class TestAskWithProgress:
 
 class TestProcess:
     def test_text_message_starts_thread(self):
-        import telechat_pkg.whatsapp_bot as wb
         notif = _text_notification("Hello Claude")
         spawned = []
         orig_thread = threading.Thread

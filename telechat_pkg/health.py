@@ -62,7 +62,7 @@ def report_unhealthy(name: str, error: str = "") -> None:
 def get_health() -> dict:
     """Get overall health status."""
     # Run any registered check functions
-    for name, comp in _component_status.items():
+    for comp in _component_status.values():
         check_fn = comp.get("check_fn")
         if check_fn:
             try:

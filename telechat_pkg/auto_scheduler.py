@@ -18,16 +18,14 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Callable, Awaitable, Optional
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 log = logging.getLogger(__name__)
 

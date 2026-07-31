@@ -8,7 +8,6 @@ Run:
 
 import os
 import sqlite3
-import tempfile
 import threading
 import time
 import unittest.mock

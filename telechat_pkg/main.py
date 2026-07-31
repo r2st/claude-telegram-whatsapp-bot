@@ -443,7 +443,7 @@ def _cmd_init() -> None:
             token = input("  Access token (Enter to skip): ").strip()
             if token:
                 _set_env_var(env_path, "WEB_CHAT_TOKEN", token)
-                print(f"  ✓ Token set")
+                print("  ✓ Token set")
             else:
                 print("  ⚠ No token — web chat is open to anyone with the URL")
 
@@ -535,7 +535,7 @@ def _cmd_init() -> None:
 
     # ── Summary ───────────────────────────────────────────────────────────
     final_env = _read_env(env_path)
-    print(f"\n── Setup Complete ──")
+    print("\n── Setup Complete ──")
 
     tg_token = final_env.get("TELEGRAM_BOT_TOKEN", "")
     has_tg = bool(tg_token and tg_token != "your_telegram_bot_token")

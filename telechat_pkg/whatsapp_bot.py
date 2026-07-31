@@ -44,7 +44,7 @@ PLATFORM = "whatsapp"
 
 INSTANCE_ID   = os.environ["GREEN_API_INSTANCE_ID"]
 API_TOKEN     = os.environ["GREEN_API_TOKEN"]
-BASE_URL      = os.getenv("GREEN_API_BASE_URL", f"https://api.green-api.com").rstrip("/") + f"/waInstance{INSTANCE_ID}"
+BASE_URL      = os.getenv("GREEN_API_BASE_URL", "https://api.green-api.com").rstrip("/") + f"/waInstance{INSTANCE_ID}"
 
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL_SECONDS", "2"))
 
@@ -458,7 +458,7 @@ def _handle_command(chat_id: str, sender: str, text: str) -> bool:
                 elif 0 <= idx < len(items):
                     send_message(chat_id, f"❌ #{arg} is a file, not a folder. Use !view {arg}")
                 else:
-                    send_message(chat_id, f"❌ Invalid number. Use !browse to see the list.")
+                    send_message(chat_id, "❌ Invalid number. Use !browse to see the list.")
             except ValueError:
                 # Treat as path
                 cwd = _browse_cwd.get(sender, BROWSE_ROOT)
@@ -607,7 +607,6 @@ def _handle_command(chat_id: str, sender: str, text: str) -> bool:
         if not data:
             send_message(chat_id, "📭 No memories to export.")
         else:
-            import tempfile
             payload = json.dumps({"memories": data, "platform": PLATFORM, "user_id": sender}, indent=2)
             send_message(chat_id, f"📦 Exported {len(data)} memories:\n```\n{payload[:3000]}\n```")
 

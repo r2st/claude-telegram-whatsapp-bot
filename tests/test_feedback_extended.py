@@ -8,8 +8,7 @@ Run:
 import os
 import tempfile
 import time
-from pathlib import Path
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch
 
 import pytest
 
@@ -38,7 +37,6 @@ from telechat_pkg.feedback import (
     _eval_reasonable_cost,
     append_learning,
     get_learnings_summary,
-    LEARNINGS_PATH,
 )
 
 # Initialise DB once for the whole module

@@ -94,13 +94,15 @@ class TestDefaultHttpGet:
         class _Resp:
             def raise_for_status(self): pass
             def json(self): return {"ok": True}
-        import sys, types
+        import sys
+        import types
         fake = types.SimpleNamespace(get=lambda url, timeout=5: _Resp())
         monkeypatch.setitem(sys.modules, "requests", fake)
         assert updater._default_http_get_json("http://x")["ok"] is True
 
     def test_returns_none_on_exception(self, monkeypatch):
-        import sys, types
+        import sys
+        import types
         def _boom(url, timeout=5):
             raise RuntimeError("down")
         monkeypatch.setitem(sys.modules, "requests", types.SimpleNamespace(get=_boom))

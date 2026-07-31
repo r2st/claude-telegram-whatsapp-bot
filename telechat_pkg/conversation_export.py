@@ -10,10 +10,8 @@ from __future__ import annotations
 import html
 import json
 import logging
-import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
 log = logging.getLogger(__name__)
 

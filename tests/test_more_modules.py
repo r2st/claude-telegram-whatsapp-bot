@@ -3,8 +3,6 @@ text_chunking, video_gen, voice_transcription, web_fetch modules."""
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +13,7 @@ import pytest
 # ═══════════════════════════════════════════════════════════════════════════════
 from telechat_pkg.error_classifier import (
     ErrorCategory, RecoveryStrategy, ErrorClassification, ConvergenceDetector,
-    classify_error, _fingerprint, format_classification, ConvergenceResult,
+    classify_error, _fingerprint, format_classification,
 )
 
 
@@ -141,7 +139,7 @@ class TestConvergenceDetector:
 # ═══════════════════════════════════════════════════════════════════════════════
 # text_chunking.py
 # ═══════════════════════════════════════════════════════════════════════════════
-from telechat_pkg.text_chunking import chunk_text, TextChunk, _find_fence_spans, _is_inside_fence, _find_best_break
+from telechat_pkg.text_chunking import chunk_text, _find_fence_spans, _is_inside_fence, _find_best_break
 
 
 class TestChunkText:
@@ -255,7 +253,8 @@ class TestMusicGen:
         monkeypatch.setattr(music_gen, "REPLICATE_API_TOKEN", "tok")
         real_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
         def fail(name, *a, **kw):
-            if name == "aiohttp": raise ImportError("no")
+            if name == "aiohttp":
+                raise ImportError("no")
             return real_import(name, *a, **kw)
         with patch("builtins.__import__", side_effect=fail):
             r = await music_gen.generate("jazz")
@@ -451,7 +450,8 @@ class TestVideoGen:
         monkeypatch.setattr(video_gen, "REPLICATE_API_TOKEN", "tok")
         real_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
         def fail(name, *a, **kw):
-            if name == "aiohttp": raise ImportError("no")
+            if name == "aiohttp":
+                raise ImportError("no")
             return real_import(name, *a, **kw)
         with patch("builtins.__import__", side_effect=fail):
             r = await video_gen.generate("cat")
@@ -593,7 +593,8 @@ class TestVoiceTranscription:
         f.write_bytes(b"data")
         real_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
         def fail(name, *a, **kw):
-            if name == "aiohttp": raise ImportError("no")
+            if name == "aiohttp":
+                raise ImportError("no")
             return real_import(name, *a, **kw)
         with patch("builtins.__import__", side_effect=fail):
             r = await vt.transcribe(str(f))

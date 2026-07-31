@@ -12,7 +12,6 @@ Run:
     pytest tests/test_health.py -v
 """
 
-import asyncio
 import io
 import json
 import os

@@ -1,12 +1,10 @@
 """Tests for web_chat.py — 100% coverage target."""
 import asyncio
 import json
-import os
 import unittest
-from unittest.mock import patch, MagicMock, AsyncMock, PropertyMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 # Patch aiohttp.web before importing web_chat
-import sys
 
 
 class TestGetUserId(unittest.TestCase):

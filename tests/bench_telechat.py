@@ -39,10 +39,10 @@ from telechat_pkg.feedback import (
     _eval_not_truncated,
     _eval_reasonable_cost,
 )
-from telechat_pkg.health import CircuitBreaker, register_component, report_healthy, report_unhealthy, get_health
+from telechat_pkg.health import CircuitBreaker, register_component, report_healthy, get_health
 from telechat_pkg.polls import parse_poll_command, extract_poll_from_response
 from telechat_pkg.link_understanding import extract_links, _strip_html
-from telechat_pkg.coder import PipelineTracker, build_task_prompt, PipelineStage
+from telechat_pkg.coder import PipelineTracker, build_task_prompt
 from telechat_pkg.scheduled_tasks import ScheduledTask
 from telechat_pkg.claude_core import _build_prompt, _parse_cli_output, _extract_tool_detail
 

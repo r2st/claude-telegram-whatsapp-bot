@@ -9,13 +9,11 @@ Run:
 """
 
 import asyncio
-import itertools
 import os
-import sqlite3
 import tempfile
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -3293,7 +3291,6 @@ class TestCmdMemories:
         uid = 88000
         update = _make_update(uid=uid, text="/memories #work")
         ctx = _make_ctx(args=["#work"])
-        from telechat_pkg.memory import MemoryStore
         mem = MagicMock()
         mem.content = "work note"
         mem.tags = ["work"]

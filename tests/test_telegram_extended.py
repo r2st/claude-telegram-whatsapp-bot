@@ -24,7 +24,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -521,7 +521,6 @@ class TestHandleBrowseCallback:
 
     @pytest.mark.asyncio
     async def test_br_nonexistent_path_shows_error(self, tmp_browse):
-        from pathlib import Path as _P
         fake = tmp_browse / "nonexistent_dir_xyz"
         pid = tb._pid(fake)
         q = _make_query(data=f"tg:br:{pid}:0")
@@ -1715,7 +1714,6 @@ class TestCmdWatchdog:
     async def test_watchdog_fallback_to_module_dir(self, tmp_path, monkeypatch):
         """Falls back to .watchdog_state.json beside the module file."""
         # Primary location missing, but module-adjacent file exists
-        import time as _time
         state_file = tmp_path / ".watchdog_state.json"
         data = {"fix_attempts": [], "cooldowns": {}, "fixes_this_hour": []}
         state_file.write_text(json.dumps(data))

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import textwrap
@@ -23,11 +22,10 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-api-key")
 
 import pytest
 from contextlib import ExitStack, contextmanager
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 
 from main import (
     _cmd_init,
-    _find_env_file,
     _read_env,
     _set_env_var,
     _save_workdir,
@@ -36,11 +34,8 @@ from main import (
     _validate_slack_token,
     _has_any_platform,
     _parse_platforms,
-    _print_setup_guidance,
     _env_example_path,
     cli_entry,
-    _CONFIG_FILE,
-    _DATA_HOME,
 )
 
 
@@ -986,7 +981,6 @@ class TestTokenValidation:
 
     def test_validate_telegram_token_success(self):
         """Valid Telegram token returns bot username."""
-        import urllib.request
         response_data = json.dumps({"ok": True, "result": {"username": "my_test_bot"}})
         mock_resp = MagicMock()
         mock_resp.read.return_value = response_data.encode()
@@ -1000,7 +994,6 @@ class TestTokenValidation:
 
     def test_validate_telegram_token_invalid(self):
         """Invalid Telegram token returns None."""
-        import urllib.request
         with patch("urllib.request.urlopen", side_effect=Exception("401")):
             result = _validate_telegram_token("bad-token")
 

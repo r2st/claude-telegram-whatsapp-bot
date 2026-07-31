@@ -58,6 +58,26 @@ for every kind of context so you don't have to grep.
    `desktop_bridge.py` is the thinnest.
 9. **Keep `docs/implementation-tracker.md` in sync.** When you finish a
    ticket that maps to a feature row, flip its status there too.
+10. **Lint before you finish.** `ruff check .` — same rules CI runs.
+    Configured in `[tool.ruff]` in `pyproject.toml`, deliberately narrow
+    (correctness and dead code, not style). It has already caught a
+    duplicated test class that shadowed another and never ran.
+
+## Getting a working environment
+
+The default `python3` on a current macOS/Homebrew box is 3.14 with no
+pytest, so rule 8 needs a venv first:
+
+```sh
+./scripts/dev-setup.sh          # or: ./scripts/dev-setup.sh python3.12
+source venv/bin/activate
+pytest -q                       # ~70s, 3100+ tests
+ruff check .
+```
+
+`[dev,all]` — not just `[dev]` — is what the script installs, and it
+matters: without the optional feature packages a large part of the suite
+skips silently rather than failing, which reads as green.
 
 ## Ticket lifecycle
 

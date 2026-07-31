@@ -28,16 +28,14 @@ from telegram.ext import (
 from . import claude_core as cc
 from .memory import MemoryStore, extract_memories
 from .link_understanding import understand_links, extract_links, ENABLED as LINK_ENABLED
-from .polls import parse_poll_command, extract_poll_from_response
+from .polls import parse_poll_command
 from .tts import synthesize as tts_synthesize, is_available as tts_available, VOICES as TTS_VOICES
 from .image_gen import generate as image_generate, is_available as image_gen_available
 from .web_search import search as web_search, format_results as format_search_results, is_available as search_available
 from .voice_transcription import transcribe as voice_transcribe, is_available as transcription_available
 from .music_gen import generate as music_generate, is_available as music_gen_available
 from .video_gen import generate as video_generate, is_available as video_gen_available
-from .web_fetch import fetch_readable, is_available as web_fetch_available
-from .text_chunking import chunk_text
-from .scheduled_tasks import scheduler, ScheduledTask
+from .web_fetch import fetch_readable
 from . import coder
 
 log = logging.getLogger(__name__)
@@ -1876,7 +1874,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         elif action == "arcmenu":
             sessions = cc._session_mgr.get_all(PLATFORM, str(uid))
             btns = []
-            for i, s in enumerate(sessions):
+            for s in sessions:
                 if s.is_busy or s.archived:
                     continue
                 btns.append([InlineKeyboardButton(
@@ -1957,7 +1955,6 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         # Re-run as a task
         placeholder = q.message
-        stop_evt = asyncio.Event()
         task = TaskSession(placeholder, uid, prompt)
         task.start_heartbeat()
         _task_registry.register(task)
@@ -2759,7 +2756,7 @@ async def _auto_extract_memories(uid: int, user_text: str, reply: str):
 # Feature 2: Cost Budget System
 # ═══════════════════════════════════════════════════════════════════════════════
 
-from .cost_budget import BudgetManager, BudgetExceeded
+from .cost_budget import BudgetManager
 
 _budget_mgr = BudgetManager()
 
@@ -2775,7 +2772,7 @@ async def _check_budget(uid: int) -> str | None:
 # Feature 3: Smart Model Routing
 # ═══════════════════════════════════════════════════════════════════════════════
 
-from .smart_router import classify_complexity, route_model, route_model_api
+from .smart_router import route_model, route_model_api
 
 
 def _smart_model(uid: int, text: str) -> str:
@@ -3253,7 +3250,7 @@ def _progress_bar(pct: float, width: int = 20) -> str:
 # Feature 5: Two-Agent command (/plan)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-from .two_agent import TwoAgentExecutor, should_use_two_agent
+from .two_agent import TwoAgentExecutor
 _two_agent = TwoAgentExecutor()
 
 
@@ -3646,7 +3643,6 @@ async def cmd_compact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def build_app() -> Application:
     cc.init_db()
 
-    import ssl
     from telegram.request import HTTPXRequest
     req = HTTPXRequest(
         http_version="1.1",

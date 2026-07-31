@@ -7,6 +7,30 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Multiple agents work this tree in parallel, so until this job existed
+      # the only thing standing between the codebase and dead imports, shadowed
+      # test classes, and unused locals was human review. Rules and per-file
+      # ignores live in [tool.ruff] in pyproject.toml.
+      - name: Install ruff
+        run: pip install "ruff>=0.14,<0.16"
+
+      # No `ruff format --check` yet, deliberately: reformatting 19k lines of
+      # existing code would bury every subsequent diff. Lint first, format if
+      # and when someone wants to spend that commit.
+      - name: Lint
+        run: ruff check .
+
   versions:
     name: version consistency
     runs-on: ubuntu-latest

@@ -40,7 +40,7 @@ def print_web_qr(port: str) -> None:
     qr.make(fit=True)
     matrix = qr.get_matrix()
 
-    print(f"\n  ── Scan to open on your phone ──\n")
+    print("\n  ── Scan to open on your phone ──\n")
     _render_qr_terminal(matrix)
     print(f"\n  {url}")
 

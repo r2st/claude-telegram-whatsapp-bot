@@ -5,16 +5,12 @@ to diagnose common issues and suggest fixes.
 """
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import os
 import shutil
-import sqlite3
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger(__name__)
 

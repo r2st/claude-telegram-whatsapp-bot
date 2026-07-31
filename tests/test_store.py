@@ -896,12 +896,12 @@ class TestConversationFunctions:
 class TestRowTimestamps:
     def test_next_ts_is_strictly_increasing(self, fresh_store):
         stamps = [fresh_store._next_ts()[0] for _ in range(500)]
-        assert all(b > a for a, b in zip(stamps, stamps[1:]))
+        assert all(b > a for a, b in zip(stamps, stamps[1:], strict=False))
 
     def test_next_ts_batch_is_strictly_increasing(self, fresh_store):
         stamps = fresh_store._next_ts(5)
         assert len(stamps) == 5
-        assert all(b > a for a, b in zip(stamps, stamps[1:]))
+        assert all(b > a for a, b in zip(stamps, stamps[1:], strict=False))
 
     def test_next_ts_is_unique_across_threads(self, fresh_store):
         seen: list[float] = []

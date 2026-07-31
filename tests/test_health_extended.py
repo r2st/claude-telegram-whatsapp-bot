@@ -12,12 +12,9 @@ import asyncio
 import io
 import json
 import os
-import sys
 import tempfile
-import threading
 import time
-from http.server import HTTPServer
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -31,7 +28,6 @@ import telechat_pkg.health as health_module
 from telechat_pkg.health import (
     CircuitBreaker,
     Watchdog,
-    WATCHDOG_STATE_PATH,
     _HealthHandler,
     _component_status,
     get_health,
@@ -78,7 +74,8 @@ class TestRegisterComponent:
         assert _component_status["db"]["last_error"] is None
 
     def test_stores_check_fn(self):
-        fn = lambda: True
+        def fn():
+            return True
         register_component("api", check_fn=fn)
         assert _component_status["api"]["check_fn"] is fn
 

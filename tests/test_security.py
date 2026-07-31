@@ -10,14 +10,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
-import json
 import os
 import sqlite3
-import tempfile
 import time
 import threading
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 
@@ -616,7 +612,7 @@ class TestResourceLimits:
         assert limits.max_processes == 50
 
     def test_resource_limiter_templates(self):
-        from telechat_pkg.resource_limiter import ResourceLimiter, TEMPLATES
+        from telechat_pkg.resource_limiter import ResourceLimiter
         strict = ResourceLimiter.from_template("strict")
         assert strict.limits.cpu_seconds == 60
         assert strict.limits.memory_bytes == 512 * 1024 * 1024
@@ -627,7 +623,7 @@ class TestResourceLimits:
             ResourceLimiter.from_template("nonexistent")
 
     def test_resource_limiter_test_template(self):
-        from telechat_pkg.resource_limiter import ResourceLimiter, TEMPLATES
+        from telechat_pkg.resource_limiter import ResourceLimiter
         test = ResourceLimiter.from_template("test")
         assert test.limits.cpu_seconds == 30
         assert test.limits.max_processes == 10
@@ -997,7 +993,7 @@ class TestWebSecurity:
         assert "json=payload" in source or "json=" in source
 
     def test_web_search_disabled_by_default(self):
-        from telechat_pkg.web_search import WEB_SEARCH_ENABLED
+        pass
         # Default should be disabled unless explicitly enabled
         # (env var not set in test = "false")
 
@@ -1169,7 +1165,7 @@ class TestCoderSecurity:
         assert "never" in CODER_SYSTEM.lower()
 
     def test_coder_project_persistence(self, tmp_path, monkeypatch):
-        from telechat_pkg.coder import set_project, get_project, clear_project, _PROJECTS_PATH
+        from telechat_pkg.coder import set_project, get_project, clear_project
         monkeypatch.setattr("telechat_pkg.coder._PROJECTS_PATH", tmp_path / "projects.json")
         ok, path = set_project("telegram", "user1", str(tmp_path))
         assert ok
@@ -1186,7 +1182,7 @@ class TestCoderSecurity:
         assert sid == PipelineStage.CODING[0]
 
     def test_pipeline_fix_loop_detection(self):
-        from telechat_pkg.coder import PipelineTracker, PipelineStage
+        from telechat_pkg.coder import PipelineTracker
         tracker = PipelineTracker()
         tracker.on_tool("Write")
         tracker.on_tool("Bash", "pytest tests/")

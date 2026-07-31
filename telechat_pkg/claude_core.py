@@ -49,8 +49,10 @@ def __getattr__(name):
     """Delegate lookups for mutable store globals (e.g. _write_queue, _writer_thread, _history_cache)."""
     try:
         return getattr(_store, name)
-    except AttributeError:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    except AttributeError as exc:
+        raise AttributeError(
+            f"module {__name__!r} has no attribute {name!r}"
+        ) from exc
 
 log = logging.getLogger(__name__)
 

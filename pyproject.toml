@@ -51,6 +51,10 @@ dev = [
     # See tests/README_E2E.md for record/replay workflow.
     "vcrpy>=6.0",
     "pytest-recording>=0.13",
+    # Lint + format. Pinned to a minor range: ruff adds rules in minor
+    # releases, and a rule added upstream should not turn CI red on a tree
+    # nobody touched.
+    "ruff>=0.14,<0.16",
 ]
 all = [
     "qrcode>=7.4",
@@ -78,3 +82,48 @@ include = ["telechat_pkg*"]
 # previous "scripts/*" glob matched nothing — no scripts/ subdir exists inside
 # telechat_pkg — so it was removed.
 telechat_pkg = ["*.html"]
+
+# ─── Test runner ─────────────────────────────────────────────────────────────
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# --strict-markers turns a typo'd @pytest.mark.asyncio into an error rather
+# than a silently synchronous test. -ra surfaces skip/xfail reasons, which is
+# how the platform-conditional tests report that they didn't actually run.
+addopts = "--strict-markers -ra"
+asyncio_mode = "strict"
+markers = [
+    "benchmark: performance benchmark (tests/bench_telechat.py; needs pytest-benchmark)",
+]
+
+# ─── Lint / format ───────────────────────────────────────────────────────────
+# Multiple agents work this tree in parallel (see AGENTS.md), so style drift and
+# dead code used to be caught only by review. `ruff check` runs in CI.
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["venv", "dist", "npm", ".benchmarks"]
+
+[tool.ruff.lint]
+# Deliberately narrow: correctness and dead code, not style opinions. Widening
+# this is fine; it just wants to happen in a commit of its own so the signal
+# isn't buried in a reformat.
+select = ["E4", "E7", "E9", "F", "B", "W"]
+ignore = [
+    "E501",  # line length — a chunk of the tree predates any limit
+    "E741",  # ambiguous names (`l`) — worth fixing, not worth a 31-site sweep here
+    "B008",  # function call in default arg — used deliberately for defaults
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests set env vars before importing telechat_pkg (conftest.py explains why),
+# so imports legitimately follow statements.
+"tests/*" = [
+    "E402",
+    "F841",  # `with patch(...) as mock_x` where the mock is never asserted on
+    "B017",  # assertRaises(Exception) — some tests genuinely mean "anything"
+    "B007",  # `for i in range(n)` loops that only need the repetition
+]
+"telechat_pkg/telegram_bot.py" = ["E402"]  # feature sections import where they're defined
+"telechat_pkg/claude_core.py" = ["E402"]

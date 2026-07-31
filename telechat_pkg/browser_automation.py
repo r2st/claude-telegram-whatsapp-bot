@@ -16,8 +16,6 @@ Usage:
 """
 from __future__ import annotations
 
-import asyncio
-import base64
 import logging
 import os
 import tempfile
@@ -25,7 +23,7 @@ import time
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)

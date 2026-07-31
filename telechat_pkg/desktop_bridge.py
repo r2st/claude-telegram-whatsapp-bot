@@ -367,7 +367,7 @@ def _tg_send_document(content: str, filename: str, caption: str = "") -> Optiona
     )
     try:
         return json.loads(urllib.request.urlopen(req, timeout=20).read())
-    except Exception as e:
+    except Exception:
         return None
 
 
@@ -665,7 +665,7 @@ def _watch_lifecycle() -> None:
 
 def _watch_follows() -> None:
     """Stream new assistant turns / tool actions of followed sessions to Telegram."""
-    for sid, cwd, last_pos in list_follows():
+    for sid, _cwd, last_pos in list_follows():
         tpath = _find_transcript_by_sid(sid)
         if not tpath:
             continue
@@ -1537,7 +1537,7 @@ def cli_install(approve_hook: bool = False, with_service: bool = True) -> int:
     print(f"  ✓ Hooks installed in {CLAUDE_SETTINGS}")
     print(f"    Stop · Notification · SubagentStop → {tc} bridge notify <event>")
     if approve_hook:
-        print(f"  ✓ Approval hook registered (Bash|Write|Edit|MultiEdit)")
+        print("  ✓ Approval hook registered (Bash|Write|Edit|MultiEdit)")
 
     # Migrate from standalone bridge if present (also copies the OAuth token).
     _migrate_standalone()

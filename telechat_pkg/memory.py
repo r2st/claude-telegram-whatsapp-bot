@@ -27,7 +27,6 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Optional
 
 from . import models

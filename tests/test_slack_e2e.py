@@ -9,13 +9,12 @@ Run:
     pytest tests/test_slack_e2e.py -v
 """
 
-import itertools
 import os
 import re
 import tempfile
 import threading
 import time
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 

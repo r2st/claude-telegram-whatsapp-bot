@@ -814,7 +814,7 @@ def replace_history(platform: str, user_id: str, messages: list[dict], session_n
     # Same allocator as save_turn, so a compaction can't hand out a timestamp a
     # concurrent turn is about to reuse.
     stamps = _next_ts(len(messages)) if messages else []
-    for m, ts in zip(messages, stamps):
+    for m, ts in zip(messages, stamps, strict=True):
         statements.append((
             "INSERT INTO conversations (platform, user_id, role, content, ts) VALUES (?, ?, ?, ?, ?)",
             (platform, effective_uid, m.get("role", "user"), m.get("content", ""), ts),

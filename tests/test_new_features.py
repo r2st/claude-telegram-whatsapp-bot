@@ -15,7 +15,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # ─── Ensure test env ────────────────────────────────────────────────────────────
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test:token")
@@ -1130,7 +1130,7 @@ class TestBrowserAutomation(unittest.TestCase):
 
     @patch("telechat_pkg.browser_automation.BrowserAgent._ensure_started")
     def test_screenshot_mock(self, mock_start):
-        from telechat_pkg.browser_automation import BrowserAgent, BrowserResult
+        from telechat_pkg.browser_automation import BrowserAgent
         agent = BrowserAgent()
         agent._started = True
         mock_page = AsyncMock()

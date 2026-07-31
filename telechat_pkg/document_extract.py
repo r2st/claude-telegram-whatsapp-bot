@@ -9,13 +9,10 @@ are not installed.
 from __future__ import annotations
 
 import csv
-import io
 import logging
-import mimetypes
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 log = logging.getLogger(__name__)
 

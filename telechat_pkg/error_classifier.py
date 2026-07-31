@@ -14,9 +14,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 
 class ErrorCategory(Enum):
@@ -132,8 +131,6 @@ def classify_error(error_text: str) -> ErrorClassification:
     Returns:
         ErrorClassification with category, strategy, and fingerprint.
     """
-    text_lower = error_text.lower()
-
     # Match against patterns
     category = ErrorCategory.UNKNOWN
     for cat, patterns in _PATTERN_MAP.items():

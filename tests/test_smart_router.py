@@ -10,12 +10,10 @@ Run:
 
 import os
 
-import pytest
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-api-key")
 
-from telechat_pkg import smart_router as sr
 from telechat_pkg.smart_router import classify_complexity, route_model, route_model_api
 
 

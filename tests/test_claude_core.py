@@ -10,7 +10,6 @@ Run:
 import os
 import queue
 import tempfile
-import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -424,7 +423,6 @@ class TestAskClaudeAsync:
 
     @pytest.mark.asyncio
     async def test_with_session_resume(self):
-        import asyncio
 
         result_line = '{"type":"result","result":"resumed","usage":{"input_tokens":5,"output_tokens":3},"session_id":"s1"}'
 
@@ -470,7 +468,6 @@ class TestAskClaudeAPI:
         mock_client.messages.create.return_value = mock_resp
 
         with patch.dict("sys.modules", {"anthropic": MagicMock(Anthropic=MagicMock(return_value=mock_client))}):
-            import importlib
             reply, stats = cc.ask_claude_api("test", [])
             assert reply == "API answer"
             assert stats["input_tokens"] == 20
@@ -565,7 +562,6 @@ class TestDbWriterErrorHandling:
     def test_db_writer_logs_error_on_bad_execute(self, monkeypatch):
         """If conn.execute raises, _db_writer should log the error and not crash."""
         import queue as _q
-        import threading as _th
 
         errors_logged = []
 
@@ -852,7 +848,8 @@ class TestAskClaudeSDK:
     @pytest.mark.asyncio
     async def test_sdk_assistant_message_with_tool_and_text(self, monkeypatch):
         """AssistantMessage path: tool and text blocks trigger callbacks."""
-        import sys, types
+        import sys
+        import types
 
         sdk_mod = types.ModuleType("claude_code_sdk")
 
@@ -912,7 +909,8 @@ class TestAskClaudeSDK:
     @pytest.mark.asyncio
     async def test_sdk_cancellation(self, monkeypatch):
         """is_cancelled=True stops iteration and returns whatever was collected."""
-        import sys, types
+        import sys
+        import types
 
         sdk_mod = types.ModuleType("claude_code_sdk")
 
@@ -954,7 +952,8 @@ class TestAskClaudeSDK:
     @pytest.mark.asyncio
     async def test_sdk_general_exception(self, monkeypatch):
         """When query raises a generic exception, return [SDK Error] string."""
-        import sys, types
+        import sys
+        import types
 
         sdk_mod = types.ModuleType("claude_code_sdk")
 
@@ -983,7 +982,8 @@ class TestAskClaudeSDK:
     @pytest.mark.asyncio
     async def test_sdk_empty_result_returns_no_response(self, monkeypatch):
         """When result_text stays empty, return '(no response)'."""
-        import sys, types
+        import sys
+        import types
 
         sdk_mod = types.ModuleType("claude_code_sdk")
 
@@ -1018,7 +1018,8 @@ class TestAskClaudeSDK:
     @pytest.mark.asyncio
     async def test_sdk_with_add_dirs(self, monkeypatch):
         """add_dirs parameter populates opts.add_dirs."""
-        import sys, types
+        import sys
+        import types
 
         sdk_mod = types.ModuleType("claude_code_sdk")
         captured_opts = []
@@ -1064,7 +1065,6 @@ class TestAskClaudeAsyncExtended:
     @pytest.mark.asyncio
     async def test_on_progress_and_on_text_callbacks(self):
         """on_progress and on_text are fired for tool_use / text events."""
-        import asyncio
 
         progress_calls = []
         text_calls = []
@@ -1113,7 +1113,6 @@ class TestAskClaudeAsyncExtended:
     @pytest.mark.asyncio
     async def test_session_resume_failure_triggers_retry(self):
         """When resume returns error, the function retries with full history."""
-        import asyncio
 
         call_num = [0]
 
@@ -1194,7 +1193,6 @@ class TestAskClaudeAsyncExtended:
     @pytest.mark.asyncio
     async def test_history_passed_as_prompt_without_session(self):
         """Without a session_id, history is incorporated into the prompt."""
-        import asyncio
 
         result_line = b'{"type":"result","result":"with history","usage":{}}\n'
         call_count = [0]

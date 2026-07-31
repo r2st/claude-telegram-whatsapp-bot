@@ -24,7 +24,6 @@ from aiohttp import web
 
 from . import claude_core as cc
 from .memory import MemoryStore
-from .text_chunking import chunk_text
 
 log = logging.getLogger(__name__)
 

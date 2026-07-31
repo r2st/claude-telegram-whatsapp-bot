@@ -321,9 +321,10 @@ class MCPManager:
             proc.stdin.write(init_msg.encode())
             await proc.stdin.drain()
 
-            # Read response
+            # Drain the initialize response. Nothing in it is used yet, but it
+            # must be consumed before tools/list or the reads fall out of step.
             response = await asyncio.wait_for(proc.stdout.readline(), timeout=10)
-            init_result = json.loads(response.decode())
+            json.loads(response.decode())
 
             # List tools
             list_msg = json.dumps({

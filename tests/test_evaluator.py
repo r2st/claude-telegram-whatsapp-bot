@@ -9,9 +9,8 @@ from __future__ import annotations
 import random
 import uuid
 
-import pytest
 
-from telechat_pkg import evaluator, feedback
+from telechat_pkg import evaluator
 from telechat_pkg import store
 
 

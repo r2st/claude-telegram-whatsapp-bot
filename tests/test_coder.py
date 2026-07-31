@@ -1,7 +1,5 @@
 import json
 import os
-import stat
-import sys
 import tempfile
 import threading
 
@@ -12,7 +10,6 @@ os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test-token")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-api-key")
 os.environ["DB_PATH"] = os.path.join(_tmp_dir, "test_coder.db")
 
-import telechat_pkg.coder as coder_mod
 from telechat_pkg.coder import (
     _load,
     _save,
@@ -21,7 +18,6 @@ from telechat_pkg.coder import (
     clear_project,
     build_task_prompt,
     CODER_SYSTEM,
-    _PROJECTS_PATH,
 )
 
 

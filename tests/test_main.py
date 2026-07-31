@@ -28,8 +28,6 @@ from main import (
     cli_entry,
     _print_setup_guidance,
     _sigint_handler,
-    _CONFIG_FILE,
-    _DATA_HOME,
 )
 
 
@@ -648,12 +646,13 @@ class TestPrintSetupGuidance:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestDunderMain:
-    def test_import_calls_cli_entry(self):
-        with patch("main.cli_entry") as mock_cli:
-            # __main__.py does: from .main import cli_entry; cli_entry()
-            # We just verify the module structure is correct
-            from main import cli_entry as ce
-            assert callable(ce)
+    def test_cli_entry_is_importable(self):
+        # A second class of this name lower in the file (the one that actually
+        # reloads telechat_pkg.__main__) used to shadow this one, so it never
+        # ran. Renamed rather than deleted: it is the only check that the name
+        # __main__.py imports still exists on the module.
+        from main import cli_entry as ce
+        assert callable(ce)
 
 
 # ─── _cmd_init ────────────────────────────────────────────────────────────────
@@ -1403,7 +1402,7 @@ class TestMainGuard:
         assert "cli_entry()" in source
 
 
-class TestDunderMain:
+class TestDunderMainModule:
     """Tests for telechat_pkg/__main__.py."""
 
     def test_dunder_main_imports_cli_entry(self):
