@@ -326,6 +326,23 @@ a hero screenshot of a bridge triage card, a short feature grid, the three-platf
 comparison table, and a "how it works" diagram (`docs/architecture.html` may be
 reusable). Keep the single-file, no-build structure — it is a virtue.
 
+> **Done (2026-07-31).** The site now lives in `website/` in this repository rather than
+> only in the untracked sibling directory, so it is reviewable and testable. The page leads
+> with the bridge, then covers features, the four-platform comparison, how Telechat differs
+> from a single-file bot script and from a hosted assistant, a four-step install, use cases
+> and a FAQ — responsive, with `prefers-reduced-motion` and `prefers-color-scheme` honoured
+> and a manual theme toggle. SEO metadata is there too: description, canonical, Open Graph
+> and Twitter cards over a real 1200×630 PNG, `SoftwareApplication` and `FAQPage` JSON-LD,
+> `robots.txt` and a sitemap. The single-file, no-build structure is kept, and
+> `tests/test_website.py` enforces it — no external script, stylesheet or font.
+>
+> The "testimonials" section asked for in the original brief is an honest empty state
+> pointing at Discussions. Inventing quotes for a section is worse than not having one.
+>
+> A blog followed (`website/blog/`) with an RSS feed and two posts, so the project has
+> somewhere of its own to publish rather than sending readers and search authority to a
+> third-party site.
+
 ### 9. The Desktop bridge is the differentiator and it is buried
 
 **S (~2h).** The bridge does not appear until line 339 of a 523-line README, below
@@ -336,6 +353,13 @@ Telegram bot has, and it is where all current development is pointed.
 Lead with it: mention it in the README's opening paragraph, move its section above the
 per-platform setup guides, and give it a screenshot. This is pure positioning work with
 no code change, and it makes items 8 and 10 easier.
+
+> **Done (2026-07-31).** The bridge is named in the README's opening paragraph, its section
+> moved above the three per-platform setup walkthroughs, and it now leads the feature list.
+> The README also gained npm / PyPI / Python / CI / licence badges and a link to
+> `telechat.fyi`. There is still no screenshot — the landing page carries a CSS-rendered
+> triage card instead, which stays correct when the UI changes. `TestReadmeLeadsWithTheProduct`
+> in `tests/test_docs_integrity.py` keeps the ordering from drifting back.
 
 ### 10. Split the 523-line README
 

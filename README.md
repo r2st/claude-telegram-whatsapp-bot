@@ -1,12 +1,22 @@
 # Telechat
 
+[![npm](https://img.shields.io/npm/v/telechat?label=npm)](https://www.npmjs.com/package/telechat)
+[![PyPI](https://img.shields.io/pypi/v/telechatai?label=pypi)](https://pypi.org/project/telechatai/)
+[![Python](https://img.shields.io/pypi/pyversions/telechatai)](https://pypi.org/project/telechatai/)
+[![Tests](https://github.com/telechatai/telechat/actions/workflows/pytest.yml/badge.svg)](https://github.com/telechatai/telechat/actions/workflows/pytest.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 > **Claude AI on your phone / desktop** — personal, self-hosted, zero-infrastructure.  
 > Supports **Telegram**, **WhatsApp**, **Slack**, and a **local web chat** simultaneously from a single process.
+
+[telechat.fyi](https://telechat.fyi) · [Blog](https://telechat.fyi/blog/)
 
 A bot that connects to Claude AI via two modes:
 
 - **CLI mode** — Uses the Claude Code CLI (`claude`). No API key needed if you have a Claude subscription.
 - **API mode** — Uses the Anthropic API directly. Requires an API key. Works in Docker.
+
+And one thing no other Claude-on-Telegram bot does: a **[Claude Desktop bridge](#claude-desktop-bridge)**. When a Claude Code session on your machine finishes a turn or stalls on a question, you get a triage card on Telegram — status first, the pending decision pulled to the top. Reply to the card and your answer is injected back into that session with `claude --resume`. Optionally, every Bash/Write/Edit call waits for your tap.
 
 ## Install
 
@@ -78,6 +88,111 @@ The bot runs as a **background service** — it survives terminal close and Ctrl
 | Works on corporate Wi-Fi | Depends | Yes | Yes | Yes |
 
 Telegram is the most complete adapter; the others cover the core chat loop. The web chat needs no account anywhere, which makes it the fastest way to try telechat before setting up a messenger.
+
+---
+
+## Claude Desktop bridge
+
+Telegram notifications + remote control for your locally-running Claude Desktop sessions. When a session ends a turn or needs input, you get a rich card on your phone. Reply to it (or pick a session from the list) and your message is injected as the next turn via `claude --resume`. Optionally require Telegram approval for every Bash/Write/Edit tool call.
+
+### One-command install
+
+```bash
+telechat bridge install                 # hooks + persistent service + preflight checks
+telechat bridge install --approval      # also gate Bash/Write/Edit on Telegram approval
+telechat bridge install --no-service    # hooks only, skip the launchd service
+```
+
+`telechat bridge install` does everything in one shot:
+
+1. **Registers Claude Code hooks** in `~/.claude/settings.json` (Stop, Notification, SubagentStop, and — with `--approval` — PreToolUse)
+2. **Installs a persistent background service** (macOS launchd) so the bot auto-starts at login and restarts on crash
+3. **Migrates** any older standalone `~/.claude-bridge/` install (and copies its OAuth token)
+4. **Runs preflight checks** — Claude CLI present, Telegram credentials set, and a long-lived OAuth token
+
+> **OAuth token:** headless `claude --resume` needs a long-lived token. Create one with `claude setup-token`, then add it to `~/.telechat/.env` as `CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...` (the `telechat init` wizard collects it for you). Without it, replies fail with a 401 — and the install's preflight will warn you.
+
+### Service management
+
+```bash
+telechat bridge service status      # is the persistent service running?
+telechat bridge service install     # (re)install + start it
+telechat bridge service uninstall   # stop and remove it
+```
+
+### Telegram commands
+
+| Command | Description |
+|---|---|
+| `/desktop` | List running Claude Desktop sessions with tap-to-select buttons |
+| `/desktop_use <id>` | Switch to a session by 8-char short id |
+| `/desktop_which` | Show the current session |
+| `/desktop_clear` | Clear the current session selection |
+| `/desktop_all <msg>` | Broadcast a message to every running session at once |
+| `/desktop_approve_on` *(as reply)* | Require Telegram approval for Bash/Write/Edit in that project |
+| `/desktop_approve_off` *(as reply)* | Disable approval mode |
+| Reply to any session card | Sends your message to that specific session |
+| Plain text (after picking a session) | Goes to the current session — no Reply needed |
+
+### AI triage digests
+
+Every notification and session reply is run through a fast model (haiku) that produces a glanceable triage card instead of a wall of text:
+
+```
+💬 Reply from apprend-backend [b2ca0347]
+
+⚠️ NEEDS DECISION
+Migrated password hashing to argon2id, consolidated token paths,
+added refresh rotation. All 31 tests pass, staging verified.
+
+⚠️ NEEDS YOU: Migrate OAuth1 to the new flow or drop legacy support?
+
+[📄 Full output]  [💬 Use session]
+```
+
+- **Status at a glance** — ✅ DONE / ⚠️ NEEDS DECISION / ❌ BLOCKED / ℹ️ UPDATE
+- **Decisions surface to the top** — if Claude is asking you something, it's pulled out and flagged, so you can decide from your phone
+- **Full output on demand** — tap **📄 Full output** to get the complete, untrimmed text (smart-chunked, or attached as `.txt` if huge)
+
+The digest never loses information — the raw output is always one tap away. If summarization is unavailable, the bridge falls back to posting the full chunked text.
+
+### How it works
+
+`telechat bridge install` writes hook entries into `~/.claude/settings.json`:
+
+- `Stop`, `Notification`, `SubagentStop` → `telechat bridge notify <event>` (posts a rich card with the last assistant message snippet)
+- `PreToolUse` (with `--approval`) → `telechat bridge approve` (blocks, sends ⚠️ card with Approve/Deny buttons, returns the decision to Claude Code)
+
+Telechat's running Telegram poller dispatches your replies and button taps to the same bridge module — no separate daemon, no second bot needed.
+
+### Limits
+
+- `claude --resume` works best when the target Desktop session is **idle**. Don't reply while Claude is mid-turn on that session — undefined behavior.
+- Approval hook times out after 5 minutes and falls through to the normal permission flow, so you won't hang forever if your phone's offline.
+- Approval is **off by default** per project — opt in via `/desktop_approve_on` as a reply.
+
+#### Approval timeout policy
+
+Fail-open is the default because the usual case is you sitting at the machine. If you turn approval on precisely *because* you're away from it, invert that:
+
+```bash
+BRIDGE_APPROVAL_TIMEOUT=300                 # seconds to wait for a tap (default 300)
+BRIDGE_APPROVAL_TIMEOUT_ACTION=fallthrough  # fallthrough (default) | deny | allow
+```
+
+- `fallthrough` — hand the decision back to Claude Code's normal permission flow (what it has always done).
+- `deny` — refuse the tool call. Claude Code sees a reason naming this setting.
+- `allow` — permit it. Only sensible with a short timeout and a trusted machine.
+
+The card itself tells you which one it will do ("Auto-denies in 5 min"), so the policy is visible at the moment you'd act on it. An unrecognised value means `fallthrough` — a typo can't silently become a security posture.
+
+### Uninstall
+
+```bash
+telechat bridge uninstall
+```
+
+Removes the hook entries from `~/.claude/settings.json`. Bridge tables stay in `bot.db` for reference but no longer fire.
 
 ---
 
@@ -390,111 +505,6 @@ Just send a message. There are no slash commands — WhatsApp is intentionally k
 
 ---
 
-## Claude Desktop bridge
-
-Telegram notifications + remote control for your locally-running Claude Desktop sessions. When a session ends a turn or needs input, you get a rich card on your phone. Reply to it (or pick a session from the list) and your message is injected as the next turn via `claude --resume`. Optionally require Telegram approval for every Bash/Write/Edit tool call.
-
-### One-command install
-
-```bash
-telechat bridge install                 # hooks + persistent service + preflight checks
-telechat bridge install --approval      # also gate Bash/Write/Edit on Telegram approval
-telechat bridge install --no-service    # hooks only, skip the launchd service
-```
-
-`telechat bridge install` does everything in one shot:
-
-1. **Registers Claude Code hooks** in `~/.claude/settings.json` (Stop, Notification, SubagentStop, and — with `--approval` — PreToolUse)
-2. **Installs a persistent background service** (macOS launchd) so the bot auto-starts at login and restarts on crash
-3. **Migrates** any older standalone `~/.claude-bridge/` install (and copies its OAuth token)
-4. **Runs preflight checks** — Claude CLI present, Telegram credentials set, and a long-lived OAuth token
-
-> **OAuth token:** headless `claude --resume` needs a long-lived token. Create one with `claude setup-token`, then add it to `~/.telechat/.env` as `CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...` (the `telechat init` wizard collects it for you). Without it, replies fail with a 401 — and the install's preflight will warn you.
-
-### Service management
-
-```bash
-telechat bridge service status      # is the persistent service running?
-telechat bridge service install     # (re)install + start it
-telechat bridge service uninstall   # stop and remove it
-```
-
-### Telegram commands
-
-| Command | Description |
-|---|---|
-| `/desktop` | List running Claude Desktop sessions with tap-to-select buttons |
-| `/desktop_use <id>` | Switch to a session by 8-char short id |
-| `/desktop_which` | Show the current session |
-| `/desktop_clear` | Clear the current session selection |
-| `/desktop_all <msg>` | Broadcast a message to every running session at once |
-| `/desktop_approve_on` *(as reply)* | Require Telegram approval for Bash/Write/Edit in that project |
-| `/desktop_approve_off` *(as reply)* | Disable approval mode |
-| Reply to any session card | Sends your message to that specific session |
-| Plain text (after picking a session) | Goes to the current session — no Reply needed |
-
-### AI triage digests
-
-Every notification and session reply is run through a fast model (haiku) that produces a glanceable triage card instead of a wall of text:
-
-```
-💬 Reply from apprend-backend [b2ca0347]
-
-⚠️ NEEDS DECISION
-Migrated password hashing to argon2id, consolidated token paths,
-added refresh rotation. All 31 tests pass, staging verified.
-
-⚠️ NEEDS YOU: Migrate OAuth1 to the new flow or drop legacy support?
-
-[📄 Full output]  [💬 Use session]
-```
-
-- **Status at a glance** — ✅ DONE / ⚠️ NEEDS DECISION / ❌ BLOCKED / ℹ️ UPDATE
-- **Decisions surface to the top** — if Claude is asking you something, it's pulled out and flagged, so you can decide from your phone
-- **Full output on demand** — tap **📄 Full output** to get the complete, untrimmed text (smart-chunked, or attached as `.txt` if huge)
-
-The digest never loses information — the raw output is always one tap away. If summarization is unavailable, the bridge falls back to posting the full chunked text.
-
-### How it works
-
-`telechat bridge install` writes hook entries into `~/.claude/settings.json`:
-
-- `Stop`, `Notification`, `SubagentStop` → `telechat bridge notify <event>` (posts a rich card with the last assistant message snippet)
-- `PreToolUse` (with `--approval`) → `telechat bridge approve` (blocks, sends ⚠️ card with Approve/Deny buttons, returns the decision to Claude Code)
-
-Telechat's running Telegram poller dispatches your replies and button taps to the same bridge module — no separate daemon, no second bot needed.
-
-### Limits
-
-- `claude --resume` works best when the target Desktop session is **idle**. Don't reply while Claude is mid-turn on that session — undefined behavior.
-- Approval hook times out after 5 minutes and falls through to the normal permission flow, so you won't hang forever if your phone's offline.
-- Approval is **off by default** per project — opt in via `/desktop_approve_on` as a reply.
-
-#### Approval timeout policy
-
-Fail-open is the default because the usual case is you sitting at the machine. If you turn approval on precisely *because* you're away from it, invert that:
-
-```bash
-BRIDGE_APPROVAL_TIMEOUT=300                 # seconds to wait for a tap (default 300)
-BRIDGE_APPROVAL_TIMEOUT_ACTION=fallthrough  # fallthrough (default) | deny | allow
-```
-
-- `fallthrough` — hand the decision back to Claude Code's normal permission flow (what it has always done).
-- `deny` — refuse the tool call. Claude Code sees a reason naming this setting.
-- `allow` — permit it. Only sensible with a short timeout and a trusted machine.
-
-The card itself tells you which one it will do ("Auto-denies in 5 min"), so the policy is visible at the moment you'd act on it. An unrecognised value means `fallthrough` — a typo can't silently become a security posture.
-
-### Uninstall
-
-```bash
-telechat bridge uninstall
-```
-
-Removes the hook entries from `~/.claude/settings.json`. Bridge tables stay in `bot.db` for reference but no longer fire.
-
----
-
 ## Project structure
 
 ```
@@ -566,7 +576,8 @@ adding a second person to the allowlist.
 
 ## Features
 
-- **Three platforms** — Telegram, WhatsApp, and Slack from one process (`BOT_MODE=all`)
+- **[Claude Desktop bridge](#claude-desktop-bridge)** — Claude Code sessions page you on Telegram with an AI triage card; reply to resume them, and gate tool calls on your approval
+- **Four surfaces, one process** — Telegram, WhatsApp, Slack, and a local web chat sharing one set of sessions, memories and history (`BOT_MODE=all`)
 - **One-command setup** — `npm install -g telechat && telechat init`
 - **Background service** — runs detached, survives terminal close
 - **AI-guided setup** — `telechat init` uses Claude CLI for interactive configuration

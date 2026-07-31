@@ -132,3 +132,54 @@ class TestCIMatchesTheDocs:
         text = (REPO_ROOT / "CONTRIBUTING.md").read_text()
         for command in ("pytest -q", "ruff check ."):
             assert command in text
+
+
+class TestReadmeLeadsWithTheProduct:
+    """The README is the second thing a prospective user reads, after the site.
+
+    The Desktop bridge is the one capability no other Claude-on-Telegram bot
+    has, and it used to appear at line 393 of a 523-line file — below three
+    platform setup walkthroughs, absent from the opening and near the bottom of
+    the feature list. Ordering is positioning, and positioning drifts back the
+    moment nothing checks it (`docs/improvements.md` item 9).
+    """
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def readme(cls) -> str:
+        return (REPO_ROOT / "README.md").read_text()
+
+    def test_the_bridge_is_in_the_opening(self, readme):
+        opening = readme.split("## Install", 1)[0]
+        assert "Desktop bridge" in opening, (
+            "the README's opening does not mention the differentiator"
+        )
+
+    def test_the_bridge_section_precedes_the_setup_walkthroughs(self, readme):
+        bridge = readme.index("## Claude Desktop bridge")
+        setup = readme.index("### 2a — Telegram setup")
+        assert bridge < setup, (
+            "the bridge section is buried below the per-platform setup guides"
+        )
+
+    def test_the_bridge_leads_the_feature_list(self, readme):
+        features = readme.split("## Features", 1)[1]
+        first = next(ln for ln in features.splitlines() if ln.startswith("- "))
+        assert "Desktop bridge" in first, f"the feature list opens with: {first}"
+
+    def test_the_landing_page_is_linked(self, readme):
+        assert "https://telechat.fyi" in readme, "the README never links the website"
+
+    def test_badges_point_at_the_published_packages(self, readme):
+        header = readme.split("## Install", 1)[0]
+        for url in (
+            "https://www.npmjs.com/package/telechat",
+            "https://pypi.org/project/telechatai/",
+        ):
+            assert url in header, f"no badge links {url}"
+
+    def test_the_ci_badge_names_a_workflow_that_exists(self, readme):
+        for workflow in re.findall(r"actions/workflows/([\w.-]+)/badge\.svg", readme):
+            assert (REPO_ROOT / ".github" / "workflows" / workflow).is_file(), (
+                f"the README shows a badge for {workflow}, which does not exist"
+            )
