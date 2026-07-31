@@ -44,6 +44,44 @@ CLAUDE_SETTINGS = HOME / ".claude/settings.json"
 SERVICE_LABEL = "com.telechat.bot"
 SERVICE_PLIST = HOME / "Library/LaunchAgents" / f"{SERVICE_LABEL}.plist"
 
+# ───────────────────────── approval policy ─────────────────────────
+# How long the PreToolUse hook waits for a phone tap, and what happens when
+# nobody taps. Fail-open ("fallthrough": Claude Code applies its normal
+# permission flow, which usually means prompting at the desktop) is the
+# historical behaviour and stays the default — it is the right one for a
+# personal tool where the operator is typically sitting at the machine.
+#
+# But it should be a choice, not an accident: a user who turns on approval
+# precisely because they are *away* from the machine wants "deny". That is what
+# BRIDGE_APPROVAL_TIMEOUT_ACTION is for.
+
+_APPROVAL_TIMEOUT_ACTIONS = ("fallthrough", "deny", "allow")
+
+
+def _approval_timeout() -> float:
+    """Seconds to wait for an approval decision. Non-numeric input → 300."""
+    raw = os.environ.get("BRIDGE_APPROVAL_TIMEOUT", "300")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 300.0
+    # A zero or negative timeout would make every request resolve instantly by
+    # policy, silently. If that is what someone wants, the action setting says
+    # so explicitly; a bad number should not.
+    return value if value > 0 else 300.0
+
+
+def _approval_timeout_action() -> str:
+    """What an un-answered approval request resolves to.
+
+    ``fallthrough`` (default) hands the decision back to Claude Code, ``deny``
+    refuses the tool call, ``allow`` permits it. Anything unrecognised is
+    treated as ``fallthrough`` — the safe reading of a typo is "behave the way
+    you always did", not "invent a policy".
+    """
+    action = os.environ.get("BRIDGE_APPROVAL_TIMEOUT_ACTION", "fallthrough").strip().lower()
+    return action if action in _APPROVAL_TIMEOUT_ACTIONS else "fallthrough"
+
 # ───────────────────────── schema ─────────────────────────
 
 def init_bridge_schema(conn: sqlite3.Connection) -> None:
@@ -1001,9 +1039,17 @@ def hook_approve(payload: dict) -> Optional[dict]:
     )
     c.commit()
 
+    timeout = _approval_timeout()
+    on_timeout = _approval_timeout_action()
+    minutes = timeout / 60
+    expiry_note = {
+        "deny": f"_Auto-denies in {minutes:.0f} min._",
+        "allow": f"_Auto-approves in {minutes:.0f} min._",
+        "fallthrough": f"_Falls back to the desktop prompt in {minutes:.0f} min._",
+    }[on_timeout]
     text = (
         f"⚠️ *Approval needed* — `{Path(cwd).name}`  `[{sid[:8]}]`\n\n"
-        f"*{tool_name}*\n`{_md(detail)}`"
+        f"*{tool_name}*\n`{_md(detail)}`\n\n{expiry_note}"
     )
     markup = {"inline_keyboard": [[
         {"text": "✅ Approve", "callback_data": f"bridge:appr:{req_id}:y"},
@@ -1011,7 +1057,7 @@ def hook_approve(payload: dict) -> Optional[dict]:
     ]]}
     _tg_send(text, reply_markup=markup)
 
-    deadline = time.time() + 300
+    deadline = time.time() + timeout
     decision = None
     while time.time() < deadline:
         c = _db()
@@ -1024,13 +1070,30 @@ def hook_approve(payload: dict) -> Optional[dict]:
         time.sleep(0.5)
 
     if decision == "y":
-        return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                        "permissionDecision": "allow"}}
+        return _approval_allow()
     if decision == "n":
-        return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                        "permissionDecision": "deny",
-                                        "permissionDecisionReason": "Denied via Telegram"}}
-    return None  # timeout → fall through
+        return _approval_deny("Denied via Telegram")
+
+    # Nobody answered. What that means is policy, not an accident.
+    if on_timeout == "deny":
+        return _approval_deny(
+            f"No response on Telegram within {minutes:.0f} min "
+            "(BRIDGE_APPROVAL_TIMEOUT_ACTION=deny)"
+        )
+    if on_timeout == "allow":
+        return _approval_allow()
+    return None  # fallthrough → Claude Code's normal permission flow
+
+
+def _approval_allow() -> dict:
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                   "permissionDecision": "allow"}}
+
+
+def _approval_deny(reason: str) -> dict:
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                   "permissionDecision": "deny",
+                                   "permissionDecisionReason": reason}}
 
 
 # ───────────────────────── telechat-runtime: command handlers ─────────────────────────

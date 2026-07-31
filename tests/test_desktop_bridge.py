@@ -683,6 +683,132 @@ class TestApproveHook:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 4b. Approval timeout policy
+#
+# Fail-open is a defensible default for a personal tool, but someone who turns
+# approval on *because they are away from the machine* wants the opposite. The
+# choice is BRIDGE_APPROVAL_TIMEOUT_ACTION; the default is unchanged.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestApprovalTimeoutSettings:
+    def test_defaults_are_five_minutes_and_fallthrough(self, monkeypatch):
+        monkeypatch.delenv("BRIDGE_APPROVAL_TIMEOUT", raising=False)
+        monkeypatch.delenv("BRIDGE_APPROVAL_TIMEOUT_ACTION", raising=False)
+        assert db._approval_timeout() == 300.0
+        assert db._approval_timeout_action() == "fallthrough"
+
+    def test_timeout_is_configurable(self, monkeypatch):
+        monkeypatch.setenv("BRIDGE_APPROVAL_TIMEOUT", "45")
+        assert db._approval_timeout() == 45.0
+
+    @pytest.mark.parametrize("bad", ["", "soon", "5 minutes", "0", "-30"])
+    def test_a_bad_timeout_falls_back_to_the_default(self, monkeypatch, bad):
+        # A zero or negative timeout would resolve every request instantly by
+        # policy, silently — a typo must not become a security posture.
+        monkeypatch.setenv("BRIDGE_APPROVAL_TIMEOUT", bad)
+        assert db._approval_timeout() == 300.0
+
+    @pytest.mark.parametrize("action", ["deny", "allow", "fallthrough"])
+    def test_each_action_is_accepted(self, monkeypatch, action):
+        monkeypatch.setenv("BRIDGE_APPROVAL_TIMEOUT_ACTION", action)
+        assert db._approval_timeout_action() == action
+
+    @pytest.mark.parametrize("action", ["DENY", " Deny ", "Allow"])
+    def test_the_action_is_case_and_space_insensitive(self, monkeypatch, action):
+        monkeypatch.setenv("BRIDGE_APPROVAL_TIMEOUT_ACTION", action)
+        assert db._approval_timeout_action() == action.strip().lower()
+
+    @pytest.mark.parametrize("action", ["block", "", "yes", "refuse"])
+    def test_an_unrecognised_action_means_the_old_behaviour(self, monkeypatch, action):
+        monkeypatch.setenv("BRIDGE_APPROVAL_TIMEOUT_ACTION", action)
+        assert db._approval_timeout_action() == "fallthrough"
+
+
+class TestApprovalTimeoutBehaviour:
+    """The hook's actual return value when nobody taps."""
+
+    @staticmethod
+    def _expire(monkeypatch):
+        clock = iter([0.0, 0.0, 10_000.0, 10_000.0, 10_000.0])
+        monkeypatch.setattr(db.time, "time", lambda: next(clock, 10_000.0))
+
+    @staticmethod
+    def _ask():
+        return db.hook_approve({
+            "cwd": "/tmp/proj", "session_id": "abcd1234-x",
+            "tool_name": "Bash", "tool_input": {"command": "ls"},
+        })
+
+    def test_deny_action_denies_and_says_why(self, bridge, monkeypatch):
+        db.set_approve_mode("/tmp/proj", True)
+        monkeypatch.setenv("BRIDGE_APPROVAL_TIMEOUT_ACTION", "deny")
+        self._expire(monkeypatch)
+        out = self._ask()["hookSpecificOutput"]
+        assert out["permissionDecision"] == "deny"
+        # The reason reaches Claude Code's transcript — it should name the
+        # setting, not read as an unexplained refusal.
+        assert "BRIDGE_APPROVAL_TIMEOUT_ACTION" in out["permissionDecisionReason"]
+
+    def test_allow_action_allows(self, bridge, monkeypatch):
+        db.set_approve_mode("/tmp/proj", True)
+        monkeypatch.setenv("BRIDGE_APPROVAL_TIMEOUT_ACTION", "allow")
+        self._expire(monkeypatch)
+        assert self._ask()["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    def test_an_answer_still_wins_over_the_timeout_policy(self, bridge, monkeypatch):
+        # Policy applies only when nobody decided; a tap must not be overridden.
+        db.set_approve_mode("/tmp/proj", True)
+        monkeypatch.setenv("BRIDGE_APPROVAL_TIMEOUT_ACTION", "deny")
+
+        def approve_as_soon_as_it_is_asked():
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                conn = sqlite3.connect(store.DB_PATH)
+                try:
+                    row = conn.execute(
+                        "SELECT request_id FROM bridge_approvals WHERE decision IS NULL"
+                    ).fetchone()
+                    if row:
+                        conn.execute(
+                            "UPDATE bridge_approvals SET decision='y', decided_at=?"
+                            " WHERE request_id=?",
+                            ("2026-07-31T00:00:00", row[0]),
+                        )
+                        conn.commit()
+                        return
+                finally:
+                    conn.close()
+                time.sleep(0.02)
+
+        threading.Thread(target=approve_as_soon_as_it_is_asked, daemon=True).start()
+        assert self._ask()["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    @pytest.mark.parametrize("action,needle", [
+        ("deny", "Auto-denies"),
+        ("allow", "Auto-approves"),
+        ("fallthrough", "desktop prompt"),
+    ])
+    def test_the_card_tells_the_user_what_inaction_will_do(
+        self, bridge, monkeypatch, action, needle
+    ):
+        db.set_approve_mode("/tmp/proj", True)
+        monkeypatch.setenv("BRIDGE_APPROVAL_TIMEOUT_ACTION", action)
+        self._expire(monkeypatch)
+        self._ask()
+        assert needle in bridge.tg.texts[0]
+
+    def test_a_short_timeout_is_honoured(self, bridge, monkeypatch):
+        # Real clock, no stubbing: the hook must return promptly rather than
+        # sitting on the hardcoded five minutes.
+        db.set_approve_mode("/tmp/proj", True)
+        monkeypatch.setenv("BRIDGE_APPROVAL_TIMEOUT", "0.2")
+        started = time.monotonic()
+        assert self._ask() is None
+        assert time.monotonic() - started < 10
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 5. Text routing
 # ══════════════════════════════════════════════════════════════════════════════
 

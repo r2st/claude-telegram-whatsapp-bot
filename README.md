@@ -425,6 +425,21 @@ Telechat's running Telegram poller dispatches your replies and button taps to th
 - Approval hook times out after 5 minutes and falls through to the normal permission flow, so you won't hang forever if your phone's offline.
 - Approval is **off by default** per project — opt in via `/desktop_approve_on` as a reply.
 
+#### Approval timeout policy
+
+Fail-open is the default because the usual case is you sitting at the machine. If you turn approval on precisely *because* you're away from it, invert that:
+
+```bash
+BRIDGE_APPROVAL_TIMEOUT=300                 # seconds to wait for a tap (default 300)
+BRIDGE_APPROVAL_TIMEOUT_ACTION=fallthrough  # fallthrough (default) | deny | allow
+```
+
+- `fallthrough` — hand the decision back to Claude Code's normal permission flow (what it has always done).
+- `deny` — refuse the tool call. Claude Code sees a reason naming this setting.
+- `allow` — permit it. Only sensible with a short timeout and a trusted machine.
+
+The card itself tells you which one it will do ("Auto-denies in 5 min"), so the policy is visible at the moment you'd act on it. An unrecognised value means `fallthrough` — a typo can't silently become a security posture.
+
 ### Uninstall
 
 ```bash
