@@ -121,9 +121,9 @@ jobs:
         run: pip install -e ".[dev,all]"
 
       - name: Run pytest with coverage
-        # The floor sits just below the current figure (87% since the bridge
-        # harness landed, up from 84%) so ordinary churn doesn't fail the build,
-        # but it does stop coverage sliding: AGENTS.md used to claim ~99% while
-        # the real number was 84%, which is exactly the kind of drift an
-        # unenforced number invites.
-        run: pytest -q --cov=telechat_pkg --cov-report=term-missing --cov-fail-under=85
+        # The floor sits just below the current figure (89%, up from 87% once
+        # the bridge command handlers and callbacks were covered) so ordinary
+        # churn doesn't fail the build, but it does stop coverage sliding:
+        # AGENTS.md used to claim ~99% while the real number was 84%, which is
+        # exactly the kind of drift an unenforced number invites.
+        run: pytest -q --cov=telechat_pkg --cov-report=term-missing --cov-fail-under=87

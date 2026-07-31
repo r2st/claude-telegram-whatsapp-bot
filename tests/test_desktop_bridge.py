@@ -1136,3 +1136,526 @@ class TestWatcherLoop:
 
     def test_a_clean_pass_reports_success(self, bridge, monkeypatch):
         assert self._run_passes(monkeypatch, 2) == [True, True]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 8. Telegram command handlers
+#
+# Half of desktop_bridge.py is the commands the user actually types, and none of
+# them were exercised — the module sat at 47% while five queued tickets
+# (0023–0027) all extend exactly this surface. These cover the state each
+# command reads and writes, and what it tells the user when there is nothing to
+# act on, which is the case every one of them gets wrong most easily.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _ctx(*args) -> SimpleNamespace:
+    return SimpleNamespace(args=list(args))
+
+
+def _card(bridge, sid: str, cwd: str, message_id: int = 500) -> None:
+    """Record a session card, which is how the bridge learns a session exists."""
+    conn = store._get_conn()
+    conn.execute(
+        "INSERT OR REPLACE INTO bridge_session_messages(message_id,session_id,cwd,created_at)"
+        " VALUES(?,?,?,?)",
+        (message_id, sid, cwd, "2026-07-31T00:00:00"),
+    )
+    conn.commit()
+
+
+class TestCurrentSessionCommands:
+    @pytest.mark.asyncio
+    async def test_use_without_an_argument_explains_itself(self, bridge):
+        upd = _update("/desktop_use")
+        await db.cmd_desktop_use(upd, _ctx())
+        assert "Usage" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_use_resolves_a_short_id_and_sets_the_current_session(self, bridge):
+        cwd = bridge.make_cwd("alpha")
+        _card(bridge, "abcd1234-full-id", cwd)
+        upd = _update("/desktop_use abcd1234")
+        await db.cmd_desktop_use(upd, _ctx("abcd1234"))
+        assert db.get_current_session() == ("abcd1234-full-id", cwd)
+        assert "alpha" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_use_with_an_unknown_id_says_so_and_changes_nothing(self, bridge):
+        upd = _update("/desktop_use zzzzzzzz")
+        await db.cmd_desktop_use(upd, _ctx("zzzzzzzz"))
+        assert "No session matches" in upd.message.replies[0]
+        assert db.get_current_session() == (None, None)
+
+    @pytest.mark.asyncio
+    async def test_which_reports_the_current_session(self, bridge):
+        cwd = bridge.make_cwd("beta")
+        db.set_current_session("abcd1234-x", cwd)
+        upd = _update("/desktop_which")
+        await db.cmd_desktop_which(upd, _ctx())
+        assert "beta" in upd.message.replies[0]
+        assert "abcd1234" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_which_with_nothing_set_points_at_the_picker(self, bridge):
+        upd = _update("/desktop_which")
+        await db.cmd_desktop_which(upd, _ctx())
+        assert "/desktop" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_clear_forgets_the_current_session(self, bridge):
+        db.set_current_session("abcd1234-x", bridge.make_cwd("gamma"))
+        upd = _update("/desktop_clear")
+        await db.cmd_desktop_clear(upd, _ctx())
+        assert db.get_current_session() == (None, None)
+        assert "Cleared" in upd.message.replies[0]
+
+
+class TestPanels:
+    @pytest.mark.asyncio
+    async def test_the_sessions_panel_says_when_nothing_is_running(self, bridge, monkeypatch):
+        monkeypatch.setattr(db, "list_running_sessions", lambda: [])
+        upd = _update("/desktop")
+        await db.cmd_desktop(upd, _ctx())
+        assert "No Claude Desktop sessions running" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_the_sessions_panel_lists_a_running_session(self, bridge, monkeypatch):
+        cwd = bridge.make_cwd("delta")
+        monkeypatch.setattr(db, "list_running_sessions", lambda: [
+            {"sid": "abcd1234-x", "cwd": cwd, "etime": "01:23", "pid": "42", "model": "sonnet"},
+        ])
+        upd = _update("/desktop")
+        await db.cmd_desktop(upd, _ctx())
+        text = upd.message.replies[0]
+        assert "delta" in text and "abcd1234" in text
+
+    @pytest.mark.asyncio
+    async def test_the_panel_marks_which_session_is_current(self, bridge, monkeypatch):
+        cwd = bridge.make_cwd("eps")
+        monkeypatch.setattr(db, "list_running_sessions", lambda: [
+            {"sid": "abcd1234-x", "cwd": cwd, "etime": "01:23", "pid": "42", "model": "sonnet"},
+        ])
+        db.set_current_session("abcd1234-x", cwd)
+        text, _markup = db._build_sessions_panel()
+        assert "← current" in text
+
+    @pytest.mark.asyncio
+    async def test_a_session_with_no_id_yet_is_shown_but_not_offered(self, bridge, monkeypatch):
+        # A freshly started Desktop session has no --resume id; it can be
+        # reported but there is nothing to switch to.
+        monkeypatch.setattr(db, "list_running_sessions", lambda: [
+            {"sid": "", "cwd": "", "etime": "00:05", "pid": "77", "model": "sonnet"},
+        ])
+        text, markup = db._build_sessions_panel()
+        assert "no id yet" in text
+        buttons = [b.callback_data for row in markup.inline_keyboard for b in row]
+        assert not any(b.startswith("bridge:use:") and b != "bridge:use:clear"
+                       for b in buttons)
+
+    @pytest.mark.asyncio
+    async def test_the_recent_panel_says_when_there_is_nothing(self, bridge, monkeypatch):
+        monkeypatch.setattr(db, "list_recent_sessions", lambda limit=8: [])
+        upd = _update("/recent")
+        await db.cmd_desktop_recent(upd, _ctx())
+        assert "No Claude sessions found" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_the_recent_panel_offers_each_session_for_resume(self, bridge, monkeypatch):
+        monkeypatch.setattr(db, "list_recent_sessions", lambda limit=8: [
+            {"sid": "abcd1234-x", "cwd": "/tmp/zeta", "ago": "5m ago",
+             "running": False, "last": "did the thing", "mtime": 0},
+        ])
+        text, markup = db._build_recent_panel()
+        assert "zeta" in text and "5m ago" in text
+        buttons = [b.callback_data for row in markup.inline_keyboard for b in row]
+        assert "bridge:use:abcd1234" in buttons
+
+
+class TestBroadcast:
+    @pytest.mark.asyncio
+    async def test_broadcast_without_a_message_explains_itself(self, bridge):
+        upd = _update("/desktop_all")
+        await db.cmd_desktop_all(upd, _ctx())
+        assert "Usage" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_broadcast_with_no_sessions_says_so(self, bridge, monkeypatch):
+        monkeypatch.setattr(db, "list_running_sessions", lambda: [])
+        upd = _update("/desktop_all hello")
+        await db.cmd_desktop_all(upd, _ctx("hello"))
+        assert "No interactable sessions" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_broadcast_reaches_every_interactable_session(self, bridge, monkeypatch):
+        sent = []
+        monkeypatch.setattr(db, "_run_resume_background",
+                            lambda sid, cwd, msg: sent.append((sid, msg)))
+        monkeypatch.setattr(db, "list_running_sessions", lambda: [
+            {"sid": "aaaa1111", "cwd": "/tmp/one", "etime": "1", "pid": "1", "model": "sonnet"},
+            {"sid": "bbbb2222", "cwd": "/tmp/two", "etime": "1", "pid": "2", "model": "sonnet"},
+            {"sid": "", "cwd": "", "etime": "1", "pid": "3", "model": "sonnet"},  # no id
+        ])
+        upd = _update("/desktop_all status?")
+        await db.cmd_desktop_all(upd, _ctx("status?"))
+        assert sent == [("aaaa1111", "status?"), ("bbbb2222", "status?")]
+        assert "2" in upd.message.replies[0]
+
+
+class TestApprovalToggles:
+    @pytest.mark.asyncio
+    async def test_global_approval_on_covers_projects_never_configured(self, bridge):
+        upd = _update("/approve_all_on")
+        await db.cmd_approve_all_on(upd, _ctx())
+        assert db.approve_mode_on("/never/seen/before") is True
+
+    @pytest.mark.asyncio
+    async def test_global_approval_off_restores_per_project_settings(self, bridge):
+        db.set_approve_mode("/tmp/proj", True)
+        await db.cmd_approve_all_on(_update("/approve_all_on"), _ctx())
+        await db.cmd_approve_all_off(_update("/approve_all_off"), _ctx())
+        assert db.approve_mode_on("/never/seen/before") is False
+        assert db.approve_mode_on("/tmp/proj") is True
+
+    @pytest.mark.asyncio
+    async def test_arming_approval_needs_a_card_to_reply_to(self, bridge):
+        upd = _update("/desktop_approve_on")
+        await db.cmd_desktop_approve_on(upd, _ctx())
+        assert "Reply to a session card" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_replying_to_a_card_arms_that_project(self, bridge):
+        cwd = bridge.make_cwd("armed")
+        _card(bridge, "abcd1234-x", cwd, message_id=777)
+        upd = _update("/desktop_approve_on",
+                      reply_to=SimpleNamespace(message_id=777))
+        await db.cmd_desktop_approve_on(upd, _ctx())
+        assert db.approve_mode_on(cwd) is True
+
+
+class TestLifecycleToggle:
+    @pytest.mark.asyncio
+    async def test_pings_are_on_by_default(self, bridge):
+        assert db.lifecycle_on() is True
+
+    @pytest.mark.asyncio
+    async def test_off_then_on_round_trips(self, bridge):
+        await db.cmd_lifecycle(_update("/lifecycle off"), _ctx("off"))
+        assert db.lifecycle_on() is False
+        await db.cmd_lifecycle(_update("/lifecycle on"), _ctx("on"))
+        assert db.lifecycle_on() is True
+
+    @pytest.mark.asyncio
+    async def test_no_argument_reports_without_changing(self, bridge):
+        await db.cmd_lifecycle(_update("/lifecycle off"), _ctx("off"))
+        upd = _update("/lifecycle")
+        await db.cmd_lifecycle(upd, _ctx())
+        assert "OFF" in upd.message.replies[0]
+        assert db.lifecycle_on() is False
+
+    @pytest.mark.asyncio
+    async def test_an_unrecognised_argument_does_not_toggle(self, bridge):
+        upd = _update("/lifecycle maybe")
+        await db.cmd_lifecycle(upd, _ctx("maybe"))
+        assert db.lifecycle_on() is True
+
+
+class TestFollowMode:
+    @pytest.mark.asyncio
+    async def test_follow_needs_a_session(self, bridge):
+        upd = _update("/follow")
+        await db.cmd_follow(upd, _ctx())
+        assert "Usage" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_follow_uses_the_current_session_when_given_no_id(self, bridge):
+        cwd = bridge.make_cwd("followed")
+        bridge.write_transcript("abcd1234-x", cwd, [bridge.assistant_turn("hi", cwd=cwd)])
+        db.set_current_session("abcd1234-x", cwd)
+        upd = _update("/follow")
+        await db.cmd_follow(upd, _ctx())
+        assert [f[0] for f in db.list_follows()] == ["abcd1234-x"]
+        assert "Following" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_follow_starts_at_the_end_of_the_transcript(self, bridge):
+        # Following must stream what happens *next*, not replay the backlog.
+        cwd = bridge.make_cwd("tail")
+        path = bridge.write_transcript(
+            "abcd1234-x", cwd, [bridge.assistant_turn("old news", cwd=cwd)]
+        )
+        _card(bridge, "abcd1234-x", cwd)
+        await db.cmd_follow(_update("/follow abcd1234"), _ctx("abcd1234"))
+        _sid, _cwd, last_pos = db.list_follows()[0]
+        assert last_pos == path.stat().st_size
+
+    @pytest.mark.asyncio
+    async def test_following_lists_what_is_being_followed(self, bridge):
+        db.follow_add("abcd1234-x", "/tmp/one", 0)
+        upd = _update("/following")
+        await db.cmd_following(upd, _ctx())
+        assert "abcd1234" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_following_nothing_says_how_to_start(self, bridge):
+        upd = _update("/following")
+        await db.cmd_following(upd, _ctx())
+        assert "/follow" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_unfollow_by_short_id(self, bridge):
+        db.follow_add("abcd1234-x", "/tmp/one", 0)
+        db.follow_add("eeee5678-y", "/tmp/two", 0)
+        await db.cmd_unfollow(_update("/unfollow abcd1234"), _ctx("abcd1234"))
+        assert [f[0] for f in db.list_follows()] == ["eeee5678-y"]
+
+    @pytest.mark.asyncio
+    async def test_unfollow_with_no_argument_unfollows_everything(self, bridge):
+        db.follow_add("abcd1234-x", "/tmp/one", 0)
+        db.follow_add("eeee5678-y", "/tmp/two", 0)
+        upd = _update("/unfollow")
+        await db.cmd_unfollow(upd, _ctx())
+        assert db.list_follows() == []
+        assert "2" in upd.message.replies[0]
+
+    @pytest.mark.asyncio
+    async def test_unfollowing_something_not_followed_says_so(self, bridge):
+        upd = _update("/unfollow zzzzzzzz")
+        await db.cmd_unfollow(upd, _ctx("zzzzzzzz"))
+        assert "Not following" in upd.message.replies[0]
+
+
+class TestShortIdResolution:
+    def test_a_short_id_resolves_through_a_recorded_card(self, bridge):
+        cwd = bridge.make_cwd("resolved")
+        _card(bridge, "abcd1234-long-session-id", cwd)
+        assert db.resolve_short_session("abcd1234") == ("abcd1234-long-session-id", cwd)
+
+    def test_resolution_falls_back_to_the_transcript_on_disk(self, bridge):
+        # A session telechat never posted a card for is still resumable — that
+        # is the difference between /recent being useful and being a listing.
+        cwd = bridge.make_cwd("ondisk")
+        bridge.write_transcript("ffff9999-x", cwd, [bridge.assistant_turn("hi", cwd=cwd)])
+        assert db.resolve_short_session("ffff9999") == ("ffff9999-x", cwd)
+
+    def test_an_empty_short_id_resolves_to_nothing(self, bridge):
+        assert db.resolve_short_session("") is None
+        assert db.resolve_short_session("   ") is None
+
+    def test_the_newest_card_wins_for_an_ambiguous_prefix(self, bridge):
+        old_cwd = bridge.make_cwd("older")
+        new_cwd = bridge.make_cwd("newer")
+        conn = store._get_conn()
+        for mid, cwd, created in ((1, old_cwd, "2026-07-01T00:00:00"),
+                                  (2, new_cwd, "2026-07-30T00:00:00")):
+            conn.execute(
+                "INSERT OR REPLACE INTO bridge_session_messages"
+                "(message_id,session_id,cwd,created_at) VALUES(?,?,?,?)",
+                (mid, f"abcd1234-{mid}", cwd, created),
+            )
+        conn.commit()
+        assert db.resolve_short_session("abcd1234")[1] == new_cwd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 9. Inline-button callbacks
+#
+# Every card the bridge posts carries buttons, and the callback router that
+# backs them was untested — including the approve/deny path, which is the one
+# place a wrong answer has consequences.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class FakeCallbackQuery:
+    def __init__(self, data: str, chat_id: int = 424242):
+        self.data = data
+        self.answers: list[str] = []
+        self.edits: list[str] = []
+        self.markup_edits = 0
+        self.message = SimpleNamespace(chat_id=chat_id, message_id=1)
+
+    async def answer(self, text: str = "", **_kwargs):
+        self.answers.append(text)
+
+    async def edit_message_text(self, text, **_kwargs):
+        self.edits.append(text)
+
+    async def edit_message_reply_markup(self, **_kwargs):
+        self.markup_edits += 1
+
+
+class FakeBot:
+    def __init__(self):
+        self.sent: list[str] = []
+
+    async def send_message(self, chat_id=None, text="", **_kwargs):
+        self.sent.append(text)
+
+
+def _callback(data: str):
+    q = FakeCallbackQuery(data)
+    bot = FakeBot()
+    return SimpleNamespace(callback_query=q), SimpleNamespace(bot=bot), q, bot
+
+
+class TestCallbackRouting:
+    @pytest.mark.asyncio
+    async def test_a_non_bridge_callback_is_left_alone(self, bridge):
+        upd, ctx, _q, _bot = _callback("tg:something:else")
+        assert await db.try_handle_callback(upd, ctx) is False
+
+    @pytest.mark.asyncio
+    async def test_use_switches_the_current_session(self, bridge):
+        cwd = bridge.make_cwd("switched")
+        _card(bridge, "abcd1234-x", cwd)
+        upd, ctx, q, bot = _callback("bridge:use:abcd1234")
+        assert await db.try_handle_callback(upd, ctx) is True
+        assert db.get_current_session() == ("abcd1234-x", cwd)
+        assert "switched" in bot.sent[0]
+        assert q.answers
+
+    @pytest.mark.asyncio
+    async def test_use_clear_forgets_the_session(self, bridge):
+        db.set_current_session("abcd1234-x", bridge.make_cwd("x"))
+        upd, ctx, _q, bot = _callback("bridge:use:clear")
+        await db.try_handle_callback(upd, ctx)
+        assert db.get_current_session() == (None, None)
+        assert "Cleared" in bot.sent[0]
+
+    @pytest.mark.asyncio
+    async def test_use_with_an_unknown_id_answers_rather_than_failing(self, bridge):
+        upd, ctx, q, bot = _callback("bridge:use:zzzzzzzz")
+        assert await db.try_handle_callback(upd, ctx) is True
+        assert "not found" in q.answers[0].lower()
+        assert bot.sent == []
+
+    @pytest.mark.asyncio
+    async def test_refresh_rerenders_the_panel(self, bridge, monkeypatch):
+        monkeypatch.setattr(db, "list_running_sessions", lambda: [])
+        upd, ctx, q, _bot = _callback("bridge:refresh")
+        assert await db.try_handle_callback(upd, ctx) is True
+        assert q.edits and "No Claude Desktop sessions" in q.edits[0]
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_panel_refresh_does_not_raise(self, bridge, monkeypatch):
+        # Telegram rejects an edit whose content is identical, which is the
+        # normal case for a refresh that changed nothing.
+        monkeypatch.setattr(db, "list_running_sessions", lambda: [])
+        upd, ctx, q, _bot = _callback("bridge:refresh")
+
+        async def reject(*_a, **_kw):
+            raise RuntimeError("message is not modified")
+
+        q.edit_message_text = reject
+        assert await db.try_handle_callback(upd, ctx) is True
+
+    @pytest.mark.asyncio
+    async def test_refresh_recent_renders_the_other_panel(self, bridge, monkeypatch):
+        monkeypatch.setattr(db, "list_recent_sessions", lambda limit=8: [])
+        upd, ctx, q, _bot = _callback("bridge:refresh_recent")
+        await db.try_handle_callback(upd, ctx)
+        assert "No Claude sessions found" in q.edits[0]
+
+
+class TestQuickActionCallbacks:
+    @pytest.mark.asyncio
+    async def test_proceed_sends_an_affirmative_to_the_session(self, bridge, monkeypatch):
+        cwd = bridge.make_cwd("proceeding")
+        _card(bridge, "abcd1234-x", cwd)
+        sent = []
+        monkeypatch.setattr(db, "_run_resume_background",
+                            lambda sid, c, msg: sent.append((sid, msg)))
+        upd, ctx, _q, bot = _callback("bridge:act:abcd1234:proceed")
+        assert await db.try_handle_callback(upd, ctx) is True
+        assert sent and "proceed" in sent[0][1].lower()
+        assert "proceeding" in bot.sent[0].lower()
+
+    @pytest.mark.asyncio
+    async def test_status_asks_without_requesting_work(self, bridge, monkeypatch):
+        cwd = bridge.make_cwd("statusable")
+        _card(bridge, "abcd1234-x", cwd)
+        sent = []
+        monkeypatch.setattr(db, "_run_resume_background",
+                            lambda sid, c, msg: sent.append(msg))
+        upd, ctx, _q, _bot = _callback("bridge:act:abcd1234:status")
+        await db.try_handle_callback(upd, ctx)
+        assert "no need to take any action" in sent[0]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_action_is_refused(self, bridge, monkeypatch):
+        cwd = bridge.make_cwd("unknown-action")
+        _card(bridge, "abcd1234-x", cwd)
+        called = []
+        monkeypatch.setattr(db, "_run_resume_background",
+                            lambda *a: called.append(a))
+        upd, ctx, q, _bot = _callback("bridge:act:abcd1234:selfdestruct")
+        assert await db.try_handle_callback(upd, ctx) is True
+        assert called == []
+        assert "Unknown action" in q.answers[0]
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_action_payload_is_survivable(self, bridge):
+        upd, ctx, q, _bot = _callback("bridge:act:nocolon")
+        assert await db.try_handle_callback(upd, ctx) is True
+        assert "Bad action" in q.answers[0]
+
+    @pytest.mark.asyncio
+    async def test_an_action_on_an_unknown_session_is_refused(self, bridge, monkeypatch):
+        called = []
+        monkeypatch.setattr(db, "_run_resume_background", lambda *a: called.append(a))
+        upd, ctx, q, _bot = _callback("bridge:act:zzzzzzzz:proceed")
+        await db.try_handle_callback(upd, ctx)
+        assert called == []
+        assert "not found" in q.answers[0].lower()
+
+
+class TestApprovalCallbacks:
+    def _pending(self, req_id: str = "req12345") -> str:
+        conn = store._get_conn()
+        conn.execute(
+            "INSERT INTO bridge_approvals(request_id,session_id,cwd,tool,created_at)"
+            " VALUES(?,?,?,?,?)",
+            (req_id, "abcd1234-x", "/tmp/proj", "Bash", "2026-07-31T00:00:00"),
+        )
+        conn.commit()
+        return req_id
+
+    def _decision(self, req_id: str):
+        return store._get_conn().execute(
+            "SELECT decision FROM bridge_approvals WHERE request_id=?", (req_id,)
+        ).fetchone()[0]
+
+    @pytest.mark.asyncio
+    async def test_approve_records_a_yes(self, bridge):
+        req = self._pending()
+        upd, ctx, q, _bot = _callback(f"bridge:appr:{req}:y")
+        assert await db.try_handle_callback(upd, ctx) is True
+        assert self._decision(req) == "y"
+        assert "Approved" in q.answers[0]
+
+    @pytest.mark.asyncio
+    async def test_deny_records_a_no(self, bridge):
+        req = self._pending("req99999")
+        upd, ctx, q, _bot = _callback(f"bridge:appr:{req}:n")
+        await db.try_handle_callback(upd, ctx)
+        assert self._decision(req) == "n"
+        assert "Denied" in q.answers[0]
+
+    @pytest.mark.asyncio
+    async def test_the_buttons_are_replaced_so_it_cannot_be_answered_twice(self, bridge):
+        req = self._pending("reqtwice")
+        upd, ctx, q, _bot = _callback(f"bridge:appr:{req}:y")
+        await db.try_handle_callback(upd, ctx)
+        assert q.markup_edits == 1
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_approval_payload_is_survivable(self, bridge):
+        upd, ctx, _q, _bot = _callback("bridge:appr:onlyoneparts")
+        assert await db.try_handle_callback(upd, ctx) is True
+
+    @pytest.mark.asyncio
+    async def test_answering_an_unknown_request_changes_nothing(self, bridge):
+        req = self._pending("reqreal")
+        upd, ctx, _q, _bot = _callback("bridge:appr:reqfake:y")
+        await db.try_handle_callback(upd, ctx)
+        assert self._decision(req) is None
