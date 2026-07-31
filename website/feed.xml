@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Telechat blog</title>
+    <link>https://telechat.fyi/blog/</link>
+    <description>Notes on building Telechat — a self-hosted Claude bot for Telegram, WhatsApp, Slack and a local web chat.</description>
+    <language>en</language>
+    <atom:link href="https://telechat.fyi/feed.xml" rel="self" type="application/rss+xml"/>
+
+    <item>
+      <title>Your Claude Code sessions can page you</title>
+      <link>https://telechat.fyi/blog/claude-code-that-pages-you.html</link>
+      <guid isPermaLink="true">https://telechat.fyi/blog/claude-code-that-pages-you.html</guid>
+      <pubDate>Fri, 31 Jul 2026 09:00:00 +0000</pubDate>
+      <description>A long agent run stalls on a question you are not there to answer. How Telechat's Desktop bridge turns Claude Code hooks into a Telegram card you can reply to from anywhere — including the recursion where the notifier notified itself.</description>
+    </item>
+
+    <item>
+      <title>One process, four messengers, one SQLite file</title>
+      <link>https://telechat.fyi/blog/one-process-four-messengers.html</link>
+      <guid isPermaLink="true">https://telechat.fyi/blog/one-process-four-messengers.html</guid>
+      <pubDate>Fri, 31 Jul 2026 09:00:00 +0000</pubDate>
+      <description>No webhook, no tunnel, no queue, no managed database. How Telechat runs Telegram, WhatsApp, Slack and a web chat from one process — what that buys, what it costs, and the three storage bugs that became design rules.</description>
+    </item>
+  </channel>
+</rss>

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blog — Telechat</title>
+<meta name="description" content="Notes on building Telechat: the Claude Code Desktop bridge, four messengers from one process, and the bugs that shaped both. Written for people who self-host.">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#0b0c0e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<link rel="canonical" href="https://telechat.fyi/blog/">
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="blog.css">
+<link rel="alternate" type="application/rss+xml" title="Telechat blog" href="../feed.xml">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Telechat">
+<meta property="og:url" content="https://telechat.fyi/blog/">
+<meta property="og:title" content="Telechat blog">
+<meta property="og:description" content="Notes on building Telechat: the Claude Code Desktop bridge, running four messengers from one process, and the bugs that shaped both.">
+<meta property="og:image" content="https://telechat.fyi/og.png">
+<meta property="og:image:alt" content="Telechat — Claude on Telegram, WhatsApp and Slack. Self-hosted, one command.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Telechat blog">
+<meta name="twitter:description" content="Notes on building Telechat: the Desktop bridge, four messengers from one process, and the bugs that shaped both.">
+<meta name="twitter:image" content="https://telechat.fyi/og.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Blog",
+  "name": "Telechat blog",
+  "description": "Notes on building Telechat — a self-hosted Claude bot for Telegram, WhatsApp, Slack and a local web chat.",
+  "url": "https://telechat.fyi/blog/",
+  "inLanguage": "en",
+  "publisher": { "@type": "Organization", "name": "Telechat", "url": "https://telechat.fyi/" },
+  "blogPost": [
+    {
+      "@type": "BlogPosting",
+      "headline": "Your Claude Code sessions can page you",
+      "url": "https://telechat.fyi/blog/claude-code-that-pages-you.html",
+      "datePublished": "2026-07-31"
+    },
+    {
+      "@type": "BlogPosting",
+      "headline": "One process, four messengers, one SQLite file",
+      "url": "https://telechat.fyi/blog/one-process-four-messengers.html",
+      "datePublished": "2026-07-31"
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="nav-in">
+    <a class="brand" href="../"><span class="mark" aria-hidden="true">TC</span> Telechat</a>
+    <nav aria-label="Primary">
+      <a href="./">Blog</a>
+      <a href="../#install">Install</a>
+      <a href="https://github.com/telechatai/telechat" rel="noopener">GitHub</a>
+      <button class="icon-btn" id="theme" type="button" aria-label="Toggle colour theme">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <h1>Blog</h1>
+  <p class="lede">How Telechat is built, and why it is built that way. Mostly engineering, occasionally a bug that was interesting enough to write down.</p>
+
+  <ul class="posts">
+    <li>
+      <a href="claude-code-that-pages-you.html">
+        <h2>Your Claude Code sessions can page you</h2>
+        <p>A long agent run stalls on a question you are not there to answer. Hooks, AI triage digests, tool approval from a phone — and the recursion where the notifier notified itself.</p>
+        <span class="when">31 Jul 2026 · 8 min</span>
+      </a>
+    </li>
+    <li>
+      <a href="one-process-four-messengers.html">
+        <h2>One process, four messengers, one SQLite file</h2>
+        <p>No webhook, no tunnel, no queue, no managed database. What that buys, what it costs, and the three storage bugs that turned into design rules.</p>
+        <span class="when">31 Jul 2026 · 9 min</span>
+      </a>
+    </li>
+  </ul>
+
+  <p style="margin-top:34px;color:var(--muted);font-size:14.5px">Subscribe via <a href="../feed.xml">RSS</a>, or watch the <a href="https://github.com/telechatai/telechat" rel="noopener">repository</a> — every change lands there first.</p>
+
+  <div class="cta">
+    <h3>Telechat in one command</h3>
+    <p>Claude on Telegram, WhatsApp, Slack and a local web chat. Self-hosted, MIT licensed.</p>
+    <code>npm install -g telechat &amp;&amp; telechat init</code>
+  </div>
+</main>
+
+<footer>
+  <div class="foot">
+    <span>© telechatai · MIT licensed</span>
+    <span><a href="../">telechat.fyi</a> · <a href="./">Blog</a> · <a href="../feed.xml">RSS</a> · <a href="https://github.com/telechatai/telechat" rel="noopener">GitHub</a></span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var root = document.documentElement, saved = null;
+  try { saved = localStorage.getItem('tc-theme'); } catch (e) {}
+  var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+  root.setAttribute('data-theme', saved || (light ? 'light' : 'dark'));
+  var btn = document.getElementById('theme');
+  if (btn) btn.addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('tc-theme', next); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>

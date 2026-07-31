@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>One process, four messengers, one SQLite file — Telechat</title>
+<meta name="description" content="How Telechat runs Telegram, WhatsApp, Slack and a web chat from one process with no webhook, queue or public URL — and the three storage bugs that shaped it.">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#0b0c0e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<link rel="canonical" href="https://telechat.fyi/blog/one-process-four-messengers.html">
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="blog.css">
+<link rel="alternate" type="application/rss+xml" title="Telechat blog" href="../feed.xml">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Telechat">
+<meta property="og:url" content="https://telechat.fyi/blog/one-process-four-messengers.html">
+<meta property="og:title" content="One process, four messengers, one SQLite file">
+<meta property="og:description" content="How Telechat runs Telegram, WhatsApp, Slack and a web chat from a single process without a webhook, a queue or a public URL — and the three storage bugs that shaped it.">
+<meta property="og:image" content="https://telechat.fyi/og.png">
+<meta property="og:image:alt" content="Telechat — Claude on Telegram, WhatsApp and Slack. Self-hosted, one command.">
+<meta property="article:published_time" content="2026-07-31">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="One process, four messengers, one SQLite file">
+<meta name="twitter:description" content="Telegram, WhatsApp, Slack and a web chat from a single process — no webhook, no queue, no public URL.">
+<meta name="twitter:image" content="https://telechat.fyi/og.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "One process, four messengers, one SQLite file",
+  "description": "How Telechat runs Telegram, WhatsApp, Slack and a web chat from a single process without a webhook, a queue or a public URL.",
+  "url": "https://telechat.fyi/blog/one-process-four-messengers.html",
+  "mainEntityOfPage": "https://telechat.fyi/blog/one-process-four-messengers.html",
+  "datePublished": "2026-07-31",
+  "dateModified": "2026-07-31",
+  "image": "https://telechat.fyi/og.png",
+  "inLanguage": "en",
+  "keywords": "self-hosted bot, SQLite, asyncio, Telegram, Slack Socket Mode, architecture",
+  "author": { "@type": "Organization", "name": "telechatai", "url": "https://github.com/telechatai" },
+  "publisher": { "@type": "Organization", "name": "Telechat", "url": "https://telechat.fyi/" }
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="nav-in">
+    <a class="brand" href="../"><span class="mark" aria-hidden="true">TC</span> Telechat</a>
+    <nav aria-label="Primary">
+      <a href="./">Blog</a>
+      <a href="../#install">Install</a>
+      <a href="https://github.com/telechatai/telechat" rel="noopener">GitHub</a>
+      <button class="icon-btn" id="theme" type="button" aria-label="Toggle colour theme">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<article>
+  <h1>One process, four messengers, one SQLite file</h1>
+  <p class="meta"><time datetime="2026-07-31">31 July 2026</time> · <span class="tag">Architecture</span> <span class="tag">9 min read</span></p>
+
+  <p class="lede">Every "put an LLM in your chat app" tutorial reaches for the same stack: a webhook endpoint, a tunnel or a cloud function to receive it, a queue because the model is slower than the HTTP timeout, and a managed database because now you have a server. Telechat has none of those, runs on a laptop that sleeps, and speaks four platforms at once.</p>
+
+  <p>This is what it does instead, and what that trade actually costs.</p>
+
+  <h2>The shape</h2>
+
+  <pre><code>Telegram ─┐
+WhatsApp ─┤                                    ┌─ claude CLI  (subprocess)
+Slack    ─┼─→ adapter ─→ claude_core.ask_* ────┼─ Anthropic API
+Web chat ─┘       │                            └─ claude-code-sdk
+                  ↓
+              store.py  ──→  ~/.telechat/bot.db  (SQLite, WAL)</code></pre>
+
+  <p>One process. Each adapter owns its platform's quirks — Telegram's inline keyboards, Slack's thread semantics, WhatsApp's complete lack of interactivity — and then hands a plain string to the same invocation layer. Behind that sits one SQLite file holding everything: turn history, sessions, memories, the knowledge base, costs, bridge state.</p>
+
+  <p>Which platforms start is one environment variable:</p>
+
+  <pre><code>BOT_MODE=telegram          <span class="c"># the default</span>
+BOT_MODE=telegram,slack    <span class="c"># a comma-separated list</span>
+BOT_MODE=all               <span class="c"># all four</span></code></pre>
+
+  <p>Because they share a store, they share your conversation. A memory you saved from Telegram is loaded when you ask from Slack; a session you started at your desk in the web chat is on the list when you pick one up from your phone. That is only true because there is exactly one process and exactly one database, which is the entire argument for this design.</p>
+
+  <h2>Nobody needs to reach you</h2>
+
+  <p>The webhook is the piece that drags everything else in. Accept an inbound HTTP request and you need a public URL, TLS, and a reply within the platform's timeout — which an LLM turn routinely blows past, so you need a queue, so you need somewhere for the queue to live.</p>
+
+  <p>Telechat never accepts an inbound connection from a platform:</p>
+
+  <ul>
+    <li><strong>Telegram</strong> — long polling via <code>python-telegram-bot</code>.</li>
+    <li><strong>WhatsApp</strong> — Green API's free tier, polled over plain HTTPS.</li>
+    <li><strong>Slack</strong> — Socket Mode, an outbound WebSocket the app opens itself.</li>
+    <li><strong>Web chat</strong> — a local aiohttp server bound to <code>127.0.0.1</code>.</li>
+  </ul>
+
+  <p>All four are outbound. There is no inbound firewall rule, no tunnel, no certificate to renew, and nothing to expose. Telechat works behind NAT, on hotel Wi-Fi, on a corporate network, and on a laptop that closes — when it wakes, polling resumes and the backlog arrives. A turn that takes four minutes is a turn that takes four minutes; nothing is timing it out.</p>
+
+  <p>The cost is real and worth stating: polling has latency and it burns a little idle CPU forever. For a personal bot answering you, seconds of latency are invisible and the CPU is free. For a bot serving ten thousand users it would be the wrong call. This is a single-operator tool, and nearly every design decision below follows from that sentence.</p>
+
+  <h2>Deliberately mixed concurrency</h2>
+
+  <p>The obvious criticism of one process is that one blocking library ruins it. Two of these libraries <em>are</em> blocking, which is why the concurrency model is mixed on purpose rather than uniform on principle:</p>
+
+  <table>
+    <thead><tr><th>Platform</th><th>How it runs</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Telegram</td><td>Main asyncio loop</td><td><code>python-telegram-bot</code> is async, and it is the primary adapter</td></tr>
+      <tr><td>Web chat</td><td>Task on the same loop</td><td>aiohttp</td></tr>
+      <tr><td>WhatsApp</td><td>Daemon thread</td><td>Green API polling is a blocking loop</td></tr>
+      <tr><td>Slack</td><td>Daemon thread</td><td><code>slack_bolt</code> Socket Mode is blocking</td></tr>
+      <tr><td>Health</td><td>Daemon thread</td><td>Must answer even when the loop is busy</td></tr>
+    </tbody>
+  </table>
+
+  <p>Wrapping the blocking clients in an executor to pretend everything is async would have bought a tidier diagram and nothing else. The honest version is a table you can read.</p>
+
+  <p>It does have a consequence, and it is the one that matters: <strong>the store is reached from several threads</strong>, so it is written to be thread-safe rather than loop-affine. Three properties of that layer are load-bearing, and each of them was a bug before it was a property.</p>
+
+  <h3>1. One writer thread, whole writes</h3>
+
+  <p>All writes go through a queue drained by a single writer thread and batched into transactions. A write operation carries every statement of one logical change, so a multi-statement write like "save this turn" can never half-apply — you never end up with the message stored and the token count lost. Transient lock and busy failures retry; permanent failures are logged with the offending SQL rather than swallowed.</p>
+
+  <h3>2. A full queue pushes back</h3>
+
+  <p>The first version, when the queue filled, let the caller write synchronously instead of waiting. That is the intuitive fallback and it is wrong: it lets a late write overtake queued earlier ones, so under load the database gets writes in an order that never happened. A full queue now applies back-pressure. Slow is a fine failure mode; reordered is not.</p>
+
+  <h3>3. Reads wait for the writes they depend on</h3>
+
+  <p>Asynchronous writes create a read-your-own-writes problem immediately: send a message, and the next turn assembles history that does not yet contain it. History reads wait for the writes they depend on to commit, so the conversation is consistent from the only vantage point that matters — the person typing.</p>
+
+  <div class="note">
+    <p><strong>All three are visible in production.</strong> <code>/health</code> reports <code>queue_depth</code>, <code>retries</code>, <code>failures</code> and <code>sync_fallbacks</code> alongside whether the writer thread is alive. A dead writer with a live queue means every write is going through the synchronous path, which returns 503 — a state that used to be invisible right up until data went missing.</p>
+  </div>
+
+  <h2>Two ways to reach Claude</h2>
+
+  <p>The invocation layer offers CLI mode and API mode, and the choice is more consequential than it looks.</p>
+
+  <p><strong>CLI mode</strong> spawns the <code>claude</code> binary with <code>--output-format stream-json</code> and reads the stream line by line, turning tool-use and text events into progress callbacks — which is how a chat can show what the agent is doing rather than a spinner. It uses your existing Claude subscription: no API key, no per-token bill. It also means the bot inherits your Claude authentication and your filesystem access, which is a capability, not a footnote. It is why the allowlist should have one entry and why <code>SECURITY.md</code> states the trust boundary instead of burying it.</p>
+
+  <p><strong>API mode</strong> takes an <code>ANTHROPIC_API_KEY</code> and is what the Docker image runs, because a container has no host Claude authentication to inherit. You pay per token, so the bot tracks spend and enforces daily and monthly ceilings with alerts before you hit them.</p>
+
+  <p>Optional features — voice transcription, image and music generation, MCP, browser automation, document extraction — are each imported inside a <code>try/except ImportError</code> and expose an <code>is_available()</code>. Install the core dependencies and the bot starts; features degrade one at a time instead of the process failing to boot because you skipped an extra you never wanted.</p>
+
+  <h2>The part that is boring on purpose</h2>
+
+  <p>Two operational details do more for daily use than any feature.</p>
+
+  <p><strong>Starting the bot replaces the one already running.</strong> Telegram's API allows a single poller per token; a second one produces 409s until you find the first. So startup terminates the previous instance — but every candidate is checked against its own argv first. A process that merely <em>mentions</em> telechat — your editor, a <code>grep</code>, a test run — is not a telechat process. That check exists because an earlier version killed a test run, and "manage the process" and "kill anything matching a string" are very different programs.</p>
+
+  <p><strong>It runs detached.</strong> <code>telechat</code> starts a background service that survives closing the terminal, with <code>stop</code>, <code>restart</code>, <code>status</code> and <code>logs</code> around it, launchd or systemd installation for boot, and a watchdog that restarts a wedged process. A personal assistant you have to remember to restart is one you stop using in a week.</p>
+
+  <h2>What this architecture is bad at</h2>
+
+  <p>Every property above is the same trade seen from a different angle, so the limits are predictable:</p>
+
+  <ul>
+    <li><strong>One machine.</strong> No horizontal scale, and if the laptop is off, the bot is off.</li>
+    <li><strong>One tenant.</strong> The allowlist takes several IDs, but everyone on it shares one Claude authentication, one working directory and one permission ceiling. There is no per-user isolation, and adding it would mean a different program.</li>
+    <li><strong>Uneven adapters.</strong> Telegram gets inline buttons, photos, files and the Desktop bridge. WhatsApp and Slack carry the core chat loop. That asymmetry is honest — the platforms are asymmetric.</li>
+    <li><strong>Polling latency.</strong> Seconds, not milliseconds.</li>
+  </ul>
+
+  <p>What you get for it: no server, no vendor, no account, no per-token bill in CLI mode, and a database you can open with <code>sqlite3</code> and read. For a tool that exists to answer one person, that is the better side of the trade.</p>
+
+  <div class="cta">
+    <h3>Run it yourself</h3>
+    <p>Four platforms, one command, nothing to deploy.</p>
+    <code>npm install -g telechat &amp;&amp; telechat init</code>
+    <p style="margin-top:16px"><a href="https://github.com/telechatai/telechat/blob/main/docs/architecture.md" rel="noopener">Full architecture doc</a> · <a href="claude-code-that-pages-you.html">The Desktop bridge</a></p>
+  </div>
+</article>
+</main>
+
+<footer>
+  <div class="foot">
+    <span>© telechatai · MIT licensed</span>
+    <span><a href="../">telechat.fyi</a> · <a href="./">Blog</a> · <a href="../feed.xml">RSS</a> · <a href="https://github.com/telechatai/telechat" rel="noopener">GitHub</a></span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var root = document.documentElement, saved = null;
+  try { saved = localStorage.getItem('tc-theme'); } catch (e) {}
+  var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+  root.setAttribute('data-theme', saved || (light ? 'light' : 'dark'));
+  var btn = document.getElementById('theme');
+  if (btn) btn.addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('tc-theme', next); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>

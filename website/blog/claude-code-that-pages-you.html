@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your Claude Code sessions can page you — Telechat</title>
+<meta name="description" content="Long agent runs stall on a question you are not there to answer. How Telechat's Desktop bridge turns Claude Code hooks into a card you can reply to from anywhere.">
+<meta name="robots" content="index, follow, max-image-preview:large">
+<meta name="theme-color" content="#0b0c0e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<link rel="canonical" href="https://telechat.fyi/blog/claude-code-that-pages-you.html">
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
+<link rel="stylesheet" href="blog.css">
+<link rel="alternate" type="application/rss+xml" title="Telechat blog" href="../feed.xml">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Telechat">
+<meta property="og:url" content="https://telechat.fyi/blog/claude-code-that-pages-you.html">
+<meta property="og:title" content="Your Claude Code sessions can page you">
+<meta property="og:description" content="Long agent runs stall on a question you are not there to answer. Here is how Telechat's Desktop bridge turns Claude Code hooks into a Telegram card you can reply to from anywhere.">
+<meta property="og:image" content="https://telechat.fyi/og.png">
+<meta property="og:image:alt" content="Telechat — Claude on Telegram, WhatsApp and Slack. Self-hosted, one command.">
+<meta property="article:published_time" content="2026-07-31">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Your Claude Code sessions can page you">
+<meta name="twitter:description" content="How Telechat's Desktop bridge turns Claude Code hooks into a Telegram card you can reply to from anywhere.">
+<meta name="twitter:image" content="https://telechat.fyi/og.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "Your Claude Code sessions can page you",
+  "description": "How Telechat's Desktop bridge turns Claude Code hooks into a Telegram card you can reply to from anywhere.",
+  "url": "https://telechat.fyi/blog/claude-code-that-pages-you.html",
+  "mainEntityOfPage": "https://telechat.fyi/blog/claude-code-that-pages-you.html",
+  "datePublished": "2026-07-31",
+  "dateModified": "2026-07-31",
+  "image": "https://telechat.fyi/og.png",
+  "inLanguage": "en",
+  "keywords": "Claude Code, hooks, Telegram bot, agent notifications, self-hosted",
+  "author": { "@type": "Organization", "name": "telechatai", "url": "https://github.com/telechatai" },
+  "publisher": { "@type": "Organization", "name": "Telechat", "url": "https://telechat.fyi/" }
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="nav-in">
+    <a class="brand" href="../"><span class="mark" aria-hidden="true">TC</span> Telechat</a>
+    <nav aria-label="Primary">
+      <a href="./">Blog</a>
+      <a href="../#install">Install</a>
+      <a href="https://github.com/telechatai/telechat" rel="noopener">GitHub</a>
+      <button class="icon-btn" id="theme" type="button" aria-label="Toggle colour theme">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<article>
+  <h1>Your Claude Code sessions can page you</h1>
+  <p class="meta"><time datetime="2026-07-31">31 July 2026</time> · <span class="tag">Desktop bridge</span> <span class="tag">8 min read</span></p>
+
+  <p class="lede">A coding agent that runs for twenty minutes has a failure mode nobody designed for: it finishes, or it stalls on a question, and you are in another room. The work is done and sitting there, or it is not done and sitting there, and you cannot tell which without walking back to the machine.</p>
+
+  <p>Telechat's Desktop bridge exists for that gap. It hooks into Claude Code on your own machine and turns each of those moments into a card on Telegram — one you can read at a glance and reply to, with the reply landing back in the same session. This post is how it works, including the parts that were not obvious until they broke.</p>
+
+  <h2>The hook surface</h2>
+
+  <p>Claude Code fires hooks at defined points in a session and reads the hook's stdout for a structured response. Telechat registers four of them in <code>~/.claude/settings.json</code>:</p>
+
+  <pre><code><span class="c">$</span> telechat bridge install --approval
+
+<span class="g">✓</span> Registered hooks in ~/.claude/settings.json
+    Stop         → telechat bridge notify Stop
+    Notification → telechat bridge notify Notification
+    SubagentStop → telechat bridge notify SubagentStop
+    PreToolUse   → telechat bridge approve</code></pre>
+
+  <p>Three of them are notifications: the session finished a turn, the session wants your attention, a subagent finished. The fourth is different in kind — <code>PreToolUse</code> runs <em>before</em> a tool call and can block it, which is what makes phone-side approval possible at all.</p>
+
+  <p>There is no daemon in this picture. The hooks are short-lived subprocesses; the already-running Telechat Telegram poller dispatches your replies and button taps back into the same module. If you already run Telechat for chat, the bridge costs you no additional process.</p>
+
+  <h2>A wall of text is not a notification</h2>
+
+  <p>The naive version posts the last assistant message to Telegram. We built that first. It is useless on a phone: the last message of a long agent turn is routinely two thousand characters of summary, and the one sentence that matters — the question it is waiting on — is somewhere in the middle of it.</p>
+
+  <p>So every notification is run through a fast model (Haiku) that produces a triage card instead:</p>
+
+  <pre><code>💬 Reply from apprend-backend [b2ca0347]
+
+⚠️ NEEDS DECISION
+Migrated password hashing to argon2id, consolidated token
+paths, added refresh rotation. All 31 tests pass, staging
+verified.
+
+⚠️ NEEDS YOU: Migrate OAuth1 to the new flow or drop legacy
+support?
+
+[📄 Full output]  [💬 Use session]</code></pre>
+
+  <p>Three things about this shape earned their place:</p>
+
+  <ul>
+    <li><strong>Status first.</strong> ✅ DONE / ⚠️ NEEDS DECISION / ❌ BLOCKED / ℹ️ UPDATE, before any prose. Most cards you will read in under a second and not act on. That is the common case and it should be cheap.</li>
+    <li><strong>The decision is extracted, not buried.</strong> If the agent is asking you something, it is pulled to the bottom under its own marker. This is the entire point: the card exists so a decision can be made from a phone.</li>
+    <li><strong>The full output is one tap away.</strong> <em>📄 Full output</em> returns the complete untrimmed text, smart-chunked across messages or attached as a <code>.txt</code> when it is genuinely huge. The digest never becomes the only copy — and if summarisation is unavailable for any reason, the bridge falls back to posting the full chunked text rather than posting nothing.</li>
+  </ul>
+
+  <p>That last rule is worth stating as a principle: <strong>a summariser in a notification path must degrade to the raw thing, never to silence.</strong> A lossy notification you cannot expand is worse than no notification, because you will trust it.</p>
+
+  <h2>The recursion that ate itself</h2>
+
+  <p>Here is the bug that only exists because of how the pieces fit together.</p>
+
+  <p>The digest is produced by running <code>claude</code>. Claude Code fires the <code>Stop</code> hook when a session ends a turn. The digest's own session ends a turn. So the digest fires <code>Stop</code>, which calls <code>telechat bridge notify Stop</code>, which produces a digest, which fires <code>Stop</code>.</p>
+
+  <p>The fix is four lines and an environment variable. The digest subprocess is spawned with <code>TELECHAT_BRIDGE_INTERNAL=1</code>, and both hook entry points check for it first:</p>
+
+  <pre><code>def cli_notify(event: str) -> int:
+    <span class="c"># Recursion guard: the AI digest itself runs `claude`, whose Stop</span>
+    <span class="c"># hook calls us again. The digest subprocess carries</span>
+    <span class="c"># TELECHAT_BRIDGE_INTERNAL=1 → swallow that notification.</span>
+    if os.environ.get("TELECHAT_BRIDGE_INTERNAL"):
+        return 0
+    ...</code></pre>
+
+  <p>The same guard sits in the approval path, for a sharper reason: without it, the digest's own tool calls would prompt <em>you</em> for approval — the machinery that tells you about a decision would start asking permission to tell you.</p>
+
+  <p>The general shape here is one to watch for. Any time a tool observes an event class and then performs an action in that same class, it can observe itself. Environment-variable tainting of the child process is the cheapest reliable break, because it survives whatever subprocess layering sits in between.</p>
+
+  <h2>Approving tool calls from your phone</h2>
+
+  <p>With <code>--approval</code>, the <code>PreToolUse</code> hook intercepts every Bash, Write and Edit call, posts a card with Approve and Deny buttons, and blocks until you tap. Claude Code respects the returned decision.</p>
+
+  <p>Blocking raises the obvious question: what happens when nobody taps? The honest answer for a personal tool is that you are usually sitting at the machine, so the historical behaviour — hand the decision back to Claude Code's normal permission flow, which prompts at the desktop — is right most of the time.</p>
+
+  <p>But it is exactly wrong for the person who turned approval on <em>because</em> they are away. So the timeout became a policy instead of an accident:</p>
+
+  <pre><code>BRIDGE_APPROVAL_TIMEOUT=300                 <span class="c"># seconds to wait for a tap</span>
+BRIDGE_APPROVAL_TIMEOUT_ACTION=fallthrough  <span class="c"># fallthrough | deny | allow</span></code></pre>
+
+  <ul>
+    <li><code>fallthrough</code> — hand it back to Claude Code's normal permission flow. The default.</li>
+    <li><code>deny</code> — refuse the call. Claude Code is told the reason, naming this setting, so the transcript explains itself later.</li>
+    <li><code>allow</code> — permit it. Only sensible with a short timeout on a machine you trust.</li>
+  </ul>
+
+  <p>Two details matter more than the options themselves. First, <strong>the card states which one it will do</strong> — "Auto-denies in 5 min" — so the policy is visible at the exact moment you would act on it, rather than living in a config file you last read in March. Second, an unrecognised value means <code>fallthrough</code>: a typo cannot silently become a security posture.</p>
+
+  <div class="note">
+    <p><strong>Approval is off by default, per project.</strong> You opt in by replying <code>/desktop_approve_on</code> to a session card. A global "approve everything from my phone" default would be the wrong shape for a tool that can run <code>rm</code>.</p>
+  </div>
+
+  <h2>Replying into a live session</h2>
+
+  <p>A reply is injected with <code>claude --resume</code> against that session id. Headless resume needs a long-lived OAuth token — created with <code>claude setup-token</code> and stored as <code>CLAUDE_CODE_OAUTH_TOKEN</code> — which is the single most common reason a first bridge install half-works. Replies fail with a 401 and nothing else looks wrong, so <code>telechat bridge install</code> checks for it in preflight alongside the Claude CLI and your Telegram credentials, and warns before you discover it at the worst moment.</p>
+
+  <p>From Telegram you get session control that mirrors what you would do at the keyboard:</p>
+
+  <pre><code>/desktop              <span class="c"># list running sessions, tap to select</span>
+/desktop_use b2ca0347 <span class="c"># switch by 8-char short id</span>
+/desktop_all &lt;msg&gt;    <span class="c"># broadcast to every running session</span></code></pre>
+
+  <p>Reply to a specific card and the message goes to that session. Pick a session once and plain text goes there without the reply gesture — which is the difference between a tool you use at a desk and one you use walking.</p>
+
+  <h2>What it does not do</h2>
+
+  <p>Being direct about the edges, because finding them yourself is worse:</p>
+
+  <ul>
+    <li><strong><code>claude --resume</code> wants an idle session.</strong> Replying while that session is mid-turn is undefined behaviour, not a queued message.</li>
+    <li><strong>Telegram only.</strong> The bridge is not wired into the WhatsApp or Slack adapters. Those carry the chat loop, not the bridge.</li>
+    <li><strong>macOS gets the persistent service.</strong> <code>telechat bridge install</code> sets up launchd so the bot restarts at login and after a crash; elsewhere use <code>--no-service</code> and your own supervisor.</li>
+    <li><strong>It inherits your trust.</strong> Anyone on the Telegram allowlist can inject turns into sessions running as you. That is the whole design, and it is why the allowlist should have exactly one entry.</li>
+  </ul>
+
+  <h2>Try it</h2>
+
+  <p>If you already run Claude Code, the bridge is one command on top of a Telechat install, and it removes hooks as cleanly as it adds them with <code>telechat bridge uninstall</code>.</p>
+
+  <div class="cta">
+    <h3>Get the bridge</h3>
+    <p>Install Telechat, then hook up Claude Code.</p>
+    <code>npm install -g telechat &amp;&amp; telechat init</code>
+    <p style="margin-top:16px"><a href="https://github.com/telechatai/telechat#claude-desktop-bridge" rel="noopener">Bridge documentation</a> · <a href="../">What Telechat is</a></p>
+  </div>
+</article>
+</main>
+
+<footer>
+  <div class="foot">
+    <span>© telechatai · MIT licensed</span>
+    <span><a href="../">telechat.fyi</a> · <a href="./">Blog</a> · <a href="../feed.xml">RSS</a> · <a href="https://github.com/telechatai/telechat" rel="noopener">GitHub</a></span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var root = document.documentElement, saved = null;
+  try { saved = localStorage.getItem('tc-theme'); } catch (e) {}
+  var light = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+  root.setAttribute('data-theme', saved || (light ? 'light' : 'dark'));
+  var btn = document.getElementById('theme');
+  if (btn) btn.addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('tc-theme', next); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>
