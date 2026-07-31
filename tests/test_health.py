@@ -347,3 +347,128 @@ class TestWatchdog:
         wd = health.Watchdog()
         s = wd.get_status()
         assert set(s) == {"running", "total_fixes", "fixes_this_hour", "recent_fixes"}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Write-path observability
+#
+# store.py counted retries and dropped writes from the day the queue was fixed,
+# and nothing could read those numbers: a degrading database was invisible until
+# history went missing. /health now reports them.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestDatabaseStatsOnHealth:
+    def test_health_reports_the_write_path(self):
+        from telechat_pkg.health import get_health
+        db = get_health()["database"]
+        assert db["available"] is True
+        for key in ("writer_alive", "queue_depth", "queue_capacity",
+                    "pending_invalidations", "retries", "failures",
+                    "sync_fallbacks"):
+            assert key in db, f"/health omits database.{key}"
+
+    def test_counters_are_integers_not_strings(self):
+        from telechat_pkg.health import get_health
+        db = get_health()["database"]
+        for key in ("queue_depth", "retries", "failures", "sync_fallbacks"):
+            assert isinstance(db[key], int)
+
+    def test_a_dead_writer_with_a_live_queue_is_degraded(self, monkeypatch):
+        # Every write is going through the synchronous fallback — persistence is
+        # degraded right now, and the endpoint should say 503.
+        from telechat_pkg import health
+        monkeypatch.setattr(health, "_component_status", {})
+        from telechat_pkg import store
+        monkeypatch.setattr(store, "get_write_stats", lambda: {
+            "writer_alive": False, "queue_depth": 12, "queue_capacity": 1000,
+            "pending_invalidations": 3, "retries": 5, "failures": 0,
+            "sync_fallbacks": 2,
+        })
+        result = health.get_health()
+        assert result["database"]["degraded"] is True
+        assert result["status"] == "degraded"
+
+    def test_past_failures_alone_do_not_fail_the_check(self, monkeypatch):
+        # A write dropped an hour ago is history, not a current outage — the
+        # counter is there to be read, not to hold the endpoint at 503 forever.
+        from telechat_pkg import health
+        monkeypatch.setattr(health, "_component_status", {})
+        from telechat_pkg import store
+        monkeypatch.setattr(store, "get_write_stats", lambda: {
+            "writer_alive": True, "queue_depth": 0, "queue_capacity": 1000,
+            "pending_invalidations": 0, "retries": 40, "failures": 3,
+            "sync_fallbacks": 7,
+        })
+        result = health.get_health()
+        assert result["database"]["degraded"] is False
+        assert result["status"] == "healthy"
+        assert result["database"]["failures"] == 3   # still visible
+
+    def test_no_queue_yet_is_not_degraded(self, monkeypatch):
+        # Before the first write there is no queue and no writer. That is
+        # startup, not failure.
+        from telechat_pkg import health
+        monkeypatch.setattr(health, "_component_status", {})
+        from telechat_pkg import store
+        monkeypatch.setattr(store, "get_write_stats", lambda: {
+            "writer_alive": False, "queue_depth": 0, "queue_capacity": 0,
+            "pending_invalidations": 0, "retries": 0, "failures": 0,
+            "sync_fallbacks": 0,
+        })
+        assert health.get_health()["database"]["degraded"] is False
+
+    def test_health_still_answers_if_the_store_cannot_report(self, monkeypatch):
+        # The endpoint's job is to answer. A stats call that blows up must not
+        # take it down.
+        from telechat_pkg import health
+        from telechat_pkg import store
+        monkeypatch.setattr(health, "_component_status", {})
+
+        def boom():
+            raise RuntimeError("db gone")
+
+        monkeypatch.setattr(store, "get_write_stats", boom)
+        result = health.get_health()
+        assert result["database"] == {"available": False}
+        assert result["status"] == "healthy"
+
+
+class TestWriteStats:
+    def test_reports_a_live_writer_after_a_write(self):
+        from telechat_pkg import store
+        store.init_db()
+        store.save_turn("health-test", "u1", "hello", "hi")
+        store.flush_writes(timeout=2.0)
+        stats = store.get_write_stats()
+        assert stats["writer_alive"] is True
+        assert stats["queue_capacity"] > 0
+
+    def test_a_synchronous_fallback_is_counted(self, monkeypatch):
+        # The fallback weakens the ordering guarantee, so an operator should be
+        # able to see that it happened at all.
+        import queue as queue_mod
+        from telechat_pkg import store
+
+        before = store.write_sync_fallbacks
+
+        class AlwaysFull:
+            maxsize = 1
+
+            def put(self, *_a, **_kw):
+                raise queue_mod.Full
+
+            def put_nowait(self, *_a, **_kw):
+                raise queue_mod.Full
+
+            def qsize(self):
+                return 1
+
+        monkeypatch.setattr(store, "_write_queue", AlwaysFull())
+        monkeypatch.setattr(store, "_WRITE_QUEUE_TIMEOUT", 0.01)
+        store._enqueue_op(store._WriteOp(
+            [("INSERT OR REPLACE INTO usage"
+              " (platform, user_id, message_count, input_tokens, output_tokens)"
+              " VALUES (?, ?, ?, ?, ?)", ("health-test", "u2", 1, 1, 1))]
+        ))
+        assert store.write_sync_fallbacks == before + 1

@@ -107,10 +107,13 @@ _WRITE_QUEUE_TIMEOUT = float(os.getenv("DB_WRITE_QUEUE_TIMEOUT", "5.0"))
 _WRITE_MAX_ATTEMPTS = int(os.getenv("DB_WRITE_MAX_ATTEMPTS", "3"))
 _WRITE_RETRY_DELAY = 0.05
 
-#: Observability counters — writes retried, and writes finally given up on.
-#: The first useful numbers for a future /metrics surface.
+#: Observability counters. Exposed through :func:`get_write_stats`, which
+#: ``/health`` reports — a write path that is degrading (retrying, falling back
+#: to synchronous writes, dropping ops) was previously invisible until history
+#: went missing.
 write_retries = 0
 write_failures = 0
+write_sync_fallbacks = 0
 
 
 class _WriteOp:
@@ -386,6 +389,8 @@ def _enqueue_op(op: _WriteOp) -> None:
             return
         except _queue_mod.Full:
             _settle_pending(op.cache_keys)
+            global write_sync_fallbacks
+            write_sync_fallbacks += 1
             log.error(
                 "db write queue still full after %.1fs; writing synchronously "
                 "(write ordering is no longer guaranteed)",
@@ -393,6 +398,7 @@ def _enqueue_op(op: _WriteOp) -> None:
             )
         except Exception as e:  # noqa: BLE001 — a swapped-out queue must not lose the write
             _settle_pending(op.cache_keys)
+            write_sync_fallbacks += 1
             log.error("could not enqueue db write (%s); writing synchronously", e)
 
     conn = _get_conn()
@@ -404,6 +410,35 @@ def _enqueue_op(op: _WriteOp) -> None:
         # A synchronous write lands on this thread's connection, so readers on
         # other connections still need their cached history dropped.
         _invalidate_keys(op.cache_keys)
+
+
+def get_write_stats() -> dict:
+    """A snapshot of the write path, for ``/health``.
+
+    Everything here was already being tracked or was one attribute away; none
+    of it was reachable from outside the module. The numbers that matter to an
+    operator, in order of how alarming they are:
+
+    ``writer_alive`` false with a queue present means writes are only landing
+    through the synchronous fallback — persistence is degraded right now.
+    ``failures`` counts writes given up on permanently: data that is gone.
+    ``sync_fallbacks`` counts writes that bypassed the queue, each of which
+    weakened the ordering guarantee. ``retries`` and ``queue_depth`` are the
+    early-warning pair: contention shows up there first.
+    """
+    q = _write_queue
+    thread = _writer_thread
+    with _history_cond:
+        pending = sum(_pending_writes.values())
+    return {
+        "writer_alive": bool(thread is not None and thread.is_alive()),
+        "queue_depth": q.qsize() if q is not None else 0,
+        "queue_capacity": q.maxsize if q is not None else 0,
+        "pending_invalidations": pending,
+        "retries": write_retries,
+        "failures": write_failures,
+        "sync_fallbacks": write_sync_fallbacks,
+    }
 
 
 def flush_writes(timeout: float = 2.0) -> bool:

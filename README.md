@@ -295,12 +295,33 @@ in API mode — put `ANTHROPIC_API_KEY` in your `.env` before starting.
 ```bash
 docker compose up -d
 docker logs -f telechat
-curl http://127.0.0.1:8484/health     # component status + circuit-breaker state
+curl http://127.0.0.1:8484/health     # component status, write path, uptime
 ```
 
 `bot.db` (conversations, memory, cost tracking) lives on the `telechat-data`
 volume, so rebuilding the image keeps your history. The container runs as a
 non-root user and its health endpoint is published on loopback only.
+
+`/health` returns 200 when healthy and 503 when degraded, which is what the
+image's `HEALTHCHECK` uses. Alongside component status it reports the database
+write path:
+
+```json
+"database": {
+  "writer_alive": true,      // false with a live queue → 503: every write is
+                             //   going through the synchronous fallback
+  "queue_depth": 0,          // early warning; contention shows up here first
+  "queue_capacity": 1000,
+  "pending_invalidations": 0,
+  "retries": 0,              // writes retried after lock/busy contention
+  "failures": 0,             // writes given up on permanently — data lost
+  "sync_fallbacks": 0        // writes that bypassed the queue, weakening ordering
+}
+```
+
+`failures` and `sync_fallbacks` are counters, not states: they describe
+something that already happened, so they are reported but do not by themselves
+fail the check.
 
 ---
 

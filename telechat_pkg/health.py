@@ -59,6 +59,33 @@ def report_unhealthy(name: str, error: str = "") -> None:
         _component_status[name]["last_error"] = error
 
 
+def _database_stats() -> dict:
+    """Write-path stats, plus whether they warrant a degraded status.
+
+    Only one condition flips the endpoint to 503: a writer thread that has died
+    while a queue still exists. That means every write is going through the
+    synchronous fallback right now — a live problem worth waking a container
+    orchestrator for.
+
+    Dropped writes and sync fallbacks are *counters*, not states: they describe
+    something that already happened, and a bot that dropped one write an hour
+    ago is not currently unhealthy. They are reported so an operator can see
+    them; they do not fail the check.
+    """
+    try:
+        from . import store
+        stats = dict(store.get_write_stats())
+    except Exception:  # pragma: no cover - defensive
+        log.debug("write stats unavailable", exc_info=True)
+        return {"available": False}
+
+    stats["available"] = True
+    stats["degraded"] = bool(
+        stats.get("queue_capacity") and not stats.get("writer_alive")
+    )
+    return stats
+
+
 def get_health() -> dict:
     """Get overall health status."""
     # Run any registered check functions
@@ -75,6 +102,13 @@ def get_health() -> dict:
     all_healthy = all(c["healthy"] for c in _component_status.values()) if _component_status else True
     uptime = int(time.time() - _start_time)
 
+    # The write path, which until now had no surface at all: store.py counted
+    # retries and dropped writes and nothing could read them, so a degrading
+    # database was invisible until history went missing. See get_write_stats.
+    database = _database_stats()
+    if database.get("degraded"):
+        all_healthy = False
+
     result = {
         "status": "healthy" if all_healthy else "degraded",
         "uptime_seconds": uptime,
@@ -87,6 +121,7 @@ def get_health() -> dict:
             }
             for name, comp in _component_status.items()
         },
+        "database": database,
     }
 
     # Surface the cached auto-update status if a check has run (no network here).

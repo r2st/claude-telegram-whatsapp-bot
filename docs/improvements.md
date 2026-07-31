@@ -443,6 +443,17 @@ error classes from `error_classifier.py`, breaker transitions, write-queue depth
 have `/stats` render the same data in-chat. The self-improving loop already collects
 quality signal; this is the operational half it lacks.
 
+> **Partly done (2026-07-31) — the write path.** `store.get_write_stats()` exposes what
+> `store.py` was already counting and nothing could read: writer liveness, queue depth and
+> capacity, pending invalidations, retries, permanently-dropped writes, and synchronous
+> fallbacks. `/health` reports it under `database` and returns 503 for the one condition
+> that is a *current* outage — a dead writer thread with a live queue, meaning every write
+> is taking the synchronous path. Dropped writes and fallbacks are reported as counters
+> without failing the check, since they describe history rather than state. 8 tests.
+>
+> Still open from this item: structured logging with a per-turn correlation id, latency and
+> token/cost histograms, breaker transitions, and rendering the same data in `/stats`.
+
 ### 22. Duplicate subsystems doing the same job
 
 **M (2–3 days).** Three pairs, each a bug that fires on only one of the two paths:

@@ -44,9 +44,24 @@ not which function moved.
 - **`MCP_ALLOWED_COMMAND_PATHS`** — opt-in strict mode restricting MCP
   executables to named directory prefixes.
 - **`scripts/dev-setup.sh`** — one command to a working development environment.
+- **`/health` now reports the database write path** — writer liveness, queue depth,
+  retries, permanently dropped writes, and synchronous fallbacks. The endpoint
+  returns 503 when the writer thread has died with a live queue, which is the
+  one condition that means writes are degraded *right now*. `store.py` had been
+  counting most of this since its queue was fixed; nothing could read it.
 
 ### Changed
 
+- **`docs/architecture.md` described a different program** — `src/main.py`,
+  FastAPI, APScheduler, an entry point called `claude-telegram-bot`. None of it
+  exists here, and `AGENTS.md` points every contributor and agent at that file.
+  Rewritten from the source and checked by tests.
+- **`BOT_MODE=web` is documented.** A complete browser UI with token auth and a
+  QR code has shipped for a while and the README never mentioned it once.
+- Failures that are survivable are no longer silent: roughly 30
+  `except Exception: pass` handlers now log at a level matched to how much they
+  matter. Most visibly, the bridge watcher could fail on every pass forever
+  while looking exactly like a quiet one.
 - Lint (`ruff`) and a pytest configuration now run in CI. The first pass found a
   duplicated test class that shadowed another and had never run, ~130 unused
   imports, and a handful of dead locals.
