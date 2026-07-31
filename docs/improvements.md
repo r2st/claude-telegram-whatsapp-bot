@@ -737,6 +737,16 @@ the writer, or an LRU keyed per conversation with targeted invalidation on write
   `lsof -ti :$HEALTH_PORT` kill at `main.py:681` was correctly narrowed to the configured
   port already.)
 
+> **`pgrep` half done (2026-07-31).** `main.py` writes `~/.telechat/.telechat.pid` — the file
+> the npm wrapper already used, so `telechat stop` from npm and a pip-started bot now agree —
+> and `_terminate_previous_instances()` reads it first. The `pgrep` sweep survives only as a
+> fallback for pre-PID-file instances, is scoped with `-u <uid>`, and every candidate (PID
+> file, pgrep, *and* the health-port `lsof`) is checked against its own argv via
+> `_is_telechat_cmdline()` before being signalled — so an editor, a `grep`, or a pytest run is
+> no longer a kill target. A non-telechat holder of the health port is now reported rather than
+> killed. The npm wrapper's orphan sweep was narrowed the same way. 30 tests in
+> `tests/test_main.py`.
+>
 > **MCP half done (2026-07-31).** `resolve_allowed_command()` in `mcp_client.py` now does the
 > name check, resolves the command through `PATH` (or as a path) to a symlink-free absolute
 > path, and refuses anything whose binary or containing directory is world-writable — the

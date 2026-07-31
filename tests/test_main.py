@@ -1470,9 +1470,9 @@ class TestCmdInitSlackChangeY:
 
 
 class TestCmdStartKillSuccess:
-    """Cover successful kill-existing paths (lines 432-436, 441-444)."""
+    """The replace-existing-instance path, end to end through _cmd_start."""
 
-    def test_kills_other_pids(self, monkeypatch):
+    def test_kills_other_telechat_pids(self, monkeypatch):
         import subprocess as sp
         killed = []
 
@@ -1481,6 +1481,9 @@ class TestCmdStartKillSuccess:
                 return "1234\n5678\n"
             if "lsof" in cmd:
                 return "9999\n"
+            if "ps" in cmd:
+                # Every candidate here really is a bot process.
+                return "python3 -m telechat_pkg.main\n"
             raise sp.CalledProcessError(1, cmd[0])
 
         monkeypatch.setenv("BOT_MODE", "telegram")
@@ -1495,5 +1498,240 @@ class TestCmdStartKillSuccess:
             _cmd_start()
 
         assert 1234 in killed
-        assert 5678 not in killed
-        assert 9999 in killed
+        assert 5678 not in killed  # never signal yourself
+        assert 9999 in killed      # health-port holder, and it is telechat
+
+    def test_spares_processes_that_only_mention_telechat(self, monkeypatch):
+        # THE bug: `pgrep -f telechat_pkg.main` matched an editor with the file
+        # open, a grep for the string, and the test suite itself.
+        import subprocess as sp
+        killed = []
+
+        def fake_check_output(cmd, **kwargs):
+            if "pgrep" in cmd:
+                return "1234\n"
+            if "ps" in cmd:
+                return "vim telechat_pkg/main.py\n"
+            raise sp.CalledProcessError(1, cmd[0])
+
+        monkeypatch.setenv("BOT_MODE", "telegram")
+        monkeypatch.setattr(os, "getpid", lambda: 5678)
+
+        with patch("dotenv.load_dotenv"), \
+             patch("main._find_env_file", return_value="/fake/.env"), \
+             patch("subprocess.check_output", side_effect=fake_check_output), \
+             patch("os.kill", side_effect=lambda pid, sig: killed.append(pid)), \
+             patch("asyncio.run"):
+            from main import _cmd_start
+            _cmd_start()
+
+        assert killed == []
+
+
+class TestIsTelechatCmdline:
+    """Which command lines count as 'the bot is already running'."""
+
+    @pytest.mark.parametrize("cmdline", [
+        "telechat",
+        "telechat start",
+        "/opt/homebrew/bin/telechat start",
+        "python3 -m telechat_pkg.main",
+        "python -m telechat_pkg",
+        "/usr/bin/python3.12 -m telechat_pkg.main --debug",
+        "python3 /Users/x/telechat/telechat_pkg/main.py",
+    ])
+    def test_real_bot_processes_match(self, cmdline):
+        from main import _is_telechat_cmdline
+        assert _is_telechat_cmdline(cmdline) is True
+
+    @pytest.mark.parametrize("cmdline", [
+        "",
+        "   ",
+        "grep -rn telechat_pkg.main .",
+        "vim telechat_pkg/main.py",
+        "tail -f bot.log",
+        "python3 -m pytest tests/test_main.py",
+        "rg telechat_pkg.main",
+        "less telechat_pkg/main.py",
+        # An editor invoked *through* python still isn't the bot.
+        "python3 -m idlelib telechat_pkg/main.py",
+    ])
+    def test_mentions_do_not_match(self, cmdline):
+        from main import _is_telechat_cmdline
+        assert _is_telechat_cmdline(cmdline) is False
+
+    def test_unbalanced_quotes_fall_back_to_whitespace_split(self):
+        from main import _is_telechat_cmdline
+        # shlex.split raises on an unterminated quote; the caller must not.
+        assert _is_telechat_cmdline('python3 -m telechat_pkg.main "unclosed') is True
+
+
+class TestPidFile:
+    """The PID file that replaced substring matching as the source of truth."""
+
+    @pytest.fixture
+    def home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TELECHAT_HOME", str(tmp_path))
+        return tmp_path
+
+    def test_write_then_read_round_trip(self, home):
+        from main import _pid_file_path, _read_pid_file, _write_pid_file
+        _write_pid_file()
+        assert _read_pid_file() == os.getpid()
+        assert _pid_file_path() == str(home / ".telechat.pid")
+
+    def test_missing_file_reads_as_none(self, home):
+        from main import _read_pid_file
+        assert _read_pid_file() is None
+
+    def test_garbage_file_reads_as_none(self, home):
+        from main import _read_pid_file
+        (home / ".telechat.pid").write_text("not-a-pid\n")
+        assert _read_pid_file() is None
+
+    def test_write_creates_a_missing_data_home(self, tmp_path, monkeypatch):
+        from main import _read_pid_file, _write_pid_file
+        monkeypatch.setenv("TELECHAT_HOME", str(tmp_path / "brand" / "new"))
+        _write_pid_file()
+        assert _read_pid_file() == os.getpid()
+
+    def test_remove_only_deletes_our_own_pid(self, home):
+        from main import _pid_file_path, _remove_pid_file
+        # A successor has already claimed the file — removing it on our way out
+        # would leave the new instance unfindable.
+        (home / ".telechat.pid").write_text("999999\n")
+        _remove_pid_file()
+        assert os.path.exists(_pid_file_path())
+
+    def test_remove_deletes_our_own_pid(self, home):
+        from main import _pid_file_path, _remove_pid_file, _write_pid_file
+        _write_pid_file()
+        _remove_pid_file()
+        assert not os.path.exists(_pid_file_path())
+
+    def test_unwritable_home_is_survivable(self, tmp_path, monkeypatch):
+        from main import _write_pid_file
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory")
+        monkeypatch.setenv("TELECHAT_HOME", str(blocker / "home"))
+        _write_pid_file()  # must not raise
+
+
+class TestTerminatePreviousInstances:
+    """Only real, other, same-user telechat processes get signalled."""
+
+    @pytest.fixture
+    def home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TELECHAT_HOME", str(tmp_path))
+        return tmp_path
+
+    def _patched(self, monkeypatch, *, pgrep="", lsof="", cmdlines=None):
+        import subprocess as sp
+        killed = []
+        cmdlines = cmdlines or {}
+
+        def fake_check_output(cmd, **kwargs):
+            if "pgrep" in cmd:
+                if not pgrep:
+                    raise sp.CalledProcessError(1, "pgrep")
+                return pgrep
+            if "lsof" in cmd:
+                if not lsof:
+                    raise sp.CalledProcessError(1, "lsof")
+                return lsof
+            if "ps" in cmd:
+                pid = cmd[-1]
+                if pid not in cmdlines:
+                    raise sp.CalledProcessError(1, "ps")
+                return cmdlines[pid] + "\n"
+            raise sp.CalledProcessError(1, cmd[0])
+
+        monkeypatch.setattr("subprocess.check_output", fake_check_output)
+        monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(pid))
+        return killed
+
+    def test_pid_file_instance_is_stopped(self, home, monkeypatch):
+        from main import _terminate_previous_instances
+        (home / ".telechat.pid").write_text("4242\n")
+        killed = self._patched(monkeypatch, cmdlines={"4242": "telechat start"})
+        assert _terminate_previous_instances() == [4242]
+        assert killed == [4242]
+
+    def test_pid_file_pointing_at_a_recycled_pid_is_ignored(self, home, monkeypatch):
+        # The PID was reused by an unrelated program after our crash.
+        from main import _terminate_previous_instances
+        (home / ".telechat.pid").write_text("4242\n")
+        killed = self._patched(monkeypatch, cmdlines={"4242": "/usr/sbin/cupsd -l"})
+        assert _terminate_previous_instances() == []
+        assert killed == []
+
+    def test_dead_pid_file_entry_is_ignored(self, home, monkeypatch):
+        from main import _terminate_previous_instances
+        (home / ".telechat.pid").write_text("4242\n")
+        killed = self._patched(monkeypatch)  # `ps` finds nothing
+        assert _terminate_previous_instances() == []
+        assert killed == []
+
+    def test_pgrep_fallback_finds_instances_without_a_pid_file(self, home, monkeypatch):
+        from main import _terminate_previous_instances
+        killed = self._patched(
+            monkeypatch, pgrep="777\n",
+            cmdlines={"777": "python3 -m telechat_pkg.main"},
+        )
+        assert _terminate_previous_instances() == [777]
+        assert killed == [777]
+
+    def test_a_pid_is_never_signalled_twice(self, home, monkeypatch):
+        from main import _terminate_previous_instances
+        (home / ".telechat.pid").write_text("777\n")
+        killed = self._patched(
+            monkeypatch, pgrep="777\n", lsof="777\n",
+            cmdlines={"777": "python3 -m telechat_pkg.main"},
+        )
+        assert _terminate_previous_instances(health_port=8484) == [777]
+        assert killed == [777]
+
+    def test_health_port_held_by_another_service_is_left_alone(self, home, monkeypatch):
+        from main import _terminate_previous_instances
+        killed = self._patched(
+            monkeypatch, lsof="555\n",
+            cmdlines={"555": "node /usr/local/lib/some-dev-server.js"},
+        )
+        assert _terminate_previous_instances(health_port=8484) == []
+        assert killed == []
+
+    def test_health_port_held_by_telechat_is_reclaimed(self, home, monkeypatch):
+        from main import _terminate_previous_instances
+        killed = self._patched(
+            monkeypatch, lsof="555\n", cmdlines={"555": "telechat start"},
+        )
+        assert _terminate_previous_instances(health_port=8484) == [555]
+        assert killed == [555]
+
+    def test_own_pid_is_never_signalled(self, home, monkeypatch):
+        from main import _terminate_previous_instances
+        killed = self._patched(
+            monkeypatch, pgrep=f"{os.getpid()}\n",
+            cmdlines={str(os.getpid()): "python3 -m telechat_pkg.main"},
+        )
+        assert _terminate_previous_instances() == []
+        assert killed == []
+
+    def test_non_numeric_pgrep_output_is_skipped(self, home, monkeypatch):
+        from main import _terminate_previous_instances
+        killed = self._patched(monkeypatch, pgrep="not-a-pid\n\n")
+        assert _terminate_previous_instances() == []
+        assert killed == []
+
+    def test_kill_permission_error_is_survivable(self, home, monkeypatch):
+        from main import _terminate_previous_instances
+        self._patched(
+            monkeypatch, pgrep="777\n",
+            cmdlines={"777": "python3 -m telechat_pkg.main"},
+        )
+
+        def denied(pid, sig):
+            raise PermissionError("not yours")
+
+        monkeypatch.setattr(os, "kill", denied)
+        assert _terminate_previous_instances() == []

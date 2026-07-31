@@ -587,6 +587,187 @@ def _parse_platforms(mode: str) -> set[str]:
     return {p.strip() for p in mode.split(",") if p.strip()}
 
 
+# ─── Single-instance enforcement ─────────────────────────────────────────────
+# Starting the bot replaces any instance already running. The original
+# implementation did that with `pgrep -f telechat_pkg.main` and SIGTERMed every
+# match — which also matched an editor with main.py open, a `grep` for the
+# string, or a pytest run, and did not filter by user. A PID file written by
+# the running bot is the precise answer; the pgrep sweep survives only as a
+# fallback for instances that predate the PID file, and every candidate is now
+# checked against its actual argv before it is signalled.
+
+#: Shared with the npm wrapper, which has written this file since before the
+#: Python side had one (npm/bin/telechat.js). One file means `telechat stop`
+#: from npm can stop a bot that was started by the pip entry point, and vice
+#: versa.
+_PID_FILE_NAME = ".telechat.pid"
+
+#: argv0 basenames that mean "this process *is* the bot".
+_BOT_ARGV0 = ("telechat",)
+
+#: Module paths that mean "this python process is running the bot".
+_BOT_MODULES = ("telechat_pkg.main", "telechat_pkg")
+
+
+def _pid_file_path() -> str:
+    """Path of the single-instance PID file inside the data home."""
+    home = os.environ.get("TELECHAT_HOME") or _DATA_HOME
+    return os.path.join(home, _PID_FILE_NAME)
+
+
+def _is_telechat_cmdline(cmdline: str) -> bool:
+    """True if ``cmdline`` is a telechat bot process rather than a mention of one.
+
+    ``pgrep -f`` matches the whole command line, so `grep telechat_pkg.main`,
+    `vim telechat_pkg/main.py`, and `pytest tests/test_main.py` all matched the
+    old check. Only three shapes are the bot: the console script, `python -m
+    telechat_pkg.main`, and a direct `python …/telechat_pkg/main.py`.
+    """
+    if not cmdline:
+        return False
+    import shlex
+    try:
+        tokens = shlex.split(cmdline)
+    except ValueError:
+        tokens = cmdline.split()
+    if not tokens:
+        return False
+    argv0 = os.path.basename(tokens[0])
+    if argv0 in _BOT_ARGV0:
+        return True
+    if not argv0.startswith("python"):
+        return False
+    for i, tok in enumerate(tokens[1:], start=1):
+        if tok == "-m":
+            nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+            return nxt in _BOT_MODULES
+        if tok.endswith(os.path.join("telechat_pkg", "main.py")):
+            return True
+    return False
+
+
+def _process_cmdline(pid: int) -> str:
+    """argv of ``pid`` as one string, or "" when it can't be determined."""
+    import subprocess
+    try:
+        out = subprocess.check_output(
+            ["ps", "-o", "command=", "-p", str(pid)],
+            text=True, stderr=subprocess.DEVNULL,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ""
+    return out.strip().splitlines()[0].strip() if out.strip() else ""
+
+
+def _read_pid_file() -> int | None:
+    """PID recorded by a previous run, or None if absent/unreadable/garbage."""
+    try:
+        with open(_pid_file_path()) as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _write_pid_file() -> None:
+    """Record this process as the running instance. Best effort."""
+    path = _pid_file_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(f"{os.getpid()}\n")
+    except OSError:
+        pass
+
+
+def _remove_pid_file() -> None:
+    """Remove the PID file, but only if it still names *this* process.
+
+    A replaced instance must not delete its successor's file: the new bot
+    overwrites the PID before the old one finishes shutting down.
+    """
+    try:
+        if _read_pid_file() == os.getpid():
+            os.unlink(_pid_file_path())
+    except OSError:
+        pass
+
+
+def _terminate_previous_instances(log=None, health_port: int | None = None) -> list[int]:
+    """SIGTERM any other running telechat bot. Returns the PIDs signalled.
+
+    Every candidate — from the PID file, the pgrep fallback, or the health port
+    — is checked against its own argv first, so nothing that merely *mentions*
+    telechat gets killed.
+    """
+    import subprocess
+
+    my_pid = os.getpid()
+    signalled: list[int] = []
+
+    def _try_kill(pid: int, source: str) -> None:
+        if pid == my_pid or pid in signalled or pid <= 0:
+            return
+        if not _is_telechat_cmdline(_process_cmdline(pid)):
+            if log:
+                log.debug("Ignoring PID %d from %s — not a telechat process", pid, source)
+            return
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return
+        signalled.append(pid)
+        if log:
+            log.info("Stopped existing telechat process (PID %d, via %s)", pid, source)
+
+    recorded = _read_pid_file()
+    if recorded:
+        _try_kill(recorded, "pid file")
+
+    # Fallback for instances started before the PID file existed. `-u` keeps the
+    # sweep inside this user's processes; the argv check in _try_kill does the
+    # rest.
+    try:
+        out = subprocess.check_output(
+            ["pgrep", "-u", str(os.getuid()), "-f", "telechat_pkg.main"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, AttributeError, subprocess.SubprocessError):
+        out = ""
+    for line in out.splitlines():
+        try:
+            _try_kill(int(line.strip()), "pgrep")
+        except ValueError:
+            continue
+
+    # A previous run may still be holding the health port — that binds before
+    # anything else and would make this start fail. Same argv check applies: if
+    # some *other* service owns the port, say so and leave it alone. Failing to
+    # bind is a much better outcome than killing the user's dev server.
+    if health_port:
+        try:
+            out = subprocess.check_output(
+                ["lsof", "-ti", f":{health_port}"], text=True, stderr=subprocess.DEVNULL,
+            ).strip()
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        for line in out.splitlines():
+            try:
+                pid = int(line.strip())
+            except ValueError:
+                continue
+            if pid == my_pid or pid in signalled:
+                continue
+            if _is_telechat_cmdline(_process_cmdline(pid)):
+                _try_kill(pid, f"port {health_port}")
+            elif log:
+                log.warning(
+                    "Port %d is held by PID %d, which is not telechat — leaving it alone. "
+                    "Set HEALTH_PORT to a free port.", health_port, pid,
+                )
+
+    return signalled
+
+
 
 # ─── Start command (heavy setup deferred here) ───────────────────────────────
 
@@ -595,9 +776,7 @@ def _cmd_start() -> None:
     import asyncio
     import logging
     import logging.handlers
-    import subprocess
     import threading
-    import time
 
     from dotenv import load_dotenv
 
@@ -658,34 +837,19 @@ def _cmd_start() -> None:
             print("Run 'telechat init' to configure.")
             sys.exit(1)
 
-    # ── Kill existing instances ───────────────────────────────────────────
-    my_pid = os.getpid()
+    # ── Replace any existing instance ─────────────────────────────────────
+    # Use the configured health port so we don't touch an unrelated service on
+    # :8484 when HEALTH_PORT has been overridden. Reading the env directly
+    # (instead of importing health) keeps this safe in test contexts where main
+    # is imported outside the package.
     try:
-        out = subprocess.check_output(
-            ["pgrep", "-f", "telechat_pkg.main"], text=True
-        ).strip()
-        for line in out.splitlines():
-            pid = int(line.strip())
-            if pid != my_pid:
-                os.kill(pid, signal.SIGTERM)
-                log.info("Killed existing telechat process (PID %d)", pid)
-    except (subprocess.CalledProcessError, ValueError):
-        pass
-    try:
-        # Use the configured health port so we don't kill an unrelated
-        # service on :8484 when HEALTH_PORT has been overridden. Reading
-        # the env directly (instead of importing health) keeps this safe
-        # in test contexts where main is imported outside the package.
         _health_port = int(os.getenv("HEALTH_PORT", "8484"))
-        out = subprocess.check_output(
-            ["lsof", "-ti", f":{_health_port}"], text=True
-        ).strip()
-        for line in out.splitlines():
-            pid = int(line.strip())
-            if pid != my_pid:
-                os.kill(pid, signal.SIGTERM)
-    except (subprocess.CalledProcessError, ValueError):
-        pass
+    except ValueError:
+        _health_port = 8484
+    _terminate_previous_instances(log, health_port=_health_port)
+    _write_pid_file()
+    import atexit
+    atexit.register(_remove_pid_file)
 
     # ── Background thread wrappers ────────────────────────────────────────
     def _run_whatsapp() -> None:

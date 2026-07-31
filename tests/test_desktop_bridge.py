@@ -239,7 +239,17 @@ def bridge(tmp_path, monkeypatch):
     store._get_conn().commit()
 
     harness = BridgeHarness(home, tg, claude_bin)
+    threads_before = set(threading.enumerate())
     yield harness
+
+    # Join anything the test started before tearing the fakes down. The resume
+    # path runs on a daemon thread that resolves `_find_claude_bin` and
+    # `_tg_call` when it *runs*, not when it is spawned — so a thread outliving
+    # its test executes the NEXT test's fake claude and appends to that test's
+    # invocation log, which showed up as rare, unreproducible failures on
+    # `invocations[0]`. Waiting here keeps each test's side effects its own.
+    for thread in set(threading.enumerate()) - threads_before:
+        thread.join(timeout=10.0)
 
     store.shutdown_writer(timeout=2.0)
     store._reset_conn_state()

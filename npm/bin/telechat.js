@@ -1699,9 +1699,14 @@ FLOW:
       process.exit(0);
     }
 
-    // Stop any orphan processes
+    // Stop any orphan processes. The pattern requires the `python … -m` form
+    // rather than the bare module name: `pkill -f telechat_pkg.main` also
+    // matches an editor with the file open, a grep for the string, or a test
+    // run, and killed them. -u keeps the sweep inside this user's processes.
     try {
-      execSync("pkill -f 'telechat_pkg.main'", { stdio: "ignore" });
+      const uid = typeof process.getuid === "function" ? process.getuid() : null;
+      const scope = uid === null ? "" : `-u ${uid} `;
+      execSync(`pkill ${scope}-f 'python[^ ]* -m telechat_pkg\\.main'`, { stdio: "ignore" });
       await sleep(1000);
     } catch {}
 
