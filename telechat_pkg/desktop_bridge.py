@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -120,6 +121,19 @@ def init_bridge_schema(conn: sqlite3.Connection) -> None:
             enabled INTEGER NOT NULL
         );
 
+        -- Standing "don't ask me again" decisions, scoped to one project.
+        -- prefix is the Bash command prefix a rule covers ('git push'); empty
+        -- means the rule covers the whole tool.
+        CREATE TABLE IF NOT EXISTS bridge_approval_rules (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            cwd        TEXT NOT NULL,
+            tool       TEXT NOT NULL,
+            prefix     TEXT NOT NULL DEFAULT '',
+            decision   TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(cwd, tool, prefix)
+        );
+
         CREATE TABLE IF NOT EXISTS bridge_full_outputs (
             token      TEXT PRIMARY KEY,
             content    TEXT NOT NULL,
@@ -134,6 +148,17 @@ def init_bridge_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    # bridge_approvals predates standing rules, and every CREATE above is IF NOT
+    # EXISTS — so an existing install would keep its old table and the "always
+    # allow" button would have no prefix to write a rule from.
+    _add_column(conn, "bridge_approvals", "rule_prefix", "TEXT")
+
+
+def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    """Add a column if the table doesn't have it yet."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 # ───────────────────────── env + binary lookup ─────────────────────────
@@ -301,6 +326,112 @@ def set_approve_mode(cwd: str, enabled: bool) -> None:
         (cwd, 1 if enabled else 0),
     )
     c.commit()
+
+
+# ───────────────────────── standing approval rules ─────────────────────────
+# Approval mode asked again for every single call — `git status`, `git status`,
+# `git status` — which is why people armed it once and turned it off. A rule is
+# the "and stop asking" half of a decision: one extra tap on the card, and
+# matching calls in that project resolve silently from then on.
+
+#: Anything that could turn one command into two. A prefix rule is a promise
+#: about what will run, and `git push; rm -rf /` derives the prefix `git push`
+#: while running something else entirely — so a command carrying shell
+#: metacharacters is never ruleable and never matches an existing rule. It is
+#: always still approvable by hand; only the standing permission is withheld.
+_SHELL_META = re.compile(r"[;&|`$(){}<>\n\\]")
+
+#: A word that looks like a subcommand (`push`, `test`, `build`) rather than a
+#: flag, a path, or a filename.
+_SUBCOMMAND = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+
+def _bash_prefix(command: str) -> Optional[str]:
+    """The rule prefix a Bash command belongs to, or None if it cannot have one.
+
+    ``git push origin main`` and ``git push --force`` both derive ``git push``,
+    so one rule covers both; ``git status`` derives its own. Matching is by
+    equality of derived prefixes rather than string containment, which is what
+    keeps ``git push`` from also matching a command that merely starts with
+    those characters.
+    """
+    cmd = (command or "").strip()
+    if not cmd or _SHELL_META.search(cmd):
+        return None
+    tokens = cmd.split()
+    if not tokens:
+        return None
+    prefix = tokens[0]
+    if len(tokens) > 1 and _SUBCOMMAND.match(tokens[1]):
+        prefix += " " + tokens[1]
+    return prefix
+
+
+def rule_key(tool: str, tool_input: dict) -> Optional[tuple[str, str]]:
+    """``(tool, prefix)`` identifying the rule a call would fall under, or None.
+
+    Non-Bash tools rule at tool granularity: "stop asking about edits in this
+    project" is a coherent thing to want, and there is no equivalent of a
+    command prefix to narrow it with.
+    """
+    if not tool:
+        return None
+    if tool == "Bash":
+        prefix = _bash_prefix(str((tool_input or {}).get("command") or ""))
+        return (tool, prefix) if prefix else None
+    return (tool, "")
+
+
+def find_approval_rule(cwd: str, tool: str, tool_input: dict) -> Optional[str]:
+    """The standing decision for this call — 'y', 'n', or None if it must ask."""
+    key = rule_key(tool, tool_input)
+    if not key or not cwd:
+        return None
+    row = _db().execute(
+        "SELECT decision FROM bridge_approval_rules WHERE cwd=? AND tool=? AND prefix=?",
+        (cwd, key[0], key[1]),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def add_approval_rule(cwd: str, tool: str, prefix: str, decision: str) -> None:
+    c = _db()
+    c.execute(
+        "INSERT OR REPLACE INTO bridge_approval_rules(cwd,tool,prefix,decision,created_at)"
+        " VALUES(?,?,?,?,?)",
+        (cwd, tool, prefix, decision, datetime.now().isoformat()),
+    )
+    c.commit()
+
+
+def list_approval_rules(cwd: Optional[str] = None) -> list[tuple]:
+    """(id, cwd, tool, prefix, decision), newest first."""
+    c = _db()
+    sql = "SELECT id, cwd, tool, prefix, decision FROM bridge_approval_rules"
+    if cwd:
+        return c.execute(sql + " WHERE cwd=? ORDER BY id DESC", (cwd,)).fetchall()
+    return c.execute(sql + " ORDER BY id DESC").fetchall()
+
+
+def remove_approval_rule(rule_id: int) -> int:
+    c = _db()
+    cur = c.execute("DELETE FROM bridge_approval_rules WHERE id=?", (rule_id,))
+    c.commit()
+    return cur.rowcount
+
+
+def clear_approval_rules(cwd: Optional[str] = None) -> int:
+    c = _db()
+    if cwd:
+        cur = c.execute("DELETE FROM bridge_approval_rules WHERE cwd=?", (cwd,))
+    else:
+        cur = c.execute("DELETE FROM bridge_approval_rules")
+    c.commit()
+    return cur.rowcount
+
+
+def _rule_label(tool: str, prefix: str) -> str:
+    return f"{tool} {prefix}".strip() if prefix else tool
 
 
 # ───────────────────────── Telegram API (raw, no python-telegram-bot) ─────────────────────────
@@ -1102,6 +1233,122 @@ def hook_notify(event: str, payload: dict) -> None:
         c.commit()
 
 
+# ───────────────────────── what you are approving ─────────────────────────
+# The card used to show a tool name and a file path. Approving a Write on that
+# basis is approving a change you cannot see, which is not a decision — it is a
+# guess with a button under it. These render the pending call itself.
+
+_PREVIEW_MAX_LINES = 14
+_PREVIEW_MAX_LINE = 110
+
+
+def _fence(body: str) -> str:
+    """A Telegram code block that cannot be escaped by its own contents."""
+    return "```\n" + body.replace("```", "'''") + "\n```"
+
+
+def _clip_lines(text: str, limit: int = _PREVIEW_MAX_LINES) -> str:
+    lines = (text or "").splitlines() or [""]
+    kept = [
+        (l if len(l) <= _PREVIEW_MAX_LINE else l[: _PREVIEW_MAX_LINE - 1].rstrip() + "…")
+        for l in lines[:limit]
+    ]
+    if len(lines) > limit:
+        kept.append(f"… {len(lines) - limit} more line(s)")
+    return "\n".join(kept)
+
+
+def _diff_preview(old: str, new: str) -> str:
+    """A minus/plus block for an edit, budgeted evenly between the two sides."""
+    half = max(2, _PREVIEW_MAX_LINES // 2)
+    out = []
+    for sign, text in (("-", old), ("+", new)):
+        lines = (text or "").splitlines()
+        for line in lines[:half]:
+            trimmed = line if len(line) <= _PREVIEW_MAX_LINE else line[: _PREVIEW_MAX_LINE - 1] + "…"
+            out.append(f"{sign} {trimmed}")
+        if len(lines) > half:
+            out.append(f"{sign} … {len(lines) - half} more line(s)")
+    return "\n".join(out)
+
+
+def describe_tool_call(tool: str, tool_input: dict, cwd: str = "") -> str:
+    """Markdown showing what a pending tool call would actually do."""
+    ti = tool_input if isinstance(tool_input, dict) else {}
+
+    def short(path) -> str:
+        path = str(path or "")
+        if cwd and path.startswith(cwd + "/"):
+            return path[len(cwd) + 1:]
+        return path
+
+    if tool == "Bash":
+        command = str(ti.get("command") or "")
+        head = f"*Bash*"
+        desc = str(ti.get("description") or "").strip()
+        if desc:
+            head += f" — _{_md(desc)}_"
+        return f"{head}\n{_fence(_clip_lines(command))}"
+
+    if tool in ("Edit", "NotebookEdit"):
+        old = str(ti.get("old_string") or ti.get("old_source") or "")
+        new = str(ti.get("new_string") or ti.get("new_source") or "")
+        path = short(ti.get("file_path") or ti.get("notebook_path"))
+        body = _diff_preview(old, new)
+        return f"*{tool}* `{_backtick_safe(path)}`" + (f"\n{_fence(body)}" if body else "")
+
+    if tool == "MultiEdit":
+        raw_edits = ti.get("edits")
+        edits = raw_edits if isinstance(raw_edits, list) else []
+        path = short(ti.get("file_path"))
+        head = f"*MultiEdit* `{_backtick_safe(path)}` — {len(edits)} edit(s)"
+        first = next((e for e in edits if isinstance(e, dict)), None)
+        if not first:
+            return head
+        body = _diff_preview(str(first.get("old_string") or ""),
+                             str(first.get("new_string") or ""))
+        more = f"\n_…and {len(edits) - 1} more edit(s)_" if len(edits) > 1 else ""
+        return f"{head}\n{_fence(body)}{more}"
+
+    if tool == "Write":
+        content = str(ti.get("content") or "")
+        path = short(ti.get("file_path"))
+        size = f"{len(content.splitlines())} lines · {len(content):,} chars"
+        return (f"*Write* `{_backtick_safe(path)}` — {size}\n"
+                f"{_fence(_clip_lines(content, 10))}")
+
+    # Anything else: its inputs, which beats the tool name on its own.
+    try:
+        body = json.dumps(ti, indent=2, default=str)
+    except Exception:
+        body = str(ti)
+    return f"*{_md(tool)}*\n{_fence(_clip_lines(body))}"
+
+
+def _backtick_safe(text: str) -> str:
+    return (text or "").replace("`", "'")
+
+
+def _record_approval(req_id: str, sid: str, cwd: str, tool: str,
+                     prefix: Optional[str] = None,
+                     decision: Optional[str] = None) -> None:
+    """Log an approval request. ``prefix`` is what a rule tap would cover.
+
+    Rules are written from the *card*, which by then knows only a request id —
+    so the prefix has to be persisted with the request rather than recomputed
+    from a tool input that is long gone by the time anyone taps.
+    """
+    c = _db()
+    c.execute(
+        "INSERT INTO bridge_approvals"
+        "(request_id,session_id,cwd,tool,rule_prefix,decision,created_at,decided_at)"
+        " VALUES(?,?,?,?,?,?,?,?)",
+        (req_id, sid, cwd, tool, prefix, decision, datetime.now().isoformat(),
+         datetime.now().isoformat() if decision else None),
+    )
+    c.commit()
+
+
 # ───────────────────────── hook entry: approve ─────────────────────────
 
 def hook_approve(payload: dict) -> Optional[dict]:
@@ -1113,21 +1360,23 @@ def hook_approve(payload: dict) -> Optional[dict]:
 
     tool_name = payload.get("tool_name", "?")
     ti = payload.get("tool_input", {}) or {}
-    if tool_name == "Bash":
-        detail = ti.get("command", "")
-    elif tool_name in ("Write", "Edit", "MultiEdit"):
-        detail = ti.get("file_path", "")
-    else:
-        detail = json.dumps(ti)
-    detail = detail[:300]
+
+    key = rule_key(tool_name, ti)
+    prefix = key[1] if key else None
+
+    # A standing rule is a decision the user already made. Resolve it silently:
+    # being asked again is exactly what the rule was tapped to prevent.
+    standing = find_approval_rule(cwd, tool_name, ti)
+    if standing in ("y", "n"):
+        _record_approval(uuid.uuid4().hex[:8], sid, cwd, tool_name, prefix,
+                         decision=standing)
+        label = _rule_label(*(key or (tool_name, "")))
+        if standing == "y":
+            return _approval_allow()
+        return _approval_deny(f"Denied by a standing rule for {label} (see /approvals)")
 
     req_id = uuid.uuid4().hex[:8]
-    c = _db()
-    c.execute(
-        "INSERT INTO bridge_approvals(request_id,session_id,cwd,tool,created_at) VALUES(?,?,?,?,?)",
-        (req_id, sid, cwd, tool_name, datetime.now().isoformat()),
-    )
-    c.commit()
+    _record_approval(req_id, sid, cwd, tool_name, prefix)
 
     timeout = _approval_timeout()
     on_timeout = _approval_timeout_action()
@@ -1139,13 +1388,20 @@ def hook_approve(payload: dict) -> Optional[dict]:
     }[on_timeout]
     text = (
         f"⚠️ *Approval needed* — `{Path(cwd).name}`  `[{sid[:8]}]`\n\n"
-        f"*{tool_name}*\n`{_md(detail)}`\n\n{expiry_note}"
+        f"{describe_tool_call(tool_name, ti, cwd)}\n\n{expiry_note}"
     )
-    markup = {"inline_keyboard": [[
+    rows = [[
         {"text": "✅ Approve", "callback_data": f"bridge:appr:{req_id}:y"},
         {"text": "❌ Deny",    "callback_data": f"bridge:appr:{req_id}:n"},
-    ]]}
-    _tg_send(text, reply_markup=markup)
+    ]]
+    # "…and stop asking" — offered only when the call can be described by a rule
+    # that will still mean the same thing next time.
+    if key:
+        rows.append([
+            {"text": f"👍 Always allow {_rule_label(*key)}",
+             "callback_data": f"bridge:rule:{req_id}:y"},
+        ])
+    _tg_send(text, reply_markup={"inline_keyboard": rows})
 
     deadline = time.time() + timeout
     decision = None
@@ -1207,7 +1463,9 @@ HELP_TEXT = (
     "• `/unfollow [id|all]` · `/following` — manage live mirrors\n"
     "• Session start/exit pings are on by default (`/lifecycle on|off`)\n\n"
     "🔐 *Permission control:*\n"
-    "• Tap Approve / Deny on permission cards\n"
+    "• Approval cards show the *actual* call — the command, or a diff of the edit\n"
+    "• Tap *✅ Approve* / *❌ Deny*, or *👍 Always allow …* to decide it and stop being asked\n"
+    "• `/approvals` — list standing rules and revoke any of them (`/approvals clear` for all)\n"
     "• `/approve_all_on` — route *every* session's permissions to Telegram (no per-project arming)\n"
     "• `/desktop_approve_on` (reply to a card) — arm approval for that one project\n"
     "• `/desktop_approve_off` / `/approve_all_off` — disable"
@@ -1381,6 +1639,50 @@ async def cmd_approve_all_off(update, ctx):
     await update.message.reply_text(
         "🔓 *Global approval OFF* — sessions use their normal permission flow "
         "(per-project /desktop_approve_on still applies).", parse_mode="Markdown")
+
+
+# ── standing approval rules ──
+
+def _build_rules_panel() -> tuple[str, object]:
+    """The /approvals panel: every standing rule, each with a revoke button.
+
+    A permission you granted from a phone weeks ago and cannot see is a trap, so
+    listing and revoking are part of the feature rather than an extra."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    rules = list_approval_rules()
+    if not rules:
+        return (
+            "_No standing approval rules._\n\n"
+            "Tap *👍 Always allow …* on an approval card to add one.",
+            None,
+        )
+    lines = ["🔐 *Standing approval rules*\n"]
+    keyboard = []
+    for rule_id, cwd, tool, prefix, decision in rules:
+        icon = "✅" if decision == "y" else "❌"
+        label = _rule_label(tool, prefix)
+        project = Path(cwd).name if cwd else "(unknown)"
+        lines.append(f"{icon} `{_backtick_safe(label)}` — in *{_md(project)}*")
+        keyboard.append([{"text": f"🗑 Revoke {label} · {project}",
+                          "callback_data": f"bridge:rulerm:{rule_id}"}])
+    lines.append("\n_Rules are per project. `/approvals clear` removes them all._")
+    markup = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(**b) for b in row] for row in keyboard]
+    )
+    return "\n".join(lines), markup
+
+
+async def cmd_approvals(update, ctx):
+    arg = (ctx.args[0].lower() if ctx.args else "")
+    if arg == "clear":
+        removed = clear_approval_rules()
+        await update.message.reply_text(
+            f"🔓 Removed {removed} standing approval rule(s). "
+            "Tool calls will ask again."
+        )
+        return
+    text, markup = _build_rules_panel()
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=markup)
 
 
 # ── lifecycle toggle ──
@@ -1560,11 +1862,36 @@ async def try_handle_callback(update, ctx) -> bool:
             parse_mode="Markdown",
         )
         return True
-    if body.startswith("appr:"):
+    if body.startswith("rulerm:"):
+        try:
+            rule_id = int(body[len("rulerm:"):])
+        except ValueError:
+            await q.answer("Bad rule")
+            return True
+        await q.answer("Removed" if remove_approval_rule(rule_id) else "Already gone")
+        text, markup = _build_rules_panel()
+        try:
+            await q.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
+        except Exception:
+            log.debug("rules panel edit rejected", exc_info=True)
+        return True
+    if body.startswith("appr:") or body.startswith("rule:"):
+        standing = body.startswith("rule:")
         try:
             _, req_id, decision = body.split(":", 2)
         except ValueError:
             return True
+        rule_label = ""
+        if standing:
+            # Same tap decides this call *and* writes the rule, so approving
+            # "and stop asking" costs one tap rather than two.
+            row = _db().execute(
+                "SELECT cwd, tool, rule_prefix FROM bridge_approvals WHERE request_id=?",
+                (req_id,),
+            ).fetchone()
+            if row and row[0] and row[1]:
+                add_approval_rule(row[0], row[1], row[2] or "", decision)
+                rule_label = _rule_label(row[1], row[2] or "")
         c = _db()
         c.execute(
             "UPDATE bridge_approvals SET decision=?, decided_at=? WHERE request_id=?",
@@ -1572,6 +1899,8 @@ async def try_handle_callback(update, ctx) -> bool:
         )
         c.commit()
         label = "✅ Approved" if decision == "y" else "❌ Denied"
+        if rule_label:
+            label += f" · always {rule_label}"
         await q.answer(label)
         try:
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -1615,6 +1944,7 @@ def register(app) -> None:
     app.add_handler(CommandHandler("desktop_approve_off", cmd_desktop_approve_off))
     app.add_handler(CommandHandler("approve_all_on",      cmd_approve_all_on))
     app.add_handler(CommandHandler("approve_all_off",     cmd_approve_all_off))
+    app.add_handler(CommandHandler("approvals",           cmd_approvals))
     app.add_handler(CommandHandler("lifecycle",           cmd_lifecycle))
     app.add_handler(CommandHandler("follow",              cmd_follow))
     app.add_handler(CommandHandler("unfollow",            cmd_unfollow))

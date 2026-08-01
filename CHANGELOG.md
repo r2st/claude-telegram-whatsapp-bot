@@ -11,6 +11,27 @@ not which function moved.
 
 ### Added
 
+- **Approval cards show the call, and one tap can stop them asking again.** Two
+  things made approval mode something people armed once and then switched off.
+
+  The card showed a tool name and a file path, so approving a `Write` meant
+  approving a change you could not see — a guess with a button under it. Cards
+  now render the call itself: the command for Bash, a diff for Edit and
+  MultiEdit, the size and first lines for Write.
+
+  And every call asked again. `git status`, `git status`, `git status`. A new
+  **👍 Always allow …** button decides the pending call *and* records a standing
+  rule in the same tap; matching calls in that project resolve silently
+  afterwards. `/approvals` lists every rule with a button to revoke it, and
+  `/approvals clear` removes them all — a permission you granted from your phone
+  weeks ago and cannot see would be a trap.
+
+  Rules are per project and, for Bash, scoped to a command prefix: allowing
+  `git push` covers `git push --force` but not `git status`. A command
+  containing shell metacharacters can never have a rule and never matches one,
+  because `git push; rm -rf /` derives the prefix `git push` while running
+  something else entirely. Those stay manual decisions.
+
 - **Triage cards now show what the session did, not just what it said.** A card
   read "✅ DONE — fixed the token refresh race", and from a phone there was no
   way to tell whether that meant one file or thirty, or whether the suite had

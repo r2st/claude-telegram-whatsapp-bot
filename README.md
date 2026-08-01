@@ -141,6 +141,8 @@ telechat bridge service uninstall   # stop and remove it
 | `/desktop_all <msg>` | Broadcast a message to every running session at once |
 | `/desktop_approve_on` *(as reply)* | Require Telegram approval for Bash/Write/Edit in that project |
 | `/desktop_approve_off` *(as reply)* | Disable approval mode |
+| `/approvals` | List standing "always allow" rules, with a button to revoke each |
+| `/approvals clear` | Remove every standing rule — everything asks again |
 | Reply to any session card | Sends your message to that specific session |
 | Plain text (after picking a session) | Goes to the current session — no Reply needed |
 
@@ -173,12 +175,37 @@ added refresh rotation.
 
 The digest never loses information — the raw output is always one tap away. If summarization is unavailable, the bridge falls back to posting the full chunked text, and the evidence block still comes with it (it is parsed, not generated, so it does not depend on a model being reachable).
 
+### One-tap tool approval
+
+With `--approval` armed, every Bash/Write/Edit call waits for your tap — and the card shows the call itself, not just its name:
+
+```
+⚠️ Approval needed — apprend-backend [b2ca0347]
+
+Edit auth/tokens.py
+- if token.expired:
+-     refresh()
++ if token.expired(now):
++     refresh(force=True)
+
+Falls back to the desktop prompt in 5 min.
+
+[✅ Approve]  [❌ Deny]
+[👍 Always allow Edit]
+```
+
+- **Bash** shows the command, **Edit/MultiEdit** a diff, **Write** the size and the first lines — enough to decide without getting up
+- **👍 Always allow …** decides *this* call and records a standing rule in one tap. Matching calls resolve silently from then on, which is the difference between approval mode being usable and being switched off after the fourth `git status` prompt
+- Rules are **per project** and scoped to a command prefix: `Always allow git push` covers `git push --force` but not `git status`
+- A command containing shell metacharacters (`;`, `&&`, `` ` ``, `$(`…) **can never have a rule** and never matches one. `git push; rm -rf /` would derive the prefix `git push` while running something else entirely, so it stays a manual decision
+- **`/approvals`** lists every standing rule with a revoke button; `/approvals clear` removes them all. A permission you granted from your phone weeks ago and cannot see would be a trap
+
 ### How it works
 
 `telechat bridge install` writes hook entries into `~/.claude/settings.json`:
 
 - `Stop`, `Notification`, `SubagentStop` → `telechat bridge notify <event>` (posts a rich card with the last assistant message snippet)
-- `PreToolUse` (with `--approval`) → `telechat bridge approve` (blocks, sends ⚠️ card with Approve/Deny buttons, returns the decision to Claude Code)
+- `PreToolUse` (with `--approval`) → `telechat bridge approve` (blocks, sends ⚠️ card with the call preview and Approve/Deny/Always-allow buttons, returns the decision to Claude Code — or resolves it from a standing rule without asking)
 
 Telechat's running Telegram poller dispatches your replies and button taps to the same bridge module — no separate daemon, no second bot needed.
 
