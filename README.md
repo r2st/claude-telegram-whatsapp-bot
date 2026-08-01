@@ -105,12 +105,17 @@ Telegram is the most complete adapter; the others cover the core chat loop. Disc
 
 Telegram notifications + remote control for your locally-running Claude Desktop sessions. When a session ends a turn or needs input, you get a rich card on your phone. Reply to it (or pick a session from the list) and your message is injected as the next turn via `claude --resume`. Optionally require Telegram approval for every Bash/Write/Edit tool call.
 
+> **Setting it up, or it isn't working?** [`docs/desktop-bridge.md`](docs/desktop-bridge.md)
+> is the task-oriented guide: prerequisites, verification, and a troubleshooting
+> table that maps each symptom to its cause. This section is the reference.
+
 ### One-command install
 
 ```bash
 telechat bridge install                 # hooks + persistent service + preflight checks
 telechat bridge install --approval      # also gate Bash/Write/Edit on Telegram approval
 telechat bridge install --no-service    # hooks only, skip the launchd service
+telechat bridge status                  # is it actually wired up? (non-zero if not)
 ```
 
 `telechat bridge install` does everything in one shot:
@@ -237,6 +242,14 @@ telechat bridge uninstall
 ```
 
 Removes the hook entries from `~/.claude/settings.json`. Bridge tables stay in `bot.db` for reference but no longer fire.
+
+### Verifying
+
+`telechat bridge status` checks every link in the chain — CLI, hooks, Telegram
+credentials, the long-lived OAuth token, the background service — and exits
+non-zero if a blocking one is broken, so it works as a scripted check too.
+`telechat doctor` reports the same wiring as one line among its other checks.
+Symptom-by-symptom fixes are in [`docs/desktop-bridge.md`](docs/desktop-bridge.md#troubleshooting).
 
 ---
 

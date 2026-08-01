@@ -82,6 +82,37 @@ def check_claude_cli() -> CheckResult:
     )
 
 
+def check_desktop_bridge() -> CheckResult:
+    """Is the Claude Code bridge wired up?
+
+    A warning, never an error: the bridge is opt-in, and a bot that only does
+    chat is a perfectly valid install. But when someone runs `doctor` because
+    cards stopped arriving, "hooks not registered" is the answer, and it used
+    to be invisible here.
+    """
+    try:
+        from .desktop_bridge import bridge_checks, _hooked_events
+    except Exception as exc:                                    # pragma: no cover
+        return CheckResult("Desktop bridge", False, f"Could not inspect: {exc}",
+                           severity="warning")
+
+    if not _hooked_events():
+        return CheckResult(
+            "Desktop bridge", True, "Not installed (optional)",
+            fix_hint="Run `telechat bridge install` to page yourself from Claude Code",
+        )
+
+    broken = [c for c in bridge_checks() if c["blocking"] and not c["ok"]]
+    if broken:
+        return CheckResult(
+            "Desktop bridge", False,
+            "Installed but blocked: " + "; ".join(c["name"] for c in broken),
+            fix_hint="Run: telechat bridge status",
+            severity="warning",
+        )
+    return CheckResult("Desktop bridge", True, "Hooks registered and ready")
+
+
 def check_env_file() -> CheckResult:
     from . import store
     env_path = Path(store.DB_PATH).parent / ".env"
@@ -346,6 +377,7 @@ def run_doctor_sync() -> DoctorReport:
     report.add(check_rate_limits())
     report.add(check_allowed_users())
     report.add(check_unknown_env_keys())
+    report.add(check_desktop_bridge())
     return report
 
 

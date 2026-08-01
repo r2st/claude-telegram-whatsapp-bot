@@ -28,6 +28,7 @@ LINKED_DOCS = [
     "SECURITY.md",
     "AGENTS.md",
     "CHANGELOG.md",
+    "docs/desktop-bridge.md",
 ]
 
 #: `[text](target)` where target is not a URL, a mailto:, or a bare anchor.
@@ -35,7 +36,17 @@ _LINK = re.compile(r"\[[^\]]*\]\((?!https?://|mailto:|#)([^)]+)\)")
 
 
 def _relative_links(path: Path) -> list[str]:
-    return [m.group(1).split("#", 1)[0] for m in _LINK.finditer(path.read_text())]
+    """Link targets, resolved the way a Markdown renderer resolves them.
+
+    Relative to the *document's own directory*, not the repo root — a doc under
+    `docs/` linking to `configuration.md` means its sibling. Resolving from the
+    root instead made every intra-docs link look broken.
+    """
+    return [
+        (path.parent / m.group(1).split("#", 1)[0]).resolve()
+        for m in _LINK.finditer(path.read_text())
+        if not m.group(1).startswith("../")
+    ]
 
 
 class TestConventionFilesExist:
@@ -78,12 +89,9 @@ class TestLinksResolve:
         path = REPO_ROOT / doc
         if not path.is_file():
             pytest.skip(f"{doc} not present")
-        broken = [
-            target for target in _relative_links(path)
-            if not (REPO_ROOT / target).exists()
-            # ../blob/main/X is a GitHub-relative link from .github/, not a path.
-            and not target.startswith("../")
-        ]
+        # `../blob/main/X` is a GitHub-relative link, not a path — _relative_links
+        # drops those.
+        broken = [t for t in _relative_links(path) if not t.exists()]
         assert not broken, f"{doc} links to files that do not exist: {broken}"
 
 
@@ -101,6 +109,7 @@ class TestReferencedPathsExist:
         "docs/configuration.md",
         "docs/improvements.md",
         "docs/architecture.md",
+        "docs/desktop-bridge.md",
     ])
     def test_path_exists(self, referenced):
         assert (REPO_ROOT / referenced).exists(), f"docs reference a missing {referenced}"
@@ -183,3 +192,52 @@ class TestReadmeLeadsWithTheProduct:
             assert (REPO_ROOT / ".github" / "workflows" / workflow).is_file(), (
                 f"the README shows a badge for {workflow}, which does not exist"
             )
+
+
+@pytest.fixture(scope="module")
+def guide():
+    return (REPO_ROOT / "docs" / "desktop-bridge.md").read_text()
+
+
+@pytest.fixture(scope="module")
+def source():
+    return (REPO_ROOT / "telechat_pkg" / "desktop_bridge.py").read_text()
+
+
+class TestBridgeGuideMatchesTheCode:
+    """The bridge guide is the page someone reads when nothing is working.
+
+    A stale command or a hook name that no longer fires costs them the one
+    thing they came for, so the claims it makes are checked against the source
+    rather than trusted.
+    """
+
+    def test_every_bridge_subcommand_it_teaches_is_dispatched(self, guide, source):
+        taught = set(re.findall(r"telechat bridge ([a-z]+)", guide))
+        for sub in taught:
+            assert f'sub == "{sub}"' in source or f'"{sub}": ' in source, (
+                f"the guide teaches `telechat bridge {sub}`, which cli_dispatch doesn't handle"
+            )
+
+    def test_the_hook_events_it_documents_are_the_ones_installed(self, guide, source):
+        from telechat_pkg.desktop_bridge import NOTIFY_EVENTS
+        for event in NOTIFY_EVENTS:
+            assert event in guide, f"the guide omits the {event} hook"
+        assert "PreToolUse" in guide
+
+    def test_the_env_vars_it_documents_are_read_by_the_code(self, guide):
+        source = "\n".join(
+            p.read_text(encoding="utf-8", errors="ignore")
+            for p in (REPO_ROOT / "telechat_pkg").glob("*.py")
+        )
+        for name in set(re.findall(r"`(BRIDGE_[A-Z_]+|CLAUDE_CODE_OAUTH_TOKEN)`", guide)):
+            assert name in source, f"the guide documents {name}, which no module reads"
+
+    def test_it_has_a_troubleshooting_table(self, guide):
+        # The symptom→cause table is the reason this file exists as a separate
+        # page instead of another README section.
+        assert "## Troubleshooting" in guide
+        assert guide.count("|") > 40, "the troubleshooting table lost its rows"
+
+    def test_the_readme_points_at_it(self):
+        assert "docs/desktop-bridge.md" in (REPO_ROOT / "README.md").read_text()

@@ -2053,3 +2053,173 @@ class TestApprovalSchemaMigration:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(bridge_approvals)")}
         assert "rule_prefix" in cols
         conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Setup diagnostics
+#
+# "Did the install work?" and "why is nothing arriving?" are the same question,
+# and neither the installer's one-shot warnings nor a list of running sessions
+# could answer it. bridge_checks() is the single source both the installer and
+# `telechat bridge status` render, so they can never drift apart.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def wired(bridge, monkeypatch, tmp_path):
+    """A fully-wired bridge: hooks registered, credentials present, service up."""
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"hooks": {
+        event: [{"hooks": [{"type": "command", "command": f"telechat bridge notify {event}"}]}]
+        for event in db.NOTIFY_EVENTS
+    }}))
+    monkeypatch.setattr(db, "CLAUDE_SETTINGS", settings)
+    monkeypatch.setattr(db, "_load_env_file", lambda: {
+        "TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1",
+        "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-x",
+    })
+    monkeypatch.setattr(db.shutil, "which", lambda name: "/usr/local/bin/claude")
+    monkeypatch.setattr(db, "_service_loaded", lambda: True)
+    return settings
+
+
+def _check(checks, name):
+    return next(c for c in checks if c["name"] == name)
+
+
+class TestBridgeChecks:
+    def test_a_fully_wired_bridge_reports_no_blocking_problems(self, wired):
+        checks = db.bridge_checks()
+        assert [c for c in checks if c["blocking"] and not c["ok"]] == []
+        assert db._preflight() == []
+
+    def test_missing_hooks_are_a_blocking_failure(self, wired, monkeypatch):
+        # Claude Code normalises settings.json and has stripped our entries
+        # before. Nothing else in the chain notices, and no cards ever arrive.
+        wired.write_text(json.dumps({"hooks": {}}))
+        hooks = _check(db.bridge_checks(), "Hooks registered")
+        assert not hooks["ok"] and hooks["blocking"]
+        assert "none" in hooks["detail"]
+        assert "telechat bridge install" in hooks["fix"]
+
+    def test_partly_registered_hooks_still_count_as_broken(self, wired):
+        wired.write_text(json.dumps({"hooks": {
+            "Stop": [{"hooks": [{"type": "command", "command": "telechat bridge notify Stop"}]}],
+        }}))
+        hooks = _check(db.bridge_checks(), "Hooks registered")
+        assert not hooks["ok"]
+        assert "Stop" in hooks["detail"]
+
+    def test_a_foreign_hook_does_not_count_as_ours(self, wired):
+        wired.write_text(json.dumps({"hooks": {
+            e: [{"hooks": [{"type": "command", "command": "some-other-tool --go"}]}]
+            for e in db.NOTIFY_EVENTS
+        }}))
+        assert not _check(db.bridge_checks(), "Hooks registered")["ok"]
+
+    def test_a_missing_oauth_token_is_blocking(self, wired, monkeypatch):
+        # Cards arrive without it; every reply 401s. That asymmetry is exactly
+        # why it has to be called out rather than inferred from "cards work".
+        monkeypatch.setattr(db, "_load_env_file", lambda: {
+            "TELEGRAM_BOT_TOKEN": "t", "TELEGRAM_CHAT_ID": "1",
+        })
+        token = _check(db.bridge_checks(), "Long-lived OAuth token")
+        assert not token["ok"] and token["blocking"]
+        assert "401" in token["detail"]
+        assert any("Long-lived OAuth token" in w for w in db._preflight())
+
+    def test_either_telegram_recipient_setting_satisfies_the_check(self, wired, monkeypatch):
+        for key in ("TELEGRAM_CHAT_ID", "TELEGRAM_ALLOWED_USER_IDS"):
+            monkeypatch.setattr(db, "_load_env_file", lambda k=key: {
+                "TELEGRAM_BOT_TOKEN": "t", k: "1", "CLAUDE_CODE_OAUTH_TOKEN": "x",
+            })
+            assert _check(db.bridge_checks(), "Telegram recipient")["ok"], key
+
+    def test_a_stopped_service_is_reported_but_not_blocking(self, wired, monkeypatch):
+        # Cards are posted by the hook subprocess itself, so they still arrive.
+        # Only replies need the poller — calling this blocking would send people
+        # chasing a service when their actual problem was elsewhere.
+        monkeypatch.setattr(db, "_service_loaded", lambda: False)
+        svc = _check(db.bridge_checks(), "Background service")
+        assert not svc["ok"] and not svc["blocking"]
+        assert db._preflight() == []
+
+    def test_a_platform_without_launchd_is_not_a_failure(self, wired, monkeypatch):
+        monkeypatch.setattr(db, "_service_loaded", lambda: None)
+        svc = _check(db.bridge_checks(), "Background service")
+        assert svc["ok"]
+        assert "systemd" in svc["detail"]
+
+    def test_the_approval_hook_reports_both_states_without_failing(self, wired):
+        assert "not registered" in _check(db.bridge_checks(), "Tool approval hook")["detail"]
+        wired.write_text(json.dumps({"hooks": {
+            **{e: [{"hooks": [{"type": "command", "command": f"telechat bridge notify {e}"}]}]
+               for e in db.NOTIFY_EVENTS},
+            "PreToolUse": [{"matcher": "Bash",
+                            "hooks": [{"type": "command", "command": "telechat bridge approve"}]}],
+        }}))
+        armed = _check(db.bridge_checks(), "Tool approval hook")
+        assert armed["ok"] and "registered" in armed["detail"]
+        assert db._preflight() == []
+
+    def test_an_unreadable_settings_file_reads_as_no_hooks(self, wired):
+        wired.write_text("{ not json")
+        assert not _check(db.bridge_checks(), "Hooks registered")["ok"]
+
+
+class TestBridgeStatusCommand:
+    def test_a_wired_bridge_exits_zero(self, wired, monkeypatch, capsys):
+        monkeypatch.setattr(db, "list_running_sessions", lambda: [])
+        assert db.cli_dispatch(["status"]) == 0
+        out = capsys.readouterr().out
+        assert "Wired up" in out
+        assert "Hooks registered" in out
+
+    def test_a_broken_bridge_exits_non_zero_and_says_why(self, wired, monkeypatch, capsys):
+        # The point of a status command is being usable as a check, not just
+        # readable — a script has to be able to tell.
+        wired.write_text(json.dumps({"hooks": {}}))
+        monkeypatch.setattr(db, "list_running_sessions", lambda: [])
+        assert db.cli_dispatch(["status"]) == 1
+        out = capsys.readouterr().out
+        assert "Not ready" in out
+        assert "Fix: telechat bridge install" in out
+
+    def test_it_still_lists_sessions(self, wired, monkeypatch, capsys):
+        monkeypatch.setattr(db, "list_running_sessions", lambda: [
+            {"sid": "abcdef0123", "cwd": "/x/telechat", "model": "opus",
+             "etime": "01:02", "pid": "7"},
+        ])
+        db.cli_dispatch(["status"])
+        out = capsys.readouterr().out
+        assert "abcdef01" in out and "telechat" in out
+
+    def test_a_session_with_no_id_does_not_break_the_listing(self, wired, monkeypatch, capsys):
+        monkeypatch.setattr(db, "list_running_sessions", lambda: [
+            {"sid": "", "cwd": "", "model": "", "etime": "00:01", "pid": "9"},
+        ])
+        db.cli_dispatch(["status"])
+        assert "(new)" in capsys.readouterr().out
+
+
+class TestInstallEpilogue:
+    def _install(self, monkeypatch, capsys, warnings):
+        monkeypatch.setattr(db, "_settings_load", lambda: {})
+        monkeypatch.setattr(db, "_settings_save", lambda data: None)
+        monkeypatch.setattr(db, "_migrate_standalone", lambda: None)
+        monkeypatch.setattr(db, "_preflight", lambda: warnings)
+        assert db.cli_install(with_service=False) == 0
+        return capsys.readouterr().out
+
+    def test_a_ready_install_says_what_to_do_next(self, bridge, monkeypatch, capsys):
+        out = self._install(monkeypatch, capsys, [])
+        assert "telechat bridge status" in out
+        assert "--approval" in out
+
+    def test_an_incomplete_install_does_not_claim_success(self, bridge, monkeypatch, capsys):
+        # It used to print the hooks it wrote and stop, so a missing OAuth token
+        # read as "installed" right up until the first reply 401'd.
+        out = self._install(monkeypatch, capsys, ["Long-lived OAuth token: missing"])
+        assert "not working yet" in out
+        assert "Long-lived OAuth token" in out
+        assert "telechat bridge status" in out

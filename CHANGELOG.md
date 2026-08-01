@@ -9,6 +9,33 @@ not which function moved.
 
 ## [Unreleased]
 
+### Added
+
+- **`telechat bridge status` now answers "is the bridge actually working?"** It
+  used to print a list of running Claude Code sessions, which is a different
+  question and never the one being asked. It now checks every link in the
+  chain — the Claude CLI, whether the hooks are still registered in
+  `~/.claude/settings.json`, your Telegram credentials, the long-lived OAuth
+  token, the background service, the approval hook — prints the fix next to
+  anything broken, and exits non-zero so it works as a scripted check. Sessions
+  are still listed underneath.
+
+  The same wiring is now one line in `telechat doctor` (a warning, never an
+  error — a bot without the bridge is a valid install), and
+  `telechat bridge install` no longer stops at "hooks written": when something
+  is still missing it says so plainly instead of reading as success, and when
+  everything is ready it says what to do next.
+
+  This matters most for the OAuth token. Cards arrive without it and every
+  reply fails with a 401 — the one failure mode that looks like a working
+  install right up until you try to use it.
+
+- **A setup guide for the bridge** — [`docs/desktop-bridge.md`](docs/desktop-bridge.md).
+  Prerequisites and why each one is needed, how to verify, and a
+  symptom-to-cause troubleshooting table for the cases people actually hit: no
+  cards, cards but no replies, cards that stop after a reboot, duplicate cards,
+  approvals that never appear. The README section stays as the reference.
+
 ### Changed
 
 - **telechat.fyi now says what Telechat is for.** The site led with "Claude on

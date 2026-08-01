@@ -2032,17 +2032,54 @@ def cli_install(approve_hook: bool = False, with_service: bool = True) -> int:
         print()
         service_install()
 
-    # Preflight warnings last, so they're the final thing the user sees.
+    # Preflight last, so the thing that still needs doing is the thing you read.
     warnings = _preflight()
     if warnings:
-        print("\n⚠ Before this works end-to-end, resolve:")
+        print("\n⚠ Installed, but not working yet. Resolve:")
         for w in warnings:
             print(f"  • {w}")
+        print("\nThen re-check with:  telechat bridge status")
     else:
         print("\n✓ All prerequisites satisfied — the bridge is ready.")
-
-    print("\nNext: open Telegram and send /desktop to see your running sessions.")
+        print("\nNext:")
+        print("  1. Run a Claude Code session and let it finish a turn.")
+        print("  2. The triage card lands in Telegram — reply to it to resume that session.")
+        print("  3. /desktop lists every running session; tap one to make it the current one.")
+        if not approve_hook:
+            print("\nTo approve Bash/Write/Edit calls from your phone, re-run with --approval.")
+        print("\nVerify any time with:  telechat bridge status")
     return 0
+
+
+def cli_status() -> int:
+    """Answer the only question worth asking: is the bridge actually wired up?
+
+    Exits non-zero when something blocking is wrong, so it can be used as a
+    check in a script rather than read by eye.
+    """
+    checks = bridge_checks()
+    print("Claude Desktop bridge\n")
+    for c in checks:
+        icon = "✓" if c["ok"] else ("✗" if c["blocking"] else "•")
+        print(f"  {icon} {c['name']}: {c['detail']}")
+        if not c["ok"]:
+            print(f"      Fix: {c['fix']}")
+
+    broken = [c for c in checks if c["blocking"] and not c["ok"]]
+    print()
+    if broken:
+        print(f"✗ Not ready — {len(broken)} thing(s) above must be fixed first.")
+    else:
+        print("✓ Wired up. Finish a Claude Code session and the card lands in Telegram.")
+
+    sessions = list_running_sessions()
+    sid, cwd = get_current_session()
+    print(f"\nRunning sessions: {len(sessions)}")
+    for s in sessions:
+        proj = Path(s["cwd"]).name if s["cwd"] else ""
+        print(f"  {s['sid'][:8] or '(new)':8}  {s['model']:24}  {s['etime']:>10}  {proj}")
+    print(f"\nCurrent session: {sid[:8] if sid else '(none)'}  cwd={cwd or '-'}")
+    return 1 if broken else 0
 
 
 def cli_uninstall() -> int:
@@ -2160,29 +2197,134 @@ def cli_approve() -> int:
 
 # ───────────────────────── preflight + persistent service ─────────────────────────
 
-def _preflight() -> list[str]:
-    """Check everything the bridge needs. Returns a list of human-readable warnings."""
-    warnings = []
-    # 1. claude CLI present
-    if not (shutil.which("claude") or (HOME / ".local/bin/claude").exists()):
-        warnings.append(
-            "Claude CLI not found. Install it:\n"
-            "      npm install -g @anthropic-ai/claude-code && claude auth login"
-        )
-    # 2. Telegram credentials in .env
+NOTIFY_EVENTS = ("Stop", "Notification", "SubagentStop")
+
+
+def _hooked_events() -> list[str]:
+    """Which notify events currently have a bridge hook registered."""
+    hooks = _settings_load().get("hooks", {})
+    found = []
+    for event in NOTIFY_EVENTS:
+        entries = hooks.get(event) or []
+        if any(_is_bridge_entry(e) and "bridge notify" in json.dumps(e) for e in entries):
+            found.append(event)
+    return found
+
+
+def _approval_hook_registered() -> bool:
+    entries = _settings_load().get("hooks", {}).get("PreToolUse") or []
+    return any("bridge approve" in json.dumps(e) for e in entries)
+
+
+def _service_loaded() -> Optional[bool]:
+    """True/False if launchd knows about the service; None where launchd doesn't apply."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        r = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError):
+        log.debug("launchctl list failed", exc_info=True)
+        return False
+    return any(SERVICE_LABEL in line for line in r.stdout.splitlines())
+
+
+def bridge_checks() -> list[dict]:
+    """Everything that has to be true for the bridge to work end to end.
+
+    Each entry is ``{name, ok, detail, fix, blocking}``. ``blocking`` marks the
+    ones that stop cards or replies from working at all; the rest are reported
+    so the state is visible but do not count as failures.
+
+    This exists because "did the install work?" and "why is nothing arriving?"
+    are the same question, and neither the installer's one-shot warnings nor a
+    session list could answer it. Both `telechat bridge install` and
+    `telechat bridge status` render this list, so they can never disagree.
+    """
     env = _load_env_file()
-    if not env.get("TELEGRAM_BOT_TOKEN"):
-        warnings.append("TELEGRAM_BOT_TOKEN missing from ~/.telechat/.env — run `telechat init`.")
-    if not (env.get("TELEGRAM_CHAT_ID") or env.get("TELEGRAM_ALLOWED_USER_IDS")):
-        warnings.append("No TELEGRAM_CHAT_ID / TELEGRAM_ALLOWED_USER_IDS in ~/.telechat/.env.")
-    # 3. Long-lived OAuth token (headless `claude --resume` needs it)
-    if not env.get("CLAUDE_CODE_OAUTH_TOKEN"):
-        warnings.append(
-            "CLAUDE_CODE_OAUTH_TOKEN missing — replies/digests will fail with 401.\n"
-            "      Create one:  claude setup-token\n"
-            "      Then add to ~/.telechat/.env:  CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-..."
-        )
-    return warnings
+    checks: list[dict] = []
+
+    claude_bin = shutil.which("claude") or (
+        str(HOME / ".local/bin/claude") if (HOME / ".local/bin/claude").exists() else ""
+    )
+    checks.append({
+        "name": "Claude Code CLI",
+        "ok": bool(claude_bin),
+        "detail": claude_bin or "not found on PATH",
+        "fix": "npm install -g @anthropic-ai/claude-code && claude auth login",
+        "blocking": True,
+    })
+
+    events = _hooked_events()
+    checks.append({
+        "name": "Hooks registered",
+        "ok": len(events) == len(NOTIFY_EVENTS),
+        "detail": (", ".join(events) if events else "none")
+                  + f"  ({CLAUDE_SETTINGS})",
+        "fix": "telechat bridge install",
+        "blocking": True,
+    })
+
+    checks.append({
+        "name": "Telegram bot token",
+        "ok": bool(env.get("TELEGRAM_BOT_TOKEN")),
+        "detail": "set" if env.get("TELEGRAM_BOT_TOKEN") else f"missing from {TELECHAT_HOME}/.env",
+        "fix": "telechat init",
+        "blocking": True,
+    })
+
+    recipient = env.get("TELEGRAM_CHAT_ID") or env.get("TELEGRAM_ALLOWED_USER_IDS")
+    checks.append({
+        "name": "Telegram recipient",
+        "ok": bool(recipient),
+        "detail": "set" if recipient else "no TELEGRAM_CHAT_ID / TELEGRAM_ALLOWED_USER_IDS",
+        "fix": "telechat init",
+        "blocking": True,
+    })
+
+    # Headless `claude --resume` (replies and digests) authenticates with a
+    # long-lived token, not the interactive login — without it every reply 401s.
+    checks.append({
+        "name": "Long-lived OAuth token",
+        "ok": bool(env.get("CLAUDE_CODE_OAUTH_TOKEN")),
+        "detail": "set" if env.get("CLAUDE_CODE_OAUTH_TOKEN")
+                  else "missing — replies and digests will fail with 401",
+        "fix": f"claude setup-token, then add CLAUDE_CODE_OAUTH_TOKEN=… to {TELECHAT_HOME}/.env",
+        "blocking": True,
+    })
+
+    loaded = _service_loaded()
+    checks.append({
+        "name": "Background service",
+        "ok": True if loaded is None else loaded,
+        "detail": ("not applicable on this platform — run telechat under systemd --user"
+                   if loaded is None
+                   else (f"{SERVICE_LABEL} loaded" if loaded else f"{SERVICE_LABEL} not loaded")),
+        "fix": "telechat bridge service install",
+        # Cards are posted by the hook subprocess itself, so they still arrive
+        # without the service. Only your *replies* need the running poller.
+        "blocking": False,
+    })
+
+    armed = _approval_hook_registered()
+    checks.append({
+        "name": "Tool approval hook",
+        "ok": True,
+        "detail": "registered — arm per project with /desktop_approve_on" if armed
+                  else "not registered (optional)",
+        "fix": "telechat bridge install --approval",
+        "blocking": False,
+    })
+
+    return checks
+
+
+def _preflight() -> list[str]:
+    """Blocking problems, as human-readable strings. Built from bridge_checks()."""
+    return [
+        f"{c['name']}: {c['detail']}\n      Fix: {c['fix']}"
+        for c in bridge_checks()
+        if c["blocking"] and not c["ok"]
+    ]
 
 
 def service_install() -> int:
@@ -2291,12 +2433,6 @@ def cli_dispatch(argv: list[str]) -> int:
     if sub == "approve":
         return cli_approve()
     if sub == "status":
-        sessions = list_running_sessions()
-        sid, cwd = get_current_session()
-        print(f"Running sessions: {len(sessions)}")
-        for s in sessions:
-            print(f"  {s['sid'][:8] or '(new)'}  {s['model']:24}  {s['etime']:>10}  {Path(s['cwd']).name if s['cwd'] else ''}")
-        print(f"\nCurrent session: {sid[:8] if sid else '(none)'}  cwd={cwd or '-'}")
-        return 0
+        return cli_status()
     print(f"Unknown subcommand: {sub}")
     return 1

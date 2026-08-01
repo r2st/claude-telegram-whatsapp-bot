@@ -635,6 +635,7 @@ class TestRunDoctorSync:
             "Rate limiting",
             "Access control",
             "Unknown settings",
+            "Desktop bridge",
         }
 
     def test_counts_are_consistent_with_checks(self):
@@ -651,7 +652,7 @@ class TestRunDoctor:
         assert "Telegram API" in names
         # run_doctor adds exactly one more check than run_doctor_sync.
         assert names.count("Telegram API") == 1
-        assert len(report.checks) == 11
+        assert len(report.checks) == 12
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -754,3 +755,56 @@ class TestEnvFilePath:
         monkeypatch.setattr(doctor.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
         monkeypatch.chdir(tmp_path)
         assert doctor._env_file_path() is None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# check_desktop_bridge
+#
+# When cards stop arriving, `telechat doctor` is where people look first. The
+# bridge's wiring used to be invisible there, so the report came back all-green
+# on a machine whose hooks Claude Code had stripped.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestDesktopBridgeCheck:
+    def test_not_installed_passes_as_optional(self, monkeypatch):
+        from telechat_pkg import desktop_bridge
+        monkeypatch.setattr(desktop_bridge, "_hooked_events", lambda: [])
+        result = doctor.check_desktop_bridge()
+        assert result.passed
+        assert "optional" in result.message.lower()
+        assert "bridge install" in result.fix_hint
+
+    def test_installed_and_healthy_passes(self, monkeypatch):
+        from telechat_pkg import desktop_bridge
+        monkeypatch.setattr(desktop_bridge, "_hooked_events", lambda: ["Stop"])
+        monkeypatch.setattr(desktop_bridge, "bridge_checks", lambda: [
+            {"name": "Claude Code CLI", "ok": True, "blocking": True, "detail": "", "fix": ""},
+        ])
+        assert doctor.check_desktop_bridge().passed
+
+    def test_installed_but_blocked_warns_and_names_the_problem(self, monkeypatch):
+        from telechat_pkg import desktop_bridge
+        monkeypatch.setattr(desktop_bridge, "_hooked_events", lambda: ["Stop"])
+        monkeypatch.setattr(desktop_bridge, "bridge_checks", lambda: [
+            {"name": "Long-lived OAuth token", "ok": False, "blocking": True,
+             "detail": "missing", "fix": "claude setup-token"},
+        ])
+        result = doctor.check_desktop_bridge()
+        assert not result.passed
+        # A warning, not an error: an install without the bridge is still valid,
+        # so this must never make `doctor` report the whole bot as broken.
+        assert result.severity == "warning"
+        assert "Long-lived OAuth token" in result.message
+
+    def test_a_blocked_bridge_does_not_make_the_report_unhealthy(self, monkeypatch):
+        from telechat_pkg import desktop_bridge
+        monkeypatch.setattr(desktop_bridge, "_hooked_events", lambda: ["Stop"])
+        monkeypatch.setattr(desktop_bridge, "bridge_checks", lambda: [
+            {"name": "Hooks registered", "ok": False, "blocking": True,
+             "detail": "none", "fix": "telechat bridge install"},
+        ])
+        report = doctor.DoctorReport()
+        report.add(doctor.check_desktop_bridge())
+        assert report.healthy
+        assert report.warnings == 1
