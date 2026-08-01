@@ -71,7 +71,7 @@ pytest, so rule 8 needs a venv first:
 ```sh
 ./scripts/dev-setup.sh          # or: ./scripts/dev-setup.sh python3.12
 source venv/bin/activate
-pytest -q                       # ~70s, 3100+ tests
+pytest -q                       # 4,000+ tests, a minute or two
 ruff check .
 ```
 

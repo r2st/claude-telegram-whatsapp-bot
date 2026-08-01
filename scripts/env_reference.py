@@ -223,6 +223,8 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "MCP_ALLOWED_COMMANDS": ("Operations", "Extra command names MCP servers may be launched with, beyond the built-in runtime list."),
     "MCP_ALLOWED_COMMAND_PATHS": ("Operations", "Strict mode: directory prefixes a resolved MCP executable must live under."),
     "MCP_ALLOW_ANY_COMMAND": ("Operations", "Disable the MCP command allowlist entirely. Understand what that means first."),
+    "MCP_HANDSHAKE_TIMEOUT": ("Operations", "Seconds to wait for an MCP server's initialize and tools/list replies."),
+    "MCP_CALL_TIMEOUT": ("Operations", "Seconds to wait for an MCP tool call to return."),
 
     # ── Watchdog (scripts/watchdog.py) ──
     "WATCHDOG_ENABLED": ("Watchdog", "Master switch for the self-healing supervisor."),

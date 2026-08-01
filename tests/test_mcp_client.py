@@ -35,9 +35,11 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-api-key")
 from telechat_pkg import mcp_client
 from telechat_pkg.mcp_client import (
     MCPManager,
+    MCPProtocolError,
     MCPServer,
     MCPTool,
     _is_command_allowed,
+    _read_response,
     _telechat_version,
     get_mcp_manager,
 )
@@ -837,6 +839,197 @@ class TestDataclasses:
         assert s.status == "disconnected"
         assert s.tools == []
         assert s.process is None
+
+    def test_next_id_is_monotonic(self):
+        s = MCPServer("n", "npx")
+        assert [s.next_id() for _ in range(3)] == [1, 2, 3]
+
+    def test_each_server_counts_independently(self):
+        a, b = MCPServer("a", "npx"), MCPServer("b", "npx")
+        a.next_id()
+        a.next_id()
+        assert b.next_id() == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 11b. JSON-RPC response framing
+#
+# A stdio MCP server interleaves notifications, other requests' responses, and
+# (from sloppy servers) plain-text logging on the same stdout. The reader must
+# return the response it asked for and nothing else — taking "the next line"
+# desynchronizes every subsequent read on that connection.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestResponseFraming:
+    @pytest.mark.asyncio
+    async def test_returns_the_matching_response(self):
+        stream = FakeStream([_jsonrpc({"jsonrpc": "2.0", "id": 7, "result": {"ok": True}})])
+        msg = await _read_response(stream, 7, 5)
+        assert msg["result"] == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_skips_notifications_that_carry_no_id(self):
+        stream = FakeStream([
+            _jsonrpc({"jsonrpc": "2.0", "method": "notifications/message",
+                      "params": {"level": "info"}}),
+            _jsonrpc({"jsonrpc": "2.0", "method": "$/progress", "params": {}}),
+            _jsonrpc({"jsonrpc": "2.0", "id": 4, "result": {"content": "hi"}}),
+        ])
+        msg = await _read_response(stream, 4, 5)
+        assert msg["result"] == {"content": "hi"}
+
+    @pytest.mark.asyncio
+    async def test_skips_another_requests_response(self):
+        # The bug this guards: id 9 arriving first must not be handed to the
+        # caller waiting on id 10.
+        stream = FakeStream([
+            _jsonrpc({"jsonrpc": "2.0", "id": 9, "result": {"belongs_to": "other"}}),
+            _jsonrpc({"jsonrpc": "2.0", "id": 10, "result": {"belongs_to": "me"}}),
+        ])
+        msg = await _read_response(stream, 10, 5)
+        assert msg["result"] == {"belongs_to": "me"}
+
+    @pytest.mark.asyncio
+    async def test_skips_non_json_log_noise(self):
+        stream = FakeStream([
+            b"[info] server starting up\n",
+            b"not json at all\n",
+            _jsonrpc({"jsonrpc": "2.0", "id": 1, "result": {"ok": 1}}),
+        ])
+        msg = await _read_response(stream, 1, 5)
+        assert msg["result"] == {"ok": 1}
+
+    @pytest.mark.asyncio
+    async def test_skips_json_that_is_not_an_object(self):
+        stream = FakeStream([
+            b"[1, 2, 3]\n",
+            b'"a bare string"\n',
+            _jsonrpc({"jsonrpc": "2.0", "id": 2, "result": {}}),
+        ])
+        assert await _read_response(stream, 2, 5) == {"jsonrpc": "2.0", "id": 2, "result": {}}
+
+    @pytest.mark.asyncio
+    async def test_eof_raises_protocol_error(self):
+        stream = FakeStream([])  # readline() returns b"" — the server is gone
+        with pytest.raises(MCPProtocolError, match="closed its output stream"):
+            await _read_response(stream, 1, 5, server_name="svc")
+
+    @pytest.mark.asyncio
+    async def test_chatty_server_hits_the_skip_budget(self):
+        # A server streaming junk faster than the timeout must not spin forever.
+        noise = [_jsonrpc({"jsonrpc": "2.0", "method": "spam"})] * 500
+        stream = FakeStream(noise)
+        with pytest.raises(MCPProtocolError, match="without answering"):
+            await _read_response(stream, 1, 5, server_name="svc")
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_propagates(self, monkeypatch):
+        async def _timeout(aw, *a, **k):
+            if asyncio.iscoroutine(aw):
+                aw.close()
+            raise asyncio.TimeoutError()
+
+        monkeypatch.setattr(asyncio, "wait_for", _timeout)
+        with pytest.raises(asyncio.TimeoutError):
+            await _read_response(FakeStream([]), 1, 5)
+
+
+class TestCallToolFraming:
+    """call_tool's use of the framed reader, end to end through the manager."""
+
+    @pytest.fixture
+    def connected(self, mgr, monkeypatch, patch_subprocess):
+        monkeypatch.setenv("MCP_ALLOW_ANY_COMMAND", "1")
+        mgr.add_server("svc", {"command": "npx"})
+        proc = FakeProcess(_init_and_tools([{"name": "read"}]))
+        patch_subprocess["install"](proc)
+        return mgr, proc
+
+    @pytest.mark.asyncio
+    async def test_request_ids_increment_across_calls(self, connected):
+        mgr, proc = connected
+        await mgr.connect("svc")  # consumes ids 1 (initialize) and 2 (tools/list)
+        for _ in range(2):
+            proc.stdout._responses.append(
+                _jsonrpc({"jsonrpc": "2.0", "id": 99, "result": {}}))
+
+        sent = []
+        for _ in range(2):
+            await mgr.call_tool("svc", "read", {})
+            sent.append(json.loads(proc.stdin.written[-1].decode())["id"])
+        # Distinct and continuing the handshake's sequence — not 3 twice.
+        assert sent == [3, 4]
+
+    @pytest.mark.asyncio
+    async def test_notification_before_the_result_is_ignored(self, connected):
+        mgr, proc = connected
+        await mgr.connect("svc")
+        proc.stdout._responses.extend([
+            _jsonrpc({"jsonrpc": "2.0", "method": "$/progress", "params": {"pct": 50}}),
+            _jsonrpc({"jsonrpc": "2.0", "id": 3, "result": {"content": "done"}}),
+        ])
+        assert await mgr.call_tool("svc", "read", {}) == {"content": "done"}
+
+    @pytest.mark.asyncio
+    async def test_jsonrpc_error_is_reported_not_swallowed(self, connected):
+        # An error response must not look like a successful empty result, or
+        # the model is told the tool worked and returned nothing.
+        mgr, proc = connected
+        await mgr.connect("svc")
+        proc.stdout._responses.append(_jsonrpc({
+            "jsonrpc": "2.0", "id": 3,
+            "error": {"code": -32602, "message": "path is required"},
+        }))
+        result = await mgr.call_tool("svc", "read", {})
+        assert result == {"error": "path is required"}
+
+    @pytest.mark.asyncio
+    async def test_non_dict_jsonrpc_error_is_stringified(self, connected):
+        mgr, proc = connected
+        await mgr.connect("svc")
+        proc.stdout._responses.append(
+            _jsonrpc({"jsonrpc": "2.0", "id": 3, "error": "boom"}))
+        assert await mgr.call_tool("svc", "read", {}) == {"error": "boom"}
+
+    @pytest.mark.asyncio
+    async def test_server_death_mid_call_returns_an_error(self, connected):
+        mgr, proc = connected
+        await mgr.connect("svc")
+        # No queued response: readline() returns b"" like a dead pipe.
+        result = await mgr.call_tool("svc", "read", {})
+        assert "closed its output stream" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_calls_do_not_cross_responses(self, connected):
+        # Two callers, two results. Without the per-server lock and id match,
+        # both awaits race on readline() and can take each other's answer.
+        mgr, proc = connected
+        await mgr.connect("svc")
+        proc.stdout._responses.extend([
+            _jsonrpc({"jsonrpc": "2.0", "id": 3, "result": {"n": "first"}}),
+            _jsonrpc({"jsonrpc": "2.0", "id": 4, "result": {"n": "second"}}),
+        ])
+        results = await asyncio.gather(
+            mgr.call_tool("svc", "read", {"i": 1}),
+            mgr.call_tool("svc", "read", {"i": 2}),
+        )
+        assert sorted(r["n"] for r in results) == ["first", "second"]
+
+    @pytest.mark.asyncio
+    async def test_timeout_names_the_tool_that_hung(self, connected, monkeypatch):
+        mgr, proc = connected
+        await mgr.connect("svc")
+
+        async def _timeout(aw, *a, **k):
+            if asyncio.iscoroutine(aw):
+                aw.close()
+            raise asyncio.TimeoutError()
+
+        monkeypatch.setattr(asyncio, "wait_for", _timeout)
+        result = await mgr.call_tool("svc", "read", {})
+        assert "svc.read" in result["error"]
+        assert "timed out" in result["error"]
 
 
 # ══════════════════════════════════════════════════════════════════════════════

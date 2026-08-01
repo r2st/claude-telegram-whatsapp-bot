@@ -63,6 +63,6 @@ echo "Done. Activate it with:"
 echo "    source $VENV_DIR/bin/activate"
 echo
 echo "Then:"
-echo "    pytest -q                        # the full suite (~70s)"
+echo "    pytest -q                        # the full suite, 4,000+ tests"
 echo "    pytest -q --cov=telechat_pkg      # with coverage (CI floor: 85%)"
 echo "    ruff check .                      # lint, same rules as CI"

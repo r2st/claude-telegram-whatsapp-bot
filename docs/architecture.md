@@ -200,7 +200,7 @@ checked in CI, so it cannot drift.
 
 ## Testing
 
-~3,200 tests under `tests/`, one file per module plus per-platform e2e suites.
+4,000+ tests under `tests/`, one file per module plus per-platform e2e suites.
 CI runs the suite on Python 3.10–3.13 with a coverage floor, `ruff`, a
 version-consistency check, a Docker build, and the configuration-reference
 check. `tests/README_E2E.md` covers the recorded Anthropic cassettes.

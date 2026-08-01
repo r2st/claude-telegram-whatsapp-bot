@@ -246,8 +246,10 @@ Health endpoint, debugging, MCP.
 | `MCP_ALLOWED_COMMANDS` |  | Extra command names MCP servers may be launched with, beyond the built-in runtime list. |
 | `MCP_ALLOWED_COMMAND_PATHS` |  | Strict mode: directory prefixes a resolved MCP executable must live under. |
 | `MCP_ALLOW_ANY_COMMAND` | `0` | Disable the MCP command allowlist entirely. Understand what that means first. |
+| `MCP_CALL_TIMEOUT` | `30` | Seconds to wait for an MCP tool call to return. |
 | `MCP_CONFIG_FILE` |  | Path to an `mcpServers` JSON config. |
 | `MCP_ENABLED` | `false` | Connect to external MCP servers. |
+| `MCP_HANDSHAKE_TIMEOUT` | `10` | Seconds to wait for an MCP server's initialize and tools/list replies. |
 | `TELECHAT_DEBUG` |  | Verbose logging, and tracebacks instead of friendly messages. |
 | `WATCHDOG_INTERVAL` | `30` | Seconds between watchdog liveness checks. |
 
@@ -270,4 +272,4 @@ Health endpoint, debugging, MCP.
 
 ---
 
-151 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.
+153 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.

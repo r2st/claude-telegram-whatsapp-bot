@@ -21,7 +21,7 @@ green.
 ## Before you open a pull request
 
 ```sh
-pytest -q          # ~3,100 tests, about 70 seconds
+pytest -q          # 4,000+ tests, a minute or two
 ruff check .       # same rules CI runs
 ```
 

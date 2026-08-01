@@ -31,6 +31,17 @@ log = logging.getLogger(__name__)
 MCP_ENABLED = os.getenv("MCP_ENABLED", "false").lower() in ("1", "true", "yes")
 MCP_CONFIG_FILE = os.getenv("MCP_CONFIG_FILE", "")
 
+#: How long to wait for a single JSON-RPC response, in seconds. The handshake
+#: is short because a server that cannot introduce itself promptly is broken;
+#: a tool call gets longer because it may be doing real work.
+MCP_HANDSHAKE_TIMEOUT = float(os.getenv("MCP_HANDSHAKE_TIMEOUT", "10"))
+MCP_CALL_TIMEOUT = float(os.getenv("MCP_CALL_TIMEOUT", "30"))
+
+#: Upper bound on lines skipped while looking for a matching response id.
+#: The deadline alone is not enough: a server spewing junk faster than the
+#: timeout would keep the loop spinning without ever advancing.
+_MCP_MAX_SKIPPED_LINES = 100
+
 # Defense in depth: even though MCP_CONFIG_FILE is typically operator-controlled,
 # treat its contents as untrusted (it may be checked into a shared repo, written
 # by another tool, or fetched from an LLM). Reject server commands not on the
@@ -204,6 +215,67 @@ def _telechat_version() -> str:
         return "unknown"
 
 
+class MCPProtocolError(Exception):
+    """A server spoke JSON-RPC badly enough that the request cannot be answered."""
+
+
+async def _read_response(
+    stdout: Any,
+    expect_id: int,
+    timeout: float,
+    *,
+    server_name: str = "",
+) -> dict:
+    """Read stdout until the JSON-RPC response with ``expect_id`` arrives.
+
+    A stdio MCP server's stdout is not a neat request/response queue. It may
+    interleave notifications (``$/progress``, ``notifications/message``), which
+    carry no ``id`` and are not anybody's answer; responses to *other* in-flight
+    requests; and — from servers that log carelessly — plain text that is not
+    JSON at all. Taking whatever line arrives next and calling it the answer is
+    wrong in all three cases: the caller gets a notification's empty payload, or
+    another call's result, and every later read is off by one for the life of
+    the connection.
+
+    So: read lines, skip anything that is not the response we asked for, and
+    return the one that matches. Skipping is bounded twice over — by ``timeout``
+    for a slow server and by :data:`_MCP_MAX_SKIPPED_LINES` for a chatty one —
+    because either failure mode alone can starve the caller.
+
+    Raises :class:`MCPProtocolError` on EOF or when the skip budget runs out,
+    and :class:`asyncio.TimeoutError` when a single read exceeds ``timeout``.
+    """
+    for _ in range(_MCP_MAX_SKIPPED_LINES):
+        line = await asyncio.wait_for(stdout.readline(), timeout=timeout)
+        if not line:
+            raise MCPProtocolError(
+                f"server {server_name or '?'} closed its output stream "
+                f"while awaiting response {expect_id}"
+            )
+        try:
+            msg = json.loads(line.decode())
+        except (ValueError, UnicodeDecodeError):
+            # Not JSON — almost always a server logging to stdout instead of
+            # stderr. Noise, not a protocol failure; keep looking.
+            log.debug("MCP %s: skipping non-JSON stdout line", server_name)
+            continue
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("id") == expect_id:
+            return msg
+        if "id" not in msg:
+            log.debug("MCP %s: skipping notification %s", server_name, msg.get("method"))
+        else:
+            log.debug(
+                "MCP %s: skipping response for id %r (awaiting %r)",
+                server_name, msg.get("id"), expect_id,
+            )
+    raise MCPProtocolError(
+        f"server {server_name or '?'} sent {_MCP_MAX_SKIPPED_LINES} messages "
+        f"without answering request {expect_id}"
+    )
+
+
 @dataclass
 class MCPTool:
     name: str
@@ -225,6 +297,19 @@ class MCPServer:
     status: str = "disconnected"  # disconnected | connecting | connected | error
     tools: list[MCPTool] = field(default_factory=list)
     process: Optional[Any] = None
+    #: Monotonic JSON-RPC request counter. Reusing an id (the old code sent
+    #: ``3`` for every tools/call) makes concurrent calls indistinguishable —
+    #: two in-flight requests would both match the first reply.
+    _next_id: int = 0
+    #: Serializes access to the one stdin/stdout pipe pair. Two coroutines
+    #: writing requests and racing on readline() would hand each other's
+    #: responses back; a tool loop that dispatches calls in parallel makes
+    #: that a routine occurrence rather than a corner case.
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+
+    def next_id(self) -> int:
+        self._next_id += 1
+        return self._next_id
 
 
 class MCPManager:
@@ -308,9 +393,10 @@ class MCPManager:
             server.status = "connected"
 
             # Send initialize request
+            init_id = server.next_id()
             init_msg = json.dumps({
                 "jsonrpc": "2.0",
-                "id": 1,
+                "id": init_id,
                 "method": "initialize",
                 "params": {
                     "protocolVersion": "2024-11-05",
@@ -323,21 +409,22 @@ class MCPManager:
 
             # Drain the initialize response. Nothing in it is used yet, but it
             # must be consumed before tools/list or the reads fall out of step.
-            response = await asyncio.wait_for(proc.stdout.readline(), timeout=10)
-            json.loads(response.decode())
+            await _read_response(
+                proc.stdout, init_id, MCP_HANDSHAKE_TIMEOUT, server_name=server_name)
 
             # List tools
+            list_id = server.next_id()
             list_msg = json.dumps({
                 "jsonrpc": "2.0",
-                "id": 2,
+                "id": list_id,
                 "method": "tools/list",
                 "params": {},
             }) + "\n"
             proc.stdin.write(list_msg.encode())
             await proc.stdin.drain()
 
-            response = await asyncio.wait_for(proc.stdout.readline(), timeout=10)
-            tools_result = json.loads(response.decode())
+            tools_result = await _read_response(
+                proc.stdout, list_id, MCP_HANDSHAKE_TIMEOUT, server_name=server_name)
 
             for tool_data in tools_result.get("result", {}).get("tools", []):
                 tool = MCPTool(
@@ -381,22 +468,43 @@ class MCPManager:
             return {"error": f"Server {server_name} not connected"}
 
         try:
-            msg = json.dumps({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": arguments,
-                },
-            }) + "\n"
-            server.process.stdin.write(msg.encode())
-            await server.process.stdin.drain()
+            # One pipe pair per server, so a request and its response must stay
+            # adjacent: hold the lock across write-then-read.
+            async with server._lock:
+                call_id = server.next_id()
+                msg = json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": call_id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": tool_name,
+                        "arguments": arguments,
+                    },
+                }) + "\n"
+                server.process.stdin.write(msg.encode())
+                await server.process.stdin.drain()
 
-            response = await asyncio.wait_for(server.process.stdout.readline(), timeout=30)
-            result = json.loads(response.decode())
-            return result.get("result", {})
+                response = await _read_response(
+                    server.process.stdout, call_id, MCP_CALL_TIMEOUT,
+                    server_name=server_name,
+                )
 
+            # A JSON-RPC error is a failed call, not an empty result. Reporting
+            # `{}` for it (as `result.get("result", {})` alone would) tells the
+            # model the tool succeeded and returned nothing.
+            if "error" in response:
+                err = response["error"]
+                detail = err.get("message", err) if isinstance(err, dict) else err
+                log.warning("MCP tool error: %s.%s: %s", server_name, tool_name, detail)
+                return {"error": str(detail)}
+            return response.get("result", {})
+
+        except asyncio.TimeoutError:
+            log.error(
+                "MCP tool call timed out after %ss: %s.%s",
+                MCP_CALL_TIMEOUT, server_name, tool_name,
+            )
+            return {"error": f"{server_name}.{tool_name} timed out after {MCP_CALL_TIMEOUT}s"}
         except Exception as e:
             log.error("MCP tool call failed: %s.%s: %s", server_name, tool_name, e)
             return {"error": str(e)}
