@@ -11,6 +11,41 @@ not which function moved.
 
 ### Added
 
+- **The bot now uses the memories it has been keeping.** It has stored them
+  since the beginning — `/remember`, plus an automatic pass after every
+  exchange — and never read a single one back. `recall` was wired to the
+  `/recall` command and to the extractor's own de-duplicator, and to nothing
+  else. So it kept a careful record of your preferences and used it exclusively
+  to avoid storing that record twice.
+
+  That is the "it doesn't remember me" complaint: you say on Monday that you
+  deploy with fly.io, and on Tuesday it suggests Vercel. The fact was in the
+  database the whole time.
+
+  Relevant memories are now selected for each message and attached to the
+  system prompt — not to the conversation, so recalled facts never look like
+  something you just said, and a resumed CLI session gets them too. Selection
+  blends a search against your message with your highest-importance memories
+  regardless of the message, because "always answer in metric" has to survive a
+  question that never mentions units.
+
+  This works on every platform — Telegram, Slack, Discord, WhatsApp, and the
+  web chat — in CLI, API, and SDK modes.
+
+  Two bounds worth knowing: at most 8 memories and 1200 characters per reply
+  (`MEMORY_CONTEXT_LIMIT`, `MEMORY_CONTEXT_MAX_CHARS`), and whole memories are
+  dropped to fit rather than half a sentence. `MEMORY_CONTEXT=0` goes back to
+  storing memories without using them.
+
+### Fixed
+
+- **Memory search matched nothing when you asked in a sentence.** `recall`
+  joined your words with an implicit AND, so "how do I deploy this?" demanded a
+  single memory containing *every* one of those words. Fine for `/recall`,
+  where you type the two words you remember — useless for searching on your
+  behalf. Searches made on your behalf now match on any term, with common words
+  dropped so an OR search still discriminates. `/recall` is unchanged.
+
 - **You can watch a reply run instead of waiting in silence.** Replying to a
   card from your phone starts a `claude --resume` turn that routinely takes
   minutes. Until now nothing came back until it finished, so a slow turn and a

@@ -108,6 +108,12 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "BRIDGE_STREAM": ("Claude Desktop bridge", "Show a live progress card while a reply from your phone runs, editing it as tools are called. On by default; set `0` to wait silently for the finished answer instead."),
     "BRIDGE_STREAM_EDIT_SECS": ("Claude Desktop bridge", "Minimum seconds between edits to that card (default `3`, floor `1`). Raise it if Telegram rate-limits a chatty session."),
 
+    # ── Conversation memory ──
+    "MEMORY_CONTEXT": ("Memory and knowledge base", "Feed remembered facts back into the conversation, so the bot carries context across sessions instead of only storing it. On by default; set `0` to store memories without ever using them."),
+    "MEMORY_CONTEXT_LIMIT": ("Memory and knowledge base", "Most memories to inject into a single reply (default `8`)."),
+    "MEMORY_CONTEXT_MAX_CHARS": ("Memory and knowledge base", "Character budget for the injected block (default `1200`). Whole memories are dropped to fit — never half a sentence."),
+    "MEMORY_CONTEXT_MIN_IMPORTANCE": ("Memory and knowledge base", "Importance at or above which a memory is injected regardless of what was asked (default `0.9`). Standing preferences like \"always answer in metric\" need to arrive on questions that never mention units."),
+
     # ── Invites and groups ──
     "INVITE_ALLOW_CHAINING": ("Invites and groups", "Let users who were themselves invited mint invites of their own. Off by default, so invites fan out one level from you and a link cannot spread without you."),
     "GROUP_DEFAULT_MODE": ("Invites and groups", "How the bot behaves in a group it has no setting for: `mention` (default — only when @mentioned, replied to, or commanded), `all`, or `off`. Per-chat overrides come from `/groupmode`."),

@@ -138,6 +138,10 @@ Long-term recall and RAG.
 | `KB_ENABLED` | `true` | Enable the knowledge base / RAG retrieval. |
 | `KB_MAX_CONTEXT_CHARS` | `4000` | Hard cap on retrieved context, whatever the chunk count. |
 | `KB_MAX_CONTEXT_CHUNKS` | `5` | Chunks retrieved per query. |
+| `MEMORY_CONTEXT` | `1` | Feed remembered facts back into the conversation, so the bot carries context across sessions instead of only storing it. On by default; set `0` to store memories without ever using them. |
+| `MEMORY_CONTEXT_LIMIT` | `8` | Most memories to inject into a single reply (default `8`). |
+| `MEMORY_CONTEXT_MAX_CHARS` | `1200` | Character budget for the injected block (default `1200`). Whole memories are dropped to fit — never half a sentence. |
+| `MEMORY_CONTEXT_MIN_IMPORTANCE` | `0.9` | Importance at or above which a memory is injected regardless of what was asked (default `0.9`). Standing preferences like "always answer in metric" need to arrive on questions that never mention units. |
 
 ## Cost and routing
 
@@ -264,4 +268,4 @@ Health endpoint, debugging, MCP.
 
 ---
 
-145 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.
+149 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.

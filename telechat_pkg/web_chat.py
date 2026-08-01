@@ -566,6 +566,8 @@ async def _handle_chat(
                 system=cc.CLAUDE_SYSTEM,
                 on_text=_on_text,
                 is_cancelled=_is_cancelled,
+                platform=PLATFORM,
+                user_id=user_id,
             )
         elif engine == "sdk":
             reply, stats = await cc.ask_claude_sdk(
@@ -577,6 +579,8 @@ async def _handle_chat(
                 on_progress=_on_progress,
                 on_text=_on_text,
                 is_cancelled=_is_cancelled,
+                platform=PLATFORM,
+                user_id=user_id,
             )
             if stats.get("session_id"):
                 sess.claude_session_id = stats["session_id"]

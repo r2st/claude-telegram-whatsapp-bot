@@ -427,7 +427,8 @@ def _handle(client, channel: str, user_id: str, thread_ts: str, text: str) -> No
         engine = _engine(user_id)
 
         if engine == "api":
-            reply, stats = cc.ask_claude_api(text, history)
+            reply, stats = cc.ask_claude_api(
+                text, history, platform=PLATFORM, user_id=user_id)
         else:
             reply, stats = cc.ask_claude_sync(
                 text, history,

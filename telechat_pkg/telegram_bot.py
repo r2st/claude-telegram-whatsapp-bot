@@ -726,6 +726,7 @@ async def _ask(uid: int, text: str, tracker: TaskSession | None = None, session:
             text, history, system=system_prompt,
             model=route_model_api(text) if SMART_ROUTING_ENABLED else cc.CLAUDE_API_MODEL,
             on_text=_on_text, is_cancelled=_is_cancelled,
+            platform=PLATFORM, user_id=str(uid),
         )
 
     if engine == "sdk":
@@ -738,6 +739,7 @@ async def _ask(uid: int, text: str, tracker: TaskSession | None = None, session:
             on_progress=_on_progress,
             on_text=_on_text,
             is_cancelled=_is_cancelled,
+            platform=PLATFORM, user_id=str(uid),
         )
         if result[1].get("session_id"):
             sess.claude_session_id = result[1]["session_id"]

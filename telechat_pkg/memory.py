@@ -234,6 +234,7 @@ class MemoryStore:
         *,
         limit: int = 10,
         tags: list[str] | None = None,
+        match_any: bool = False,
     ) -> list[SearchResult]:
         conn = self._conn()
         tag_clause = ""
@@ -257,7 +258,7 @@ class MemoryStore:
 
         # Try FTS5 search first
         if self._has_fts():
-            fts_query = self._to_fts_query(query)
+            fts_query = self._to_fts_query(query, match_any)
             try:
                 rows = conn.execute(
                     f"""SELECT m.*, f.rank
@@ -436,11 +437,20 @@ class MemoryStore:
     # ── Helpers ────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _to_fts_query(raw: str) -> str:
+    def _to_fts_query(raw: str, match_any: bool = False) -> str:
+        """Quote each token so user punctuation cannot become FTS5 syntax.
+
+        Tokens are joined with FTS5's implicit AND, which is right for `/recall`
+        where someone types the two or three words they remember. It is wrong
+        when the query is a whole chat message — requiring every word of "how do
+        I deploy this?" to appear in one memory matches nothing, ever. Callers
+        searching with a sentence pass ``match_any``.
+        """
         tokens = raw.strip().split()
         if not tokens:
             return '""'
-        return " ".join(f'"{t.replace(chr(34), chr(34)+chr(34))}"' for t in tokens)
+        quoted = [f'"{t.replace(chr(34), chr(34)+chr(34))}"' for t in tokens]
+        return (" OR " if match_any else " ").join(quoted)
 
 
 # ── AI-powered memory extraction ──────────────────────────────────────────

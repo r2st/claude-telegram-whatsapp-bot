@@ -593,6 +593,7 @@ Just send a message. There are no slash commands — WhatsApp is intentionally k
 │   ├── whatsapp_bot.py      WhatsApp adapter (Green API polling)
 │   ├── slack_bot.py         Slack adapter (Socket Mode)
 │   ├── memory.py            Per-user memory with FTS5 search
+│   ├── memory_context.py    Feeds remembered facts back into each reply
 │   ├── invites.py           Invite codes, access grants, referral graph
 │   ├── group_policy.py      When to answer in a group chat
 │   ├── onboarding.py        First-run tour and activation tracking
@@ -667,7 +668,7 @@ adding a second person to the allowlist.
 - **AI-guided setup** — `telechat init` uses Claude CLI for interactive configuration
 - **Dual Claude mode** — CLI (free with Claude subscription) or API
 - **Coding agent** — `/code` and `/project` for end-to-end development tasks
-- **Memory system** — per-user memories with FTS5 search, remembered across sessions
+- **Memory system** — per-user memories with FTS5 search, recalled into every reply so context carries across sessions
 - **Multi-session conversations** — create, switch, pin, archive named sessions
 - **Knowledge base** — upload documents, search with full-text and semantic matching
 - **Two-agent planning** — multi-step task execution with progress updates

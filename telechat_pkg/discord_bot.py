@@ -293,7 +293,8 @@ async def run_turn(user_id: str, text: str) -> str:
     log.info("← Discord [%s] %s", user_id, text[:120])
 
     if _engine(user_id) == "api":
-        reply, stats = await cc.ask_claude_api_async(text, history)
+        reply, stats = await cc.ask_claude_api_async(
+            text, history, platform=PLATFORM, user_id=user_id)
     else:
         reply, stats = await cc.ask_claude_async(
             text, history,

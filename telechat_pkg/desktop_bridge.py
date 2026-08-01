@@ -1314,7 +1314,7 @@ def _stream_resume(sid: str, real_cwd: str, message: str, env: dict) -> Optional
         try:
             proc.kill()
         except Exception:
-            pass
+            log.debug("could not kill the stream subprocess for %s", sid[:8], exc_info=True)
         if parsed:
             # Telegram is a plausible cause of landing here, so this last
             # courtesy edit gets its own guard — it must not replace the

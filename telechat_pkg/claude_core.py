@@ -43,6 +43,7 @@ from .store import (  # noqa: F401 — re-export for backward compat
     clear_session,
     get_history,
 )
+from . import memory_context
 
 
 def __getattr__(name):
@@ -165,6 +166,15 @@ async def ask_claude_async(
             "--verbose",
             "--permission-mode", perm_mode,
         ]
+
+    # Recalled memories ride on the system prompt, not in `-p`. Two reasons:
+    # a `--resume` turn only sends the new message, so anything put in the
+    # prompt body would be missing exactly when cross-session context matters
+    # most; and facts injected as conversation read as if the user had just
+    # said them, which is how a bot ends up insisting you told it something.
+    mem_block = memory_context.build(platform, user_id, user_text)
+    if mem_block:
+        cmd += ["--append-system-prompt", mem_block]
 
     for d in [x.strip() for x in add_dirs.split(",") if x.strip()]:
         cmd += ["--add-dir", d]
@@ -380,11 +390,15 @@ def ask_claude_api(
     model: str = CLAUDE_API_MODEL,
     system: str = CLAUDE_SYSTEM,
     max_tokens: int = CLAUDE_MAX_TOKENS,
+    platform: str = "",
+    user_id: str = "",
 ) -> tuple[str, dict]:
     client = _get_api_client()
     if client is None:
         return "[Error] anthropic package not installed. Run: pip install anthropic", {}
 
+    system = memory_context.append_to_system(
+        system, memory_context.build(platform, user_id, user_text))
     messages = history + [{"role": "user", "content": user_text}]
     resp = client.messages.create(
         model=model,
@@ -413,12 +427,16 @@ async def ask_claude_api_async(
     max_tokens: int = CLAUDE_MAX_TOKENS,
     on_text: Optional[Callable[[str], Awaitable[None]]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    platform: str = "",
+    user_id: str = "",
 ) -> tuple[str, dict]:
     """Async Claude API call with streaming."""
     client = _get_async_api_client()
     if client is None:
         return "[Error] anthropic package not installed. Run: pip install anthropic", {}
 
+    system = memory_context.append_to_system(
+        system, memory_context.build(platform, user_id, user_text))
     messages = history + [{"role": "user", "content": user_text}]
     result_parts: list[str] = []
     stats = {"tools_used": []}
@@ -463,6 +481,8 @@ async def ask_claude_sdk(
     on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None,
     on_text: Optional[Callable[[str], Awaitable[None]]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    platform: str = "",
+    user_id: str = "",
 ) -> tuple[str, dict]:
     """Async Claude Code SDK call with streaming progress."""
     try:
@@ -493,7 +513,8 @@ async def ask_claude_sdk(
 
     opts = ClaudeCodeOptions(
         model=model,
-        system_prompt=system,
+        system_prompt=memory_context.append_to_system(
+            system, memory_context.build(platform, user_id, user_text)),
         cwd=CLAUDE_WORK_DIR,
         permission_mode=sdk_perm_mode,
         max_turns=50,
