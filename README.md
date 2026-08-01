@@ -476,6 +476,15 @@ fail the check.
 | `/usage` | Show usage statistics |
 | `/budget` | Set daily/monthly cost limits |
 | `/id` | Show your Telegram user ID |
+| `/tour` | Replay the walkthrough |
+
+**Sharing**
+| Command | Description |
+|---------|-------------|
+| `/invite [uses] [days] [note]` | Mint a one-tap invite link — `/invite 5 30 team` is five uses over thirty days |
+| `/invites` | Your invites, their status, and who joined through them |
+| `/revoke <code>` | Kill an invite link |
+| `/kick <id>` | Remove an invited user's access |
 
 **Sessions**
 | Command | Description |
@@ -536,6 +545,8 @@ Just send a message. There are no slash commands — WhatsApp is intentionally k
 │   ├── whatsapp_bot.py      WhatsApp adapter (Green API polling)
 │   ├── slack_bot.py         Slack adapter (Socket Mode)
 │   ├── memory.py            Per-user memory with FTS5 search
+│   ├── invites.py           Invite codes, access grants, referral graph
+│   ├── onboarding.py        First-run tour and activation tracking
 │   ├── session_manager.py   Multi-session conversation management
 │   ├── knowledge_base.py    Document store with chunking and search
 │   ├── cost_budget.py       Usage tracking and budget alerts
@@ -599,6 +610,8 @@ adding a second person to the allowlist.
 - **[Claude Desktop bridge](#claude-desktop-bridge)** — Claude Code sessions page you on Telegram with an AI triage card; reply to resume them, and gate tool calls on your approval
 - **Four surfaces, one process** — Telegram, WhatsApp, Slack, and a local web chat sharing one set of sessions, memories and history (`BOT_MODE=all`)
 - **One-command setup** — `npm install -g telechat && telechat init`
+- **Invite links** — `/invite` mints a one-tap link that grants a friend access; no user IDs to collect, no `.env` edit, no restart. `/invites` shows who joined through yours
+- **Guided first run** — a five-step tour instead of a wall of commands
 - **Background service** — runs detached, survives terminal close
 - **AI-guided setup** — `telechat init` uses Claude CLI for interactive configuration
 - **Dual Claude mode** — CLI (free with Claude subscription) or API

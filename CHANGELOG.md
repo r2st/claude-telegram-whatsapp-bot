@@ -27,21 +27,6 @@ not which function moved.
   `TELEGRAM_ALLOWED_USER_IDS` may mint invites, so a link cannot spread through
   people you never admitted; `INVITE_ALLOW_CHAINING=true` opens that up.
 
-- **The bot is usable in a group.** It used to answer *every* message in a
-  group, including the ones people were saying to each other — which is a good
-  way to get removed from a group. It now replies only when addressed: an
-  `@mention`, a reply to one of its own messages, or a command. `/groupmode`
-  changes that per chat — `mention` (the default), `all` for a room that exists
-  to talk to the bot, or `off`. `GROUP_DEFAULT_MODE` sets the default for
-  groups you have not configured.
-
-  A group also gets its own conversation now, keyed by the chat, so the room
-  shares one thread instead of replaying whoever happened to speak last from
-  their private history. The bot's own handle is stripped before the prompt
-  reaches Claude, and an unauthorized stranger talking in a group no longer
-  gets a "you're not authorized" reply per message — only if they actually
-  addressed the bot.
-
 - **`/start` welcomes a new user instead of reciting the manual.** It answered
   a first message with forty lines listing every command, which is a reference
   card handed to someone still deciding whether to keep the bot. First-timers

@@ -384,8 +384,10 @@ class TestCommands:
         await tb.cmd_start(update, ctx)
         update.message.reply_text.assert_called_once()
         text = update.message.reply_text.call_args[0][0]
-        assert "Claude on Telegram" in text
-        assert "/tasks" in text
+        # A first-time user is welcomed and offered the tour, not handed the
+        # full command list — that lives in /help.
+        assert "Claude" in text
+        assert "tour" in text.lower()
 
     @pytest.mark.asyncio
     async def test_cmd_id(self):

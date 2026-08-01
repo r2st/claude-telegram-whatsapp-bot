@@ -160,8 +160,25 @@ def _verbose(uid: int) -> int: return _user_verbose.get(uid, 1)
 
 # ─── Auth / rate limit ──────────────────────────────────────────────────────────
 
-def _allowed(uid: int) -> bool:
+def _is_operator(uid: int) -> bool:
+    """Whether this identity is one the operator configured, not an invited guest.
+
+    An open bot (empty allowlist) cannot tell the difference, so everyone
+    counts — the same assumption every other privileged command already makes.
+    """
     return not ALLOWED_USER_IDS or uid in ALLOWED_USER_IDS
+
+
+def _allowed(uid: int) -> bool:
+    """Access = the env allowlist, plus anyone who redeemed an invite code.
+
+    Grants live in the database, so admitting someone needs no edit to
+    ``.env`` and no restart.
+    """
+    if not ALLOWED_USER_IDS or uid in ALLOWED_USER_IDS:
+        return True
+    from . import invites
+    return invites.is_granted(PLATFORM, str(uid))
 
 
 # ─── Typing indicator ───────────────────────────────────────────────────────────
@@ -751,42 +768,304 @@ async def _ask(uid: int, text: str, tracker: TaskSession | None = None, session:
 
 # ─── Commands ───────────────────────────────────────────────────────────────────
 
+def _bot_username(ctx: ContextTypes.DEFAULT_TYPE) -> str:
+    """The bot's @handle, or '' when it is not known yet.
+
+    python-telegram-bot fills ``bot.username`` during initialisation, so this
+    is populated in a running bot; anything else (a test double, a bot polled
+    before initialize) yields '' and the callers degrade gracefully.
+    """
+    u = getattr(getattr(ctx, "bot", None), "username", None)
+    return u.lstrip("@") if isinstance(u, str) and u else ""
+
+
+def _display_name(update: Update) -> str:
+    user = getattr(update, "effective_user", None)
+    name = getattr(user, "first_name", None)
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    handle = getattr(user, "username", None)
+    return handle.strip() if isinstance(handle, str) else ""
+
+
+def _tour_keyboard(index: int) -> InlineKeyboardMarkup:
+    from . import onboarding as ob
+    if index + 1 >= ob.TOTAL_STEPS:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("✓ Done", callback_data="tg:tour:done")],
+        ])
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Next →", callback_data=f"tg:tour:{index + 1}"),
+        InlineKeyboardButton("Skip", callback_data="tg:tour:done"),
+    ]])
+
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Welcome, redeem a deep-linked invite, and offer the tour.
+
+    A ``https://t.me/<bot>?start=inv_CODE`` link arrives here with the code in
+    ``ctx.args``, so an invited user's very first action grants them access.
+    """
+    from . import invites, onboarding as ob
+
+    uid = update.effective_user.id
+    payload = ctx.args[0] if getattr(ctx, "args", None) else ""
+    inviter_name = ""
+    source = "direct"
+
+    code = invites.normalize_code(payload) if isinstance(payload, str) else ""
+    if code:
+        result = invites.get_store().redeem(
+            code, PLATFORM, str(uid), display_name=_display_name(update)
+        )
+        if result.ok:
+            source = "invite"
+            inviter_name = _known_name(result.invite.created_by) if result.invite else ""
+        elif result.reason not in ("already", "self"):
+            await update.message.reply_text(result.message)
+            return
+    elif payload and not _allowed(uid):
+        # A start payload that is not a code, from someone with no access.
+        await update.message.reply_text("That invite link isn't valid.")
+        return
+
+    if not _allowed(uid):
+        await update.message.reply_text(
+            "This bot is private. Ask whoever runs it for an invite link — "
+            f"they'll need your ID: `{uid}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    try:
+        first_time = ob.get_store().start(PLATFORM, str(uid), source=source)
+    except Exception:
+        log.debug("onboarding start failed", exc_info=True)
+        first_time = False
+
+    text = ob.welcome_text(_display_name(update), first_time=first_time, invited_by=inviter_name)
+    if not first_time:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        return
+
     await update.message.reply_text(
-        "Hi! I'm Claude on Telegram.\n\n"
-        "Send me any message and I'll work on it. You can send multiple messages — they run as parallel tasks.\n\n"
-        "Commands:\n"
-        "/tasks — show active running tasks\n"
-        "/cancel — cancel a task (or all)\n"
-        "/sessions — view/switch sessions\n"
-        "/new <name> — create a new session\n"
-        "/switch — switch to another session\n"
-        "/rename <name> — rename current session\n"
-        "/title <text> — set session description\n"
-        "/pin — pin/unpin current session\n"
-        "/archive — archive current session\n"
-        "/searchsess <q> — search sessions\n"
-        "/browse — browse project folders interactively\n"
-        "/reset — clear conversation history\n"
-        "/settings — all settings in one panel\n"
-        "/model — switch Claude model\n"
-        "/engine — switch engine (cli/sdk/api)\n"
-        "/permissions — change CLI permission mode\n"
-        "/verbose — set verbosity (0/1/2)\n"
-        "/usage — show usage stats\n"
-        "/watchdog — self-healing status\n"
-        "/mode — show current settings\n"
-        "/id — show your Telegram user ID\n\n"
-        "Memory:\n"
-        "/remember <text> [#tag1 #tag2] [!0.9] — save a memory\n"
-        "/recall <query> — search your memories\n"
-        "/memories [#tag] — list recent memories\n"
-        "/forget <id> — delete a memory\n"
-        "/editmem <id> <new text> — update a memory\n"
-        "/exportmem — export all memories as JSON\n"
-        "/importmem — reply to a JSON file to import\n"
-        "/extractmem — extract memories from recent chat"
+        text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("Show me →", callback_data="tg:tour:0"),
+            InlineKeyboardButton("No thanks", callback_data="tg:tour:done"),
+        ]]),
     )
+
+
+def _known_name(user_id: str) -> str:
+    """Best-effort display name for a Telegram id we have seen before."""
+    try:
+        from . import invites
+        grant = invites.get_store().get_grant(PLATFORM, str(user_id))
+        if grant and grant.display_name:
+            return grant.display_name
+    except Exception:
+        log.debug("name lookup failed", exc_info=True)
+    return ""
+
+
+async def cmd_tour(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Replay the walkthrough from the beginning."""
+    from . import onboarding as ob
+    uid = update.effective_user.id
+    if not _allowed(uid):
+        return
+    try:
+        ob.get_store().set_step(PLATFORM, str(uid), 0)
+    except Exception:
+        log.debug("tour reset failed", exc_info=True)
+    await update.message.reply_text(
+        ob.step_text(0) + f"\n\n{ob.progress_bar(0)}",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_tour_keyboard(0),
+    )
+
+
+# ─── Invites ──────────────────────────────────────────────────────────────────
+
+
+def _parse_invite_args(raw: str) -> tuple[int, "float | None", str]:
+    """Parse ``/invite [uses] [days] [note]`` into (max_uses, ttl_days, note).
+
+    ``/invite`` alone is one use for seven days. ``unlimited`` and ``never``
+    spell out the open-ended forms so nobody has to remember that 0 means
+    unlimited.
+    """
+    from . import invites
+
+    max_uses = invites.DEFAULT_MAX_USES
+    ttl_days: float | None = invites.DEFAULT_TTL_DAYS
+    tokens = (raw or "").split()
+    idx = 0
+
+    if idx < len(tokens):
+        tok = tokens[idx].lower()
+        if tok in ("unlimited", "many", "open"):
+            max_uses, idx = 0, idx + 1
+        elif tok.isdigit():
+            max_uses, idx = int(tok), idx + 1
+
+    if idx < len(tokens):
+        tok = tokens[idx].lower().rstrip("d")
+        if tokens[idx].lower() in ("never", "forever"):
+            ttl_days, idx = None, idx + 1
+        elif tok.isdigit():
+            ttl_days, idx = float(tok), idx + 1
+
+    return max_uses, ttl_days, " ".join(tokens[idx:]).strip()
+
+
+async def cmd_invite(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Mint a one-tap invite link."""
+    from . import invites, onboarding as ob
+
+    uid = update.effective_user.id
+    if not _allowed(uid):
+        return
+
+    store = invites.get_store()
+    if not store.can_invite(PLATFORM, str(uid), is_operator=_is_operator(uid)):
+        await update.message.reply_text(
+            "Only whoever runs this bot can create invites.\n\n"
+            "They can set `INVITE_ALLOW_CHAINING=true` to let invited users "
+            "invite others too.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    raw = (update.message.text or "").split(None, 1)
+    max_uses, ttl_days, note = _parse_invite_args(raw[1] if len(raw) > 1 else "")
+
+    try:
+        invite = store.create(
+            PLATFORM, str(uid), max_uses=max_uses, ttl_days=ttl_days, note=note
+        )
+    except Exception as e:
+        log.warning("invite creation failed: %s", e)
+        await update.message.reply_text("Couldn't create an invite just now.")
+        return
+
+    username = _bot_username(ctx)
+    link = invites.deep_link(username, invite.code) if username else ""
+    hours = None
+    if invite.expires_at:
+        hours = max(0, int((invite.expires_at - time.time()) // 3600))
+
+    if link:
+        # Sent without a parse mode on purpose: the link carries underscores
+        # (``..._bot`` and the ``inv_`` prefix) that legacy Markdown would
+        # italicise or choke on. Telegram auto-links a bare URL regardless.
+        body = ob.invite_pitch(link, uses_left=invite.remaining(), expires_hours=hours)
+        await update.message.reply_text(body, disable_web_page_preview=True)
+        return
+
+    # No username yet — the code still works via `/start <code>`.
+    body = (
+        f"Invite code: `{invite.code}`\n\n"
+        "Whoever you send it to redeems it with `/start " + invite.code + "`."
+    )
+    await update.message.reply_text(body, parse_mode=ParseMode.MARKDOWN,
+                                    disable_web_page_preview=True)
+
+
+async def cmd_invites(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """List your invites and who came in through them."""
+    from . import invites
+
+    uid = update.effective_user.id
+    if not _allowed(uid):
+        return
+
+    store = invites.get_store()
+    mine = store.list_created_by(PLATFORM, str(uid))
+    stats = store.stats(PLATFORM, str(uid))
+
+    if not mine and not stats.direct:
+        await update.message.reply_text(
+            "You haven't invited anyone yet. `/invite` makes a link.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    now = time.time()
+    lines = [invites.summarize(stats), ""]
+    if mine:
+        lines.append("*Your invites*")
+        lines += [invites.format_invite_line(i, now=now) for i in mine[:15]]
+        if len(mine) > 15:
+            lines.append(f"…and {len(mine) - 15} more")
+        lines.append("")
+    lines.append("`/revoke <code>` kills a link. Already-admitted users keep access.")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_revoke(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Revoke an invite code you created."""
+    from . import invites
+
+    uid = update.effective_user.id
+    if not _allowed(uid):
+        return
+
+    parts = (update.message.text or "").split(None, 1)
+    code = invites.normalize_code(parts[1]) if len(parts) > 1 else ""
+    if not code:
+        await update.message.reply_text(
+            "Usage: `/revoke <code>` — `/invites` lists yours.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    store = invites.get_store()
+    # Operators can revoke any code; everyone else only their own.
+    requester = None if _is_operator(uid) else str(uid)
+    if store.revoke(code, requester=requester):
+        await update.message.reply_text(
+            f"Revoked `{code}`. Anyone already admitted keeps their access — "
+            "use `/kick <id>` to remove someone.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        await update.message.reply_text("No such invite of yours.")
+
+
+async def cmd_kick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Remove an invited user's access. Operators only."""
+    from . import invites
+
+    uid = update.effective_user.id
+    if not _allowed(uid):
+        return
+    if not _is_operator(uid):
+        await update.message.reply_text("Only whoever runs this bot can do that.")
+        return
+
+    parts = (update.message.text or "").split(None, 1)
+    target = parts[1].strip() if len(parts) > 1 else ""
+    if not target.isdigit():
+        await update.message.reply_text(
+            "Usage: `/kick <telegram user id>`", parse_mode=ParseMode.MARKDOWN
+        )
+        return
+
+    if invites.get_store().revoke_access(PLATFORM, target):
+        await update.message.reply_text(f"Removed access for `{target}`.",
+                                        parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.message.reply_text(
+            "That user wasn't invited — if they're in "
+            "`TELEGRAM_ALLOWED_USER_IDS`, remove them there.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+
+# ─── Group behaviour ──────────────────────────────────────────────────────────
 
 
 async def cmd_id(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1830,6 +2109,35 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("⏹ Cancelling…", reply_markup=None)
         return
 
+    # Onboarding tour: value is the step index, or "done"
+    if kind == "tour":
+        from . import onboarding as ob
+        if value == "done":
+            try:
+                ob.get_store().complete(PLATFORM, str(uid))
+            except Exception:
+                log.debug("tour completion failed", exc_info=True)
+            await q.edit_message_text(ob.finish_text(), parse_mode=ParseMode.MARKDOWN)
+            return
+        try:
+            idx = int(value)
+        except ValueError:
+            return
+        step = ob.tour_step(idx)
+        if step is None:
+            await q.edit_message_text(ob.finish_text(), parse_mode=ParseMode.MARKDOWN)
+            return
+        try:
+            ob.get_store().set_step(PLATFORM, str(uid), idx)
+        except Exception:
+            log.debug("tour step save failed", exc_info=True)
+        await q.edit_message_text(
+            ob.step_text(idx) + f"\n\n{ob.progress_bar(idx)}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_tour_keyboard(idx),
+        )
+        return
+
     # Handle cancel all
     if kind == "cancelall":
         count = _task_registry.cancel_all_user(uid)
@@ -2209,6 +2517,13 @@ HELP_TEXT = """*Available commands:*
 /tasks — List running tasks
 /cancel — Cancel a task
 /id — Show your user ID
+/tour — Replay the walkthrough
+
+*Sharing*
+/invite `[uses] [days] [note]` — Make an invite link
+/invites — Your invites and who joined
+/revoke `code` — Kill an invite link
+/kick `id` — Remove an invited user
 
 *Settings*
 /settings — All settings in one panel
@@ -2959,12 +3274,15 @@ async def _run_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, uid: int, us
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if not _allowed(uid):
-        await update.message.reply_text("You're not authorized.")
-        return
 
     # Deduplicate: Telegram can send the same message multiple times on retries
     if _is_duplicate(update.message.message_id):
+        return
+
+    user_text = update.message.text or ""
+
+    if not _allowed(uid):
+        await update.message.reply_text("You're not authorized.")
         return
 
     if not cc.check_rate_limit(f"tg:{uid}"):
@@ -2973,9 +3291,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    user_text = update.message.text or ""
     if not user_text.strip():
         return
+
+    conv_uid = uid
 
     # Claude Desktop bridge: route replies to session cards / current-session messages
     # to a live `claude --resume` and post the result back. If handled, skip the
@@ -2989,9 +3308,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Link understanding moved to _run_task (after placeholder is shown)
 
-    # Check concurrent task limit
-    if _task_registry.user_task_count(uid) >= MAX_CONCURRENT_TASKS:
-        active = _task_registry.get_user_tasks(uid)
+    # Check concurrent task limit — per conversation, so one busy group does
+    # not consume a member's personal allowance and vice versa.
+    if _task_registry.user_task_count(conv_uid) >= MAX_CONCURRENT_TASKS:
+        active = _task_registry.get_user_tasks(conv_uid)
         task_list = "\n".join(
             f"  `#{t.task_id}` — {t.prompt_preview}… ({t._elapsed()})"
             for t in active
@@ -3005,7 +3325,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # Fire and forget — task runs concurrently
-    asyncio.create_task(_run_task(update, ctx, uid, user_text))
+    asyncio.create_task(_run_task(update, ctx, conv_uid, user_text))
 
 
 # ─── Upload directory for persistent file storage ─────────────────────────────
@@ -3697,6 +4017,11 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("prompts",     cmd_prompts))
     app.add_handler(CommandHandler("watchdog",    cmd_watchdog))
     app.add_handler(CommandHandler("id",          cmd_id))
+    app.add_handler(CommandHandler("tour",        cmd_tour))
+    app.add_handler(CommandHandler("invite",      cmd_invite))
+    app.add_handler(CommandHandler("invites",     cmd_invites))
+    app.add_handler(CommandHandler("revoke",      cmd_revoke))
+    app.add_handler(CommandHandler("kick",        cmd_kick))
     app.add_handler(CommandHandler("remember",    cmd_remember))
     app.add_handler(CommandHandler("recall",      cmd_recall))
     app.add_handler(CommandHandler("memories",    cmd_memories))
@@ -3777,6 +4102,9 @@ BOT_COMMANDS = [
     BotCommand("web", "Browser automation"),
     BotCommand("remind", "Set a reminder"),
     BotCommand("commitments", "View pending reminders"),
+    BotCommand("invite", "Create an invite link"),
+    BotCommand("invites", "Your invites and who joined"),
+    BotCommand("tour", "Replay the walkthrough"),
     BotCommand("doctor", "Run diagnostic checks"),
     BotCommand("export", "Export conversation"),
     BotCommand("compact", "Compact conversation history"),

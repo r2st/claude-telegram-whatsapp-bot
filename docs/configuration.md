@@ -90,6 +90,14 @@ The built-in browser UI.
 | `WEB_CHAT_TOKEN` |  | Access token required to open the web UI. Strongly recommended whenever it is not on loopback. |
 | `WEB_CHAT_TRUST_PROXY` | `0` | Trust `X-Forwarded-For` for client IPs. Only set this behind a proxy you control. |
 
+## Invites
+
+Handing access to someone else.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `INVITE_ALLOW_CHAINING` |  | Let users who were themselves invited mint invites of their own. Off by default, so invites fan out one level from you and a link cannot spread without you. |
+
 ## Claude Desktop bridge
 
 Hooks that push your desktop Claude sessions to your phone.
@@ -251,4 +259,4 @@ Health endpoint, debugging, MCP.
 
 ---
 
-139 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.
+140 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.

@@ -40,6 +40,7 @@ SECTIONS: list[tuple[str, str]] = [
     ("Slack", "Socket Mode."),
     ("Discord", "Gateway WebSocket. Needs the `discord` extra."),
     ("Web chat", "The built-in browser UI."),
+    ("Invites", "Handing access to someone else."),
     ("Claude Desktop bridge", "Hooks that push your desktop Claude sessions to your phone."),
     ("Storage and limits", "Database, rate limiting, write-queue behaviour."),
     ("Memory and knowledge base", "Long-term recall and RAG."),
@@ -104,6 +105,9 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "BRIDGE_APPROVAL_TIMEOUT": ("Claude Desktop bridge", "Seconds an approval card waits for a tap before the timeout policy applies."),
     "BRIDGE_APPROVAL_TIMEOUT_ACTION": ("Claude Desktop bridge", "What an unanswered approval resolves to: `fallthrough` (default, hands back to Claude Code), `deny`, or `allow`."),
     "TELECHAT_BRIDGE_INTERNAL": ("Claude Desktop bridge", "Set by the bridge on processes it spawns, so their own hooks don't post duplicate cards. Not for operators."),
+
+    # ── Invites ──
+    "INVITE_ALLOW_CHAINING": ("Invites", "Let users who were themselves invited mint invites of their own. Off by default, so invites fan out one level from you and a link cannot spread without you."),
 
     # ── Storage and limits ──
     "DB_PATH": ("Storage and limits", "SQLite database path. Defaults to `$TELECHAT_HOME/bot.db`."),
