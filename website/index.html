@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Telechat — self-hosted Claude bot for Telegram, WhatsApp &amp; Slack</title>
-<meta name="description" content="Self-hosted Claude bot for Telegram, WhatsApp, Slack and a local web chat — one process, no API key needed, MIT licensed. Install with one command.">
+<title>Telechat — Claude Code's mobile companion</title>
+<meta name="description" content="Claude Code's mobile companion. Your desktop sessions page you when they need a decision, you answer from your phone, and the run carries on.">
 <meta name="author" content="telechatai">
 <meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="theme-color" content="#0b0c0e" media="(prefers-color-scheme: dark)">
@@ -18,20 +18,20 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Telechat">
 <meta property="og:url" content="https://telechat.fyi/">
-<meta property="og:title" content="Telechat — Claude on Telegram, WhatsApp &amp; Slack">
-<meta property="og:description" content="A self-hosted bot that runs Claude on every messenger you already use — and pages you on Telegram when a Claude Code session on your desktop needs a decision. One command to install.">
+<meta property="og:title" content="Telechat — Claude Code's mobile companion">
+<meta property="og:description" content="Claude Code runs on your desktop. Telechat puts it in your pocket: a triage card when a session needs a decision, a reply that resumes it, and a live dashboard of every session. Self-hosted, MIT.">
 <meta property="og:image" content="https://telechat.fyi/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Telechat — Claude on Telegram, WhatsApp and Slack. Self-hosted, one command.">
+<meta property="og:image:alt" content="Telechat — Claude Code's mobile companion. Your sessions page you; you answer from your phone.">
 <meta property="og:locale" content="en_US">
 
 <!-- Twitter / X -->
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Telechat — Claude on Telegram, WhatsApp &amp; Slack">
-<meta name="twitter:description" content="Self-hosted Claude bot for Telegram, WhatsApp, Slack and local web chat. Plus a Desktop bridge that pages you when Claude Code needs a decision.">
+<meta name="twitter:title" content="Telechat — Claude Code's mobile companion">
+<meta name="twitter:description" content="Your Claude Code sessions page you on Telegram when they need a decision. Reply from your phone and the session resumes. Self-hosted, MIT, one command.">
 <meta name="twitter:image" content="https://telechat.fyi/og.png">
-<meta name="twitter:image:alt" content="Telechat — Claude on Telegram, WhatsApp and Slack. Self-hosted, one command.">
+<meta name="twitter:image:alt" content="Telechat — Claude Code's mobile companion. Your sessions page you; you answer from your phone.">
 
 <script type="application/ld+json">
 {
@@ -39,7 +39,7 @@
   "@type": "SoftwareApplication",
   "name": "Telechat",
   "alternateName": "telechatai",
-  "description": "Self-hosted personal bot that runs Claude on Telegram, WhatsApp, Slack and a local web chat from a single process, with a Claude Code Desktop bridge for remote notifications and control.",
+  "description": "Self-hosted mobile companion for Claude Code. Desktop sessions send triage cards to Telegram when they finish or need a decision, replies resume them remotely, tool calls can be approved from a phone, and a web dashboard shows every session on the machine.",
   "url": "https://telechat.fyi/",
   "applicationCategory": "DeveloperApplication",
   "applicationSubCategory": "Chatbot",
@@ -63,8 +63,10 @@
     "url": "https://github.com/telechatai"
   },
   "featureList": [
-    "Telegram, WhatsApp, Slack and local web chat from one process",
     "Claude Code Desktop bridge with AI triage digests and remote replies",
+    "Approve Bash, Write and Edit tool calls from your phone",
+    "Web dashboard of every Claude Code session on the machine",
+    "Telegram, WhatsApp, Slack and local web chat from one process",
     "CLI mode — no API key needed with a Claude subscription",
     "Per-user memory with SQLite FTS5 search",
     "Multi-session conversations",
@@ -79,6 +81,22 @@
   "@context": "https://schema.org",
   "@type": "FAQPage",
   "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What exactly is the Claude Desktop bridge?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "It hooks into Claude Code on your machine. When a session finishes a turn or needs input, you get a triage card on Telegram summarising what happened and what decision is pending. Reply to the card and your message is injected into that session with claude --resume. Optionally every Bash, Write and Edit call can require approval from your phone."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does the bridge work if I use Claude Code in a terminal, not the app?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. The hooks live in ~/.claude/settings.json, which every Claude Code session reads however it was launched, and sessions are read from ~/.claude/projects. The bridge needs Claude Code and Telechat on the same machine, not any particular front end."
+      }
+    },
     {
       "@type": "Question",
       "name": "Do I need an Anthropic API key?",
@@ -101,14 +119,6 @@
       "acceptedAnswer": {
         "@type": "Answer",
         "text": "No. Telegram and WhatsApp use polling, Slack uses Socket Mode over an outbound WebSocket, and the web chat binds to loopback. Telechat works behind NAT, on hotel Wi-Fi and on a laptop that sleeps."
-      }
-    },
-    {
-      "@type": "Question",
-      "name": "What exactly is the Claude Desktop bridge?",
-      "acceptedAnswer": {
-        "@type": "Answer",
-        "text": "It hooks into Claude Code on your machine. When a session finishes a turn or needs input, you get a triage card on Telegram summarising what happened and what decision is pending. Reply to the card and your message is injected into that session with claude --resume. Optionally every Bash, Write and Edit call can require approval from your phone."
       }
     },
     {
@@ -425,9 +435,9 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
 <div class="hero">
   <div class="wrap hero-grid">
     <div>
-      <a class="pill" href="#bridge"><span class="dot" aria-hidden="true"></span> New — Claude Code Desktop bridge</a>
-      <h1 class="hero-h1">Claude on every messenger you already use.<br><span class="grad">Running on your machine.</span></h1>
-      <p class="hero-sub">Telechat is a self-hosted bot that puts Claude on <strong>Telegram</strong>, <strong>WhatsApp</strong>, <strong>Slack</strong> and a local <strong>web chat</strong> — all from one process. No server, no account, and with a Claude subscription, <strong>no API key</strong>.</p>
+      <a class="pill" href="#bridge"><span class="dot" aria-hidden="true"></span> New — live session dashboard in the web chat</a>
+      <h1 class="hero-h1">Claude Code's mobile companion.<br><span class="grad">Your sessions, in your pocket.</span></h1>
+      <p class="hero-sub">Claude Code runs on your desktop, which means the work stops the moment you walk away from it. Telechat hooks into those sessions: when one finishes or stalls on a decision, it <strong>pages you</strong> — on Telegram, WhatsApp, Slack or a local web chat. You reply from your phone and <strong>the session carries on</strong>.</p>
 
       <div class="cmd">
         <code id="cmd-hero"><span class="pr">$ </span>npm install -g telechat &amp;&amp; telechat init</code>
@@ -443,7 +453,7 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
         </a>
         <a class="btn btn-ghost" href="https://github.com/telechatai/telechat" rel="noopener">Read the source</a>
       </div>
-      <p class="hero-note">Or try it first with <code>telechat web</code> — no account, no config. Python 3.10–3.13 · MIT licensed · v1.2.0</p>
+      <p class="hero-note">Then <code>telechat bridge install</code> to hook up Claude Code. Or try the chat first with <code>telechat web</code> — no account, no config. Python 3.10–3.13 · MIT licensed · v1.2.0</p>
     </div>
 
     <!-- Telegram-style preview of a bridge triage card -->
@@ -469,8 +479,8 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
 <!-- ── STRIP ───────────────────────────────────────────── -->
 <div class="strip">
   <div class="wrap strip-in">
-    <div class="stat"><div class="n">4</div><div class="l">Platforms, one process</div></div>
-    <div class="stat"><div class="n">0</div><div class="l">Servers to run</div></div>
+    <div class="stat"><div class="n">1</div><div class="l">Command to hook up Claude Code</div></div>
+    <div class="stat"><div class="n">4</div><div class="l">Ways to reach your sessions</div></div>
     <div class="stat"><div class="n">$0</div><div class="l">In CLI mode</div></div>
     <div class="stat"><div class="n">MIT</div><div class="l">Fully open source</div></div>
   </div>
@@ -481,13 +491,14 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
   <div class="wrap">
     <div class="bridge-grid">
       <div>
-        <p class="eyebrow">The differentiator</p>
+        <p class="eyebrow">How it works</p>
         <h2>Your Claude Code sessions can page you.</h2>
-        <p class="lede">Telechat hooks into Claude Code on your desktop. When a session finishes a turn or stalls on a question, you get a triage card on Telegram — status first, decision pulled to the top. Reply to the card and your answer is injected straight back into that session.</p>
+        <p class="lede">Telechat registers hooks in Claude Code on your desktop. When a session finishes a turn or stalls on a question, you get a triage card on Telegram — status first, decision pulled to the top. Reply to the card and your answer is injected straight back into that session.</p>
         <ul class="checks">
-          <li><span class="tick" aria-hidden="true">✓</span><span><b>Glanceable digests.</b> A fast model turns a wall of output into ✅ DONE / ⚠ NEEDS DECISION / ❌ BLOCKED — with the full text one tap away, never lost.</span></li>
+          <li><span class="tick" aria-hidden="true">✓</span><span><b>Glanceable digests.</b> A fast model turns a wall of output into ✅ DONE / ⚠ NEEDS DECISION / ❌ BLOCKED, with the files touched and whether the tests ran — and the full text one tap away, never lost.</span></li>
           <li><span class="tick" aria-hidden="true">✓</span><span><b>Reply from anywhere.</b> Your message resumes the session with <code>claude --resume</code>. Broadcast to every running session with <code>/desktop_all</code>.</span></li>
-          <li><span class="tick" aria-hidden="true">✓</span><span><b>Approve tools from your phone.</b> Opt in per project and every Bash, Write and Edit call waits for your tap — with an explicit timeout policy, not an accident.</span></li>
+          <li><span class="tick" aria-hidden="true">✓</span><span><b>Approve tools from your phone.</b> The card shows the actual call — the command, the diff — and one tap can allow it and stop it asking again for that project.</span></li>
+          <li><span class="tick" aria-hidden="true">✓</span><span><b>See every session at once.</b> The web chat has a live dashboard: what's running, which project, working or idle, and the last thing each one said.</span></li>
           <li><span class="tick" aria-hidden="true">✓</span><span><b>One command.</b> <code>telechat bridge install</code> writes the hooks, installs a launchd service and runs preflight checks.</span></li>
         </ul>
         <div class="cta-row">
@@ -524,8 +535,8 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
   <div class="wrap">
     <div class="sec-head center">
       <p class="eyebrow">Features</p>
-      <h2>A personal assistant, not a demo</h2>
-      <p class="lede">Everything runs in one process against one local SQLite file. Nothing here needs a second service.</p>
+      <h2>And between pages, a full assistant</h2>
+      <p class="lede">The bridge is the reason to install it; this is what the same process does the rest of the time. All of it runs against one local SQLite file — nothing here needs a second service.</p>
     </div>
     <div class="cards">
       <div class="card"><div class="ic" aria-hidden="true">💬</div><h3>Four surfaces, one process</h3><p>Telegram, WhatsApp (Green API), Slack (Socket Mode) and a local web chat. Set <code>BOT_MODE=all</code> and they share the same sessions, memory and history.</p></div>
@@ -563,7 +574,7 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
           <tr><th scope="row">Setup</th><td>Talk to @BotFather</td><td>Scan a QR code</td><td>Create a Slack app</td><td class="yes">Nothing — open the URL</td></tr>
           <tr><th scope="row">Photos &amp; files</th><td class="yes">Yes</td><td class="no">Text only</td><td class="no">Text only</td><td class="no">Text only</td></tr>
           <tr><th scope="row">Interactive UI</th><td class="yes">Inline buttons</td><td class="no">—</td><td>Reactions as status</td><td class="yes">Full browser UI</td></tr>
-          <tr><th scope="row">Desktop bridge</th><td class="yes">Yes</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><th scope="row">Desktop bridge</th><td class="yes">Cards, replies, approvals</td><td class="no">—</td><td class="no">—</td><td class="yes">Session dashboard</td></tr>
           <tr><th scope="row">Works without a public URL</th><td class="yes">Yes (polling)</td><td class="yes">Yes (polling)</td><td class="yes">Yes (WebSocket)</td><td class="yes">It <em>is</em> local</td></tr>
           <tr><th scope="row">Works on corporate Wi-Fi</th><td>Depends</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
         </tbody>
@@ -579,8 +590,8 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
   <div class="wrap">
     <div class="sec-head">
       <p class="eyebrow">How it compares</p>
-      <h2>Against the other ways to get Claude in a chat</h2>
-      <p class="lede">Most Claude-on-Telegram projects are a single-file script around one API call. Hosted assistants are the opposite trade: no setup, but your conversations live on someone else's box.</p>
+      <h2>Against the other ways to reach Claude from your phone</h2>
+      <p class="lede">Most Claude-on-Telegram projects are a single-file script around one API call — a chat, with no idea your desktop exists. Hosted assistants are the opposite trade: no setup, but your conversations live on someone else's box and your Claude Code sessions are still on the machine you left.</p>
     </div>
     <div class="table-scroll">
       <table>
@@ -588,11 +599,12 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
           <th scope="col">&nbsp;</th><th scope="col">Telechat</th><th scope="col">Typical bot script</th><th scope="col">Hosted AI assistant</th>
         </tr></thead>
         <tbody>
+          <tr><th scope="row">Claude Code integration</th><td class="yes">Triage cards, remote replies, tool approval</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><th scope="row">Knows when a session needs you</th><td class="yes">Pages you on Telegram</td><td class="no">—</td><td class="no">—</td></tr>
           <tr><th scope="row">Where it runs</th><td class="yes">Your machine</td><td>Your machine</td><td class="no">Vendor cloud</td></tr>
           <tr><th scope="row">Cost model</th><td class="yes">Free with a Claude subscription</td><td>API tokens</td><td class="no">Monthly seat</td></tr>
           <tr><th scope="row">Messengers supported</th><td class="yes">Telegram + WhatsApp + Slack + web</td><td>One</td><td>Varies, usually one</td></tr>
           <tr><th scope="row">Conversation storage</th><td class="yes">Local SQLite you can read</td><td>In memory, lost on restart</td><td class="no">Vendor database</td></tr>
-          <tr><th scope="row">Claude Code integration</th><td class="yes">Desktop bridge with remote replies</td><td class="no">—</td><td class="no">—</td></tr>
           <tr><th scope="row">Access to your files</th><td class="yes">Yours, scoped by config</td><td class="no">Usually none</td><td class="no">None</td></tr>
           <tr><th scope="row">Runs as a service</th><td class="yes">launchd / systemd + watchdog</td><td class="no">A terminal you can't close</td><td>Not yours to run</td></tr>
           <tr><th scope="row">Auditable</th><td class="yes">MIT, tests in CI on 3.10–3.13</td><td>Varies</td><td class="no">Closed</td></tr>
@@ -611,7 +623,7 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
     <div class="sec-head center">
       <p class="eyebrow">Get started</p>
       <h2>Running in about three minutes</h2>
-      <p class="lede">The only prerequisite is the Claude Code CLI, and only if you want the free CLI mode.</p>
+      <p class="lede">If you already use Claude Code, you have the only prerequisite. Steps 1–5 give you the bot; step 6 is the one that connects it to your sessions.</p>
     </div>
 
     <div class="steps">
@@ -619,7 +631,7 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
         <div class="num">1</div>
         <div>
           <h3>Install the Claude Code CLI</h3>
-          <p>Skip this if you plan to use API mode with an <code>ANTHROPIC_API_KEY</code>.</p>
+          <p>Already have it? Skip ahead. It's what the bridge watches and what CLI mode talks to — the only way past it is API mode with an <code>ANTHROPIC_API_KEY</code>.</p>
 <pre><span class="c">$</span> npm install -g @anthropic-ai/claude-code
 <span class="c">$</span> claude auth login</pre>
         </div>
@@ -676,8 +688,24 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
 <pre><span class="c">$</span> telechat            <span class="c"># start in the background</span>
 <span class="c">$</span> telechat status     <span class="c"># is it alive?</span>
 <span class="c">$</span> telechat logs       <span class="c"># tail the log</span>
-<span class="c">$</span> telechat doctor     <span class="c"># diagnose config + connectivity</span>
-<span class="c">$</span> telechat bridge install   <span class="c"># hook up Claude Code</span></pre>
+<span class="c">$</span> telechat doctor     <span class="c"># diagnose config + connectivity</span></pre>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">6</div>
+        <div>
+          <h3>Hook up Claude Code</h3>
+          <p>The step that makes it a companion rather than another chat window. It registers the hooks, installs a login service and checks the whole path before claiming success. Run it on the machine you actually code on.</p>
+<pre><span class="c">$</span> telechat bridge install
+
+<span class="k">✓</span> Hooks registered in ~/.claude/settings.json
+<span class="k">✓</span> Service installed (starts at login)
+<span class="k">✓</span> Preflight passed — 5 checks
+
+  Next: run a Claude Code session and let it finish.
+  The card lands in Telegram. Reply to it.</pre>
+          <p style="margin-top:10px">Add <code>--approval</code> to gate Bash, Write and Edit on your tap. <code>telechat bridge status</code> lists the sessions it can see; <code>telechat bridge uninstall</code> removes every trace.</p>
         </div>
       </div>
     </div>
@@ -697,6 +725,7 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
     </div>
     <div class="uses">
       <div class="use"><h3>Babysit long Claude Code runs from the sofa</h3><p>Kick off a refactor, close the laptop lid on the question of whether to keep the legacy flow, and answer it from Telegram when the card arrives. The session resumes without you touching the keyboard.</p></div>
+      <div class="use"><h3>Keep three sessions honest at once</h3><p>Open the web chat's session dashboard and see all of them: which project, which model, working or idle, and the last thing each one said. The one that has been idle for twenty minutes is the one waiting on you.</p></div>
       <div class="use"><h3>A second brain that survives restarts</h3><p><code>/remember</code> the things you keep re-explaining — stack, conventions, who owns what — and every future conversation on every platform starts with them already loaded.</p></div>
       <div class="use"><h3>Ask your own documents anything</h3><p>Drop contracts, RFCs or a manual into the knowledge base and query them in the same thread where you ask everything else. The files never leave your disk except as prompt context.</p></div>
       <div class="use"><h3>Claude in a team channel, without a vendor</h3><p>Socket Mode means no public URL and no inbound firewall rule. The bot lives on one laptop, answers in a channel, and the allowlist keeps it to the people you named.</p></div>
@@ -734,6 +763,11 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
     </div>
 
     <details open>
+      <summary>What exactly is the Claude Desktop bridge?</summary>
+      <div class="body">Hooks registered in <code>~/.claude/settings.json</code>. When a Claude Code session on your machine stops, needs input, or finishes a subagent, Telechat posts a triage card to Telegram summarising the result and surfacing any pending decision. Replying to the card injects your message into that session via <code>claude --resume</code>, and with <code>--approval</code> every Bash, Write and Edit call waits for a tap first. Nothing about your sessions leaves the machine except the card text you asked to be sent.</div>
+    </details>
+
+    <details>
       <summary>Do I need an Anthropic API key?</summary>
       <div class="body">No. In CLI mode Telechat shells out to the Claude Code CLI, which uses your existing Claude subscription — no key, no per-token bill. API mode with an <code>ANTHROPIC_API_KEY</code> is available if you prefer it, and is what the Docker image runs, since the container has no host Claude authentication.</div>
     </details>
@@ -749,8 +783,8 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
     </details>
 
     <details>
-      <summary>What exactly is the Claude Desktop bridge?</summary>
-      <div class="body">Hooks registered in <code>~/.claude/settings.json</code>. When a Claude Code session on your machine stops, needs input, or finishes a subagent, Telechat posts a triage card to Telegram summarising the result and surfacing any pending decision. Replying to the card injects your message into that session via <code>claude --resume</code>, and with <code>--approval</code> every Bash, Write and Edit call waits for a tap first.</div>
+      <summary>Does the bridge work if I use Claude Code in a terminal, not the app?</summary>
+      <div class="body">Yes. The hooks live in <code>~/.claude/settings.json</code>, which every Claude Code session reads regardless of how you launched it, and the session list is read from <code>~/.claude/projects</code>. What the bridge needs is that Claude Code and Telechat run on the same machine as each other — not that you use any particular front end.</div>
     </details>
 
     <details>
@@ -779,8 +813,8 @@ footer{border-top:1px solid var(--line-soft);background:var(--bg-2);padding:48px
 <section id="start" style="padding-top:20px">
   <div class="wrap">
     <div class="final">
-      <h2>One command. Then it's just a chat.</h2>
-      <p class="lede" style="margin-left:auto;margin-right:auto;text-align:center">Install it, answer four prompts, and message your own bot.</p>
+      <h2>Stop being the thing your sessions wait for.</h2>
+      <p class="lede" style="margin-left:auto;margin-right:auto;text-align:center">Install it, answer four prompts, run <code>telechat bridge install</code>, and the next Claude Code session that needs you will say so.</p>
       <div class="cmd" style="margin-top:26px">
         <code><span class="pr">$ </span>npm install -g telechat &amp;&amp; telechat init</code>
         <button class="copy" type="button" data-copy="npm install -g telechat &amp;&amp; telechat init">

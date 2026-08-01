@@ -9,6 +9,21 @@ not which function moved.
 
 ## [Unreleased]
 
+### Changed
+
+- **telechat.fyi now says what Telechat is for.** The site led with "Claude on
+  every messenger you already use" — true, and the same sentence a dozen
+  single-file Telegram scripts open with. The one thing Telechat does that none
+  of them do was three screens down.
+
+  The page now leads with the Claude Code bridge: your desktop sessions page
+  you, you answer from your phone, the run carries on. Everything else — four
+  messengers, memory, the knowledge base — is what the same process does
+  between pages, which is where it belongs. Hooking up Claude Code is a numbered
+  install step rather than a line in a code block, the comparison table opens
+  on the row nothing else can fill, and the FAQ answers "what is the bridge"
+  first. Social cards and the OG image were re-cut to match.
+
 ### Added
 
 - **Web chat shows every Claude Code session on the machine.** The bridge could

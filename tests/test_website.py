@@ -505,3 +505,70 @@ class TestSiteMatchesReality:
             if name.startswith(("BOT_", "CLAUDE_", "TELEGRAM_", "SLACK_", "WHATSAPP_",
                                 "GREEN_API_", "WEB_CHAT_", "BRIDGE_", "ANTHROPIC_")):
                 assert name in source, f"{page} documents {name}, which no module reads"
+
+    def test_the_cli_commands_the_page_teaches_actually_exist(self, html):
+        """A `telechat …` command on the install page must be a real subcommand."""
+        main = (REPO_ROOT / "telechat_pkg" / "main.py").read_text()
+        bridge = (REPO_ROOT / "telechat_pkg" / "desktop_bridge.py").read_text()
+        taught = set(re.findall(r"telechat bridge ([a-z]+)", html))
+        for sub in taught:
+            assert f'"{sub}"' in bridge, f"page teaches `telechat bridge {sub}`, which isn't handled"
+        assert '"bridge"' in main, "page teaches `telechat bridge`, which main.py doesn't dispatch"
+
+
+# ─── positioning ─────────────────────────────────────────────────────────────
+
+
+class TestPositioning:
+    """The page sells the Claude Code bridge, not 'a Claude bot'.
+
+    Telechat's one thing no other Claude-in-a-chat project does is reach into
+    the Claude Code sessions already running on your desktop. When the copy led
+    with 'Claude on every messenger', that landed the page in a crowded
+    category and buried the reason to install it. These assertions are here so
+    a future copy edit has to be deliberate about undoing that.
+    """
+
+    def test_the_title_names_claude_code(self, html):
+        title = re.search(r"<title>(.*?)</title>", html, re.S).group(1)
+        assert "Claude Code" in title, f"title does not mention Claude Code: {title!r}"
+
+    def test_the_description_leads_with_the_bridge(self, html):
+        desc = _meta(html, "description")
+        assert "Claude Code" in desc, f"meta description is off-message: {desc!r}"
+
+    def test_the_social_cards_carry_the_same_promise(self, html):
+        for prop, attr in (("og:title", "property"), ("og:description", "property"),
+                           ("twitter:title", "name"), ("twitter:description", "name")):
+            value = _meta(html, prop, attr=attr)
+            assert "Claude Code" in value, f"{prop} is off-message: {value!r}"
+
+    def test_the_headline_is_about_sessions_not_messengers(self, html):
+        h1 = re.search(r'<h1 class="hero-h1">(.*?)</h1>', html, re.S).group(1)
+        h1 = re.sub(r"<[^>]+>", " ", h1)
+        assert "Claude Code" in h1, f"h1 does not lead with Claude Code: {h1!r}"
+
+    def test_the_bridge_section_comes_before_the_generic_features(self, html):
+        # Order on the page is the argument. Features first would say "this is a
+        # bot that also has a bridge", which is the positioning we moved off.
+        assert html.index('id="bridge"') < html.index('id="features"')
+
+    def test_the_bridge_is_the_first_thing_the_faq_answers(self, html):
+        first = re.search(r"<summary>(.*?)</summary>", html, re.S).group(1)
+        assert "bridge" in first.lower(), f"first FAQ is not about the bridge: {first!r}"
+
+    def test_installing_the_bridge_is_a_step_not_a_footnote(self, html):
+        assert "telechat bridge install" in html
+        steps = re.findall(r'<div class="step">.*?<h3>(.*?)</h3>', html, re.S)
+        assert any("Claude Code" in s for s in steps[1:]), (
+            f"no install step hooks up Claude Code: {steps}"
+        )
+
+    def test_the_social_card_image_shows_the_new_headline(self):
+        svg = (SITE / "og.svg").read_text()
+        assert "Claude Code" in svg, "og.svg still carries the old headline"
+        # The PNG is what social platforms fetch; a stale render is the whole
+        # bug this file's og.svg comment warns about.
+        assert (SITE / "og.png").stat().st_mtime >= (SITE / "og.svg").stat().st_mtime, (
+            "og.png is older than og.svg — re-render it with `magick -background none og.svg og.png`"
+        )
