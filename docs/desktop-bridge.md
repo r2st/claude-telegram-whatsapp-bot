@@ -116,6 +116,13 @@ Reply to it and your message becomes that session's next turn.
 | `/desktop_all <msg>` | Broadcast to every running session |
 | `/approvals` | List standing "always allow" rules, with a revoke button each |
 
+When you reply to a card, a **progress card** appears and edits itself as the
+turn runs — each tool call as it happens, the model's prose as it arrives, a
+step count, and finally ✅ or ❌. A `claude --resume` turn can take minutes, and
+without it the phone shows nothing at all until the answer lands, which is
+indistinguishable from a reply that silently failed. Turn it off with
+`BRIDGE_STREAM=0` if you would rather just get the answer.
+
 In the **web chat**, the 🖥 **Sessions** button opens a live dashboard of every
 Claude Code session on the machine — running or recent, which project, working
 or idle, and the last thing each one said. `/sessions` prints the same thing
@@ -154,6 +161,8 @@ into the conversation.
 | `BRIDGE_APPROVAL_TIMEOUT` | `300` | Seconds an approval card waits for a tap |
 | `BRIDGE_APPROVAL_TIMEOUT_ACTION` | `fallthrough` | What an untapped card does: `fallthrough`, `deny`, or `allow` |
 | `CLAUDE_CODE_OAUTH_TOKEN` | — | Required for replies and digests |
+| `BRIDGE_STREAM` | `1` | Live progress card while a reply runs; `0` waits silently |
+| `BRIDGE_STREAM_EDIT_SECS` | `3` | Minimum seconds between edits to that card (floor `1`) |
 
 Start/exit pings are on by default and toggled from the chat with `/lifecycle`,
 not from `.env` — they are a preference, not deployment config, so they live in

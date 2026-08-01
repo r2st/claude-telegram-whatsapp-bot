@@ -105,6 +105,8 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "BRIDGE_APPROVAL_TIMEOUT": ("Claude Desktop bridge", "Seconds an approval card waits for a tap before the timeout policy applies."),
     "BRIDGE_APPROVAL_TIMEOUT_ACTION": ("Claude Desktop bridge", "What an unanswered approval resolves to: `fallthrough` (default, hands back to Claude Code), `deny`, or `allow`."),
     "TELECHAT_BRIDGE_INTERNAL": ("Claude Desktop bridge", "Set by the bridge on processes it spawns, so their own hooks don't post duplicate cards. Not for operators."),
+    "BRIDGE_STREAM": ("Claude Desktop bridge", "Show a live progress card while a reply from your phone runs, editing it as tools are called. On by default; set `0` to wait silently for the finished answer instead."),
+    "BRIDGE_STREAM_EDIT_SECS": ("Claude Desktop bridge", "Minimum seconds between edits to that card (default `3`, floor `1`). Raise it if Telegram rate-limits a chatty session."),
 
     # ── Invites and groups ──
     "INVITE_ALLOW_CHAINING": ("Invites and groups", "Let users who were themselves invited mint invites of their own. Off by default, so invites fan out one level from you and a link cannot spread without you."),

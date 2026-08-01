@@ -454,6 +454,27 @@ def _tg_call(method: str, **params) -> Optional[dict]:
         return None
 
 
+def _tg_edit(message_id: int, text: str, chat_id: Optional[str] = None) -> Optional[dict]:
+    """Edit a message in place. Same Markdown-then-plain retry as _tg_send.
+
+    Returns None on failure, including Telegram's "message is not modified" —
+    callers treat an edit as best-effort, since losing one frame of a live
+    progress card is not worth failing the turn over.
+    """
+    env = _load_env_file()
+    cid = chat_id or env.get("TELEGRAM_CHAT_ID") or env.get(
+        "TELEGRAM_ALLOWED_USER_IDS", "").split(",")[0].strip()
+    if not cid or not message_id:
+        return None
+    params = {"chat_id": cid, "message_id": message_id, "text": text,
+              "parse_mode": "Markdown"}
+    r = _tg_call("editMessageText", **params)
+    if not r or not r.get("ok"):
+        params.pop("parse_mode", None)
+        r = _tg_call("editMessageText", **params)
+    return r
+
+
 def _tg_send(text: str, reply_markup=None, reply_to=None, chat_id: Optional[str] = None) -> Optional[dict]:
     env = _load_env_file()
     cid = chat_id or env.get("TELEGRAM_CHAT_ID") or env.get("TELEGRAM_ALLOWED_USER_IDS", "").split(",")[0].strip()
@@ -1137,6 +1158,198 @@ def _digest_card(header: str, raw_body: str, session_short: Optional[str] = None
 
 # ───────────────────────── claude --resume runner ─────────────────────────
 
+# ───────────────────────── live turn streaming ─────────────────────────
+
+#: Trace lines kept on the live card. Telegram caps a message at 4096 chars and
+#: a long turn emits hundreds of tool calls; the recent ones are the useful ones.
+_STREAM_MAX_TRACE = 12
+#: How much of the in-flight assistant text to show. The full text arrives in
+#: the digest card at the end — this is a progress indicator, not the output.
+_STREAM_TEXT_TAIL = 700
+
+
+def _stream_enabled() -> bool:
+    return os.environ.get("BRIDGE_STREAM", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _stream_edit_secs() -> float:
+    """Seconds between live-card edits. Telegram rate-limits edits per chat, and
+    a turn that emits a tool call every 200ms would otherwise earn a 429."""
+    try:
+        value = float(os.environ.get("BRIDGE_STREAM_EDIT_SECS", "3"))
+    except (TypeError, ValueError):
+        return 3.0
+    return max(1.0, value)
+
+
+class _StreamTrace:
+    """Accumulates `--output-format stream-json` events into a progress card.
+
+    Kept separate from the subprocess plumbing so the rendering is testable
+    against fixture events without spawning anything.
+    """
+
+    def __init__(self, sid: str):
+        self.sid = sid
+        self.lines: list[str] = []      # rendered trace, newest last
+        self.steps = 0                  # tool calls seen, including trimmed ones
+        self.text = ""                  # latest assistant prose
+        self.result: Optional[str] = None
+        self.is_error = False
+
+    def feed(self, event: dict) -> bool:
+        """Absorb one event. Returns True if the rendered card would change."""
+        etype = event.get("type")
+        if etype == "result":
+            # `result` is the final text; subtype/is_error say whether it worked.
+            res = event.get("result")
+            if isinstance(res, str):
+                self.result = res
+            self.is_error = bool(event.get("is_error")) or event.get("subtype") not in (
+                None, "success")
+            return True
+        if etype != "assistant":
+            return False
+
+        changed = False
+        for c in event.get("message", {}).get("content", []) or []:
+            ctype = c.get("type")
+            if ctype == "text" and (c.get("text") or "").strip():
+                self.text = c["text"].strip()
+                changed = True
+            elif ctype == "tool_use":
+                name = c.get("name") or "?"
+                inp = c.get("input") or {}
+                detail = (inp.get("command") or inp.get("file_path")
+                          or inp.get("path") or inp.get("pattern") or "")
+                line = f"🔧 {name}"
+                if detail:
+                    line += f" · `{_backtick_safe(str(detail)[:80])}`"
+                self.lines.append(line)
+                self.steps += 1
+                changed = True
+        # Trim after appending so `steps` still counts everything that happened.
+        if len(self.lines) > _STREAM_MAX_TRACE:
+            self.lines = self.lines[-_STREAM_MAX_TRACE:]
+        return changed
+
+    def render(self, header: str, state: str) -> str:
+        parts = [f"{header}\n{state}"]
+        hidden = self.steps - len(self.lines)
+        if hidden > 0:
+            parts.append(f"_…{hidden} earlier step(s)_")
+        if self.lines:
+            parts.append("\n".join(self.lines))
+        if self.text:
+            tail = self.text[-_STREAM_TEXT_TAIL:]
+            prefix = "…" if len(self.text) > _STREAM_TEXT_TAIL else ""
+            parts.append(f"_{_md(prefix + tail)}_")
+        return "\n\n".join(parts)
+
+
+def _stream_partial(trace: "_StreamTrace", note: str) -> str:
+    """Best available text for a turn that ended without a `result` event.
+
+    Whatever prose the model had produced beats the bare note, and the note
+    beats returning nothing — the digest card that follows should say the turn
+    happened even when it cannot say what the turn concluded.
+    """
+    text = (trace.result or trace.text or "").strip()
+    return f"{text}\n\n{note}".strip() if text else note
+
+
+def _stream_resume(sid: str, real_cwd: str, message: str, env: dict) -> Optional[str]:
+    """Run one `claude --resume` turn, editing a live Telegram card as it goes.
+
+    Returns the turn's output text, or None if streaming could not be used at
+    all — an old CLI without `stream-json`, a stream we could not parse, a
+    Telegram send that failed. None means "fall back to the blocking path",
+    never "the turn failed": a progress card is a nicety and must not be able
+    to cost someone their reply.
+
+    The converse matters just as much: None is only safe *before* the turn has
+    visibly done anything. Once events have arrived, the model has already run
+    tools — edited files, pushed commits — and re-running it through the
+    blocking path would do all of it a second time. So every failure after the
+    first parsed event returns text instead, however unsatisfying.
+    """
+    header = f"💬 *Working…* `[{sid[:8]}]`"
+    sent = _tg_send(f"{header}\n⏳ starting")
+    message_id = ((sent or {}).get("result") or {}).get("message_id")
+    if not message_id:
+        return None
+
+    trace = _StreamTrace(sid)
+    proc = subprocess.Popen(
+        [_find_claude_bin(), "--resume", sid, "-p", message,
+         "--output-format", "stream-json", "--verbose"],
+        cwd=real_cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=env,
+    )
+    deadline = time.time() + 900
+    last_edit = 0.0
+    parsed = 0
+    try:
+        for raw in proc.stdout or []:
+            if time.time() > deadline:
+                proc.kill()
+                _tg_edit(message_id, trace.render(header, "⏱ timed out (15 min)"))
+                # Terminal, not a fallback: the turn ran for fifteen minutes and
+                # whatever it did to the working tree is already done.
+                return _stream_partial(trace, f"(timed out after 15 min, {trace.steps} step(s))")
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                event = json.loads(raw)
+            except ValueError:
+                continue
+            parsed += 1
+            if trace.feed(event) and time.time() - last_edit >= _stream_edit_secs():
+                _tg_edit(message_id, trace.render(header, f"⏳ {trace.steps} step(s)"))
+                last_edit = time.time()
+        proc.wait(timeout=60)
+    except Exception:
+        log.debug("stream-json resume failed for %s", sid[:8], exc_info=True)
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        if parsed:
+            # Telegram is a plausible cause of landing here, so this last
+            # courtesy edit gets its own guard — it must not replace the
+            # exception we are already handling.
+            try:
+                _tg_edit(message_id, trace.render(header, "❌ lost the stream"))
+            except Exception:
+                log.debug("could not mark the stream card as failed", exc_info=True)
+            return _stream_partial(trace, "(the turn ran, but its output was lost mid-stream)")
+        return None
+    finally:
+        if proc.stdout:
+            proc.stdout.close()
+
+    if not parsed:
+        # Almost certainly a CLI that doesn't know `stream-json`. Take the
+        # progress card away rather than leaving "⏳ starting" as a headstone.
+        _tg_call("deleteMessage", chat_id=_stream_chat_id(), message_id=message_id)
+        return None
+
+    state = "❌ finished with an error" if trace.is_error else f"✅ done · {trace.steps} step(s)"
+    _tg_edit(message_id, trace.render(header, state))
+
+    out = (trace.result or trace.text or "").strip()
+    if not out:
+        out = (proc.stderr.read() if proc.stderr else "").strip()
+    return out or "(no output)"
+
+
+def _stream_chat_id() -> str:
+    env = _load_env_file()
+    return (env.get("TELEGRAM_CHAT_ID")
+            or env.get("TELEGRAM_ALLOWED_USER_IDS", "").split(",")[0].strip())
+
+
 def _run_resume_background(sid: str, cwd: str, message: str) -> None:
     """Spawn `claude --resume` in a background thread, post a triage digest (+ full-output
     button) to Telegram on completion."""
@@ -1150,13 +1363,16 @@ def _run_resume_background(sid: str, cwd: str, message: str) -> None:
             # `claude --resume` is scoped by cwd. The stored cwd can be stale (a hook
             # fired from a subdir), so resolve the session's true cwd from its transcript.
             real_cwd = _resolve_session_cwd(sid, fallback=cwd) or cwd
-            r = subprocess.run(
-                [_find_claude_bin(), "--resume", sid, "-p", message,
-                 "--output-format", "text"],
-                cwd=real_cwd, capture_output=True, text=True, timeout=900,
-                env=env,
-            )
-            out = (r.stdout or "").strip() or (r.stderr or "").strip() or "(no output)"
+
+            out = _stream_resume(sid, real_cwd, message, env) if _stream_enabled() else None
+            if out is None:
+                r = subprocess.run(
+                    [_find_claude_bin(), "--resume", sid, "-p", message,
+                     "--output-format", "text"],
+                    cwd=real_cwd, capture_output=True, text=True, timeout=900,
+                    env=env,
+                )
+                out = (r.stdout or "").strip() or (r.stderr or "").strip() or "(no output)"
             # The resume just wrote its turn to the transcript, so the same
             # extraction that enriches a Stop card works here — a reply sent
             # from your phone should show what it changed.

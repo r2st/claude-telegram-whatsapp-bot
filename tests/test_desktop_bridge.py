@@ -2223,3 +2223,215 @@ class TestInstallEpilogue:
         assert "not working yet" in out
         assert "Long-lived OAuth token" in out
         assert "telechat bridge status" in out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 9. Live turn streaming
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _assistant_event(text: str = "", tools: list[tuple[str, dict]] | None = None) -> dict:
+    content = []
+    if text:
+        content.append({"type": "text", "text": text})
+    for name, inp in tools or []:
+        content.append({"type": "tool_use", "name": name, "input": inp})
+    return {"type": "assistant", "message": {"content": content}}
+
+
+class TestStreamTrace:
+    """The card renderer, fed fixture events rather than a real subprocess."""
+
+    def test_a_tool_call_becomes_a_trace_line(self):
+        trace = db._StreamTrace("sid-stream")
+        assert trace.feed(_assistant_event(tools=[("Bash", {"command": "pytest -q"})]))
+        assert trace.steps == 1
+        assert "🔧 Bash" in trace.lines[0]
+        assert "pytest -q" in trace.lines[0]
+
+    def test_a_tool_without_a_recognised_detail_still_renders(self):
+        trace = db._StreamTrace("sid-stream")
+        trace.feed(_assistant_event(tools=[("WebSearch", {"query": "unmapped"})]))
+        assert trace.lines == ["🔧 WebSearch"]
+
+    def test_assistant_prose_replaces_rather_than_accumulates(self):
+        trace = db._StreamTrace("sid-stream")
+        trace.feed(_assistant_event(text="first thought"))
+        trace.feed(_assistant_event(text="second thought"))
+        assert trace.text == "second thought"
+
+    def test_events_that_change_nothing_report_no_change(self):
+        # The edit throttle keys off this: a stream of user/system events must
+        # not each buy a Telegram round-trip.
+        trace = db._StreamTrace("sid-stream")
+        assert trace.feed({"type": "user", "message": {"content": []}}) is False
+        assert trace.feed(_assistant_event(text="   ")) is False
+
+    def test_the_trace_is_capped_but_the_step_count_is_not(self):
+        # Telegram caps a message at 4096 chars; a long turn emits hundreds of
+        # calls. The count has to survive the trimming, or the card understates
+        # what the session did.
+        trace = db._StreamTrace("sid-stream")
+        for i in range(db._STREAM_MAX_TRACE + 5):
+            trace.feed(_assistant_event(tools=[("Read", {"file_path": f"f{i}.py"})]))
+        assert trace.steps == db._STREAM_MAX_TRACE + 5
+        assert len(trace.lines) == db._STREAM_MAX_TRACE
+        assert "f16.py" in trace.lines[-1]        # newest kept
+        assert not any("f0.py" in ln for ln in trace.lines)   # oldest dropped
+
+    def test_the_card_says_how_many_steps_it_is_hiding(self):
+        trace = db._StreamTrace("sid-stream")
+        for i in range(db._STREAM_MAX_TRACE + 3):
+            trace.feed(_assistant_event(tools=[("Read", {"file_path": f"f{i}.py"})]))
+        assert "…3 earlier step(s)" in trace.render("H", "⏳")
+
+    def test_long_prose_is_tailed_with_an_ellipsis(self):
+        trace = db._StreamTrace("sid-stream")
+        trace.feed(_assistant_event(text="x" * (db._STREAM_TEXT_TAIL + 200)))
+        card = trace.render("H", "⏳")
+        assert "…" in card
+        assert len(card) < db._STREAM_TEXT_TAIL + 400
+
+    def test_a_result_event_ends_the_trace_successfully(self):
+        trace = db._StreamTrace("sid-stream")
+        trace.feed({"type": "result", "subtype": "success", "result": "all done"})
+        assert trace.result == "all done"
+        assert trace.is_error is False
+
+    def test_an_error_result_is_recorded_as_one(self):
+        trace = db._StreamTrace("sid-stream")
+        trace.feed({"type": "result", "subtype": "error_during_execution",
+                    "is_error": True, "result": "boom"})
+        assert trace.is_error is True
+
+    def test_a_result_subtype_other_than_success_counts_as_an_error(self):
+        # `is_error` is not always set; the subtype is the reliable signal for
+        # things like max-turns exhaustion.
+        trace = db._StreamTrace("sid-stream")
+        trace.feed({"type": "result", "subtype": "error_max_turns", "result": ""})
+        assert trace.is_error is True
+
+
+class TestStreamResume:
+    """The subprocess path, driven by the fake claude binary."""
+
+    def _stream_claude(self, bridge, events: list[dict], exit_code: int = 0):
+        bridge.set_claude_output(
+            stdout="\n".join(json.dumps(e) for e in events), exit_code=exit_code)
+
+    def _env(self):
+        return dict(os.environ)
+
+    def test_a_streamed_turn_returns_the_result_text(self, bridge, tmp_path):
+        self._stream_claude(bridge, [
+            _assistant_event(tools=[("Bash", {"command": "ls"})]),
+            {"type": "result", "subtype": "success", "result": "the answer"},
+        ])
+        out = db._stream_resume("sid-stream", str(tmp_path), "hi", self._env())
+        assert out == "the answer"
+
+    def test_it_asks_the_cli_for_a_json_stream(self, bridge, tmp_path):
+        self._stream_claude(bridge, [{"type": "result", "result": "ok"}])
+        db._stream_resume("sid-stream", str(tmp_path), "hi", self._env())
+        argv = bridge.invocations[0]
+        assert "--output-format stream-json" in argv
+        assert "--verbose" in argv
+
+    def test_the_card_is_edited_in_place_rather_than_reposted(self, bridge, tmp_path):
+        self._stream_claude(bridge, [
+            _assistant_event(tools=[("Bash", {"command": "ls"})]),
+            {"type": "result", "subtype": "success", "result": "done"},
+        ])
+        db._stream_resume("sid-stream", str(tmp_path), "hi", self._env())
+        methods = [m for m, _ in bridge.tg.calls]
+        assert methods.count("sendMessage") == 1
+        assert "editMessageText" in methods
+
+    def test_the_final_card_reports_the_step_count(self, bridge, tmp_path):
+        self._stream_claude(bridge, [
+            _assistant_event(tools=[("Bash", {"command": "ls"})]),
+            _assistant_event(tools=[("Read", {"file_path": "a.py"})]),
+            {"type": "result", "subtype": "success", "result": "done"},
+        ])
+        db._stream_resume("sid-stream", str(tmp_path), "hi", self._env())
+        last = [p for m, p in bridge.tg.calls if m == "editMessageText"][-1]
+        assert "✅ done · 2 step(s)" in last["text"]
+
+    def test_a_failed_turn_says_so_on_the_card(self, bridge, tmp_path):
+        self._stream_claude(bridge, [
+            {"type": "result", "subtype": "error_during_execution", "is_error": True,
+             "result": "it broke"},
+        ])
+        db._stream_resume("sid-stream", str(tmp_path), "hi", self._env())
+        last = [p for m, p in bridge.tg.calls if m == "editMessageText"][-1]
+        assert "❌" in last["text"]
+
+    def test_garbage_lines_are_skipped_rather_than_fatal(self, bridge, tmp_path):
+        # The CLI interleaves the odd non-JSON line (warnings, node noise).
+        bridge.set_claude_output(stdout="not json\n" + json.dumps(
+            {"type": "result", "subtype": "success", "result": "survived"}))
+        assert db._stream_resume("sid-stream", str(tmp_path), "hi", self._env()) == "survived"
+
+    def test_an_old_cli_falls_back_instead_of_inventing_output(self, bridge, tmp_path):
+        # A CLI that doesn't know `stream-json` prints nothing parseable. That
+        # has to return None so the caller re-runs on the blocking path — the
+        # turn never started, so re-running is safe here.
+        bridge.set_claude_output(stdout="error: unknown option --output-format stream-json",
+                                 exit_code=1)
+        assert db._stream_resume("sid-stream", str(tmp_path), "hi", self._env()) is None
+
+    def test_the_dead_progress_card_is_removed_on_fallback(self, bridge, tmp_path):
+        bridge.set_claude_output(stdout="nope", exit_code=1)
+        db._stream_resume("sid-stream", str(tmp_path), "hi", self._env())
+        assert "deleteMessage" in [m for m, _ in bridge.tg.calls]
+
+    def test_a_telegram_that_cannot_send_falls_back(self, bridge, tmp_path):
+        self._stream_claude(bridge, [{"type": "result", "result": "ok"}])
+        bridge.tg.fail_all = True
+        assert db._stream_resume("sid-stream", str(tmp_path), "hi", self._env()) is None
+
+    def test_a_turn_that_already_ran_is_never_handed_back_for_a_rerun(self, bridge, tmp_path, monkeypatch):
+        # The regression this guards: a failure *after* events arrived used to
+        # return None, and the caller then re-ran `claude --resume` from the
+        # top — replaying every edit and command the turn had already done.
+        self._stream_claude(bridge, [
+            _assistant_event(text="I pushed the commit", tools=[("Bash", {"command": "git push"})]),
+            {"type": "result", "subtype": "success", "result": "pushed"},
+        ])
+
+        def explode(*a, **k):
+            raise RuntimeError("telegram fell over mid-stream")
+
+        monkeypatch.setattr(db, "_tg_edit", explode)
+        out = db._stream_resume("sid-stream", str(tmp_path), "hi", self._env())
+        assert out is not None
+        assert "I pushed the commit" in out
+
+    def test_a_stream_with_prose_but_no_result_still_returns_it(self, bridge, tmp_path):
+        self._stream_claude(bridge, [_assistant_event(text="partial thought")])
+        assert db._stream_resume("sid-stream", str(tmp_path), "hi", self._env()) == "partial thought"
+
+
+class TestStreamConfig:
+    def test_streaming_is_on_by_default(self, monkeypatch):
+        monkeypatch.delenv("BRIDGE_STREAM", raising=False)
+        assert db._stream_enabled() is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", "OFF"])
+    def test_it_can_be_switched_off(self, monkeypatch, value):
+        monkeypatch.setenv("BRIDGE_STREAM", value)
+        assert db._stream_enabled() is False
+
+    def test_the_edit_interval_is_configurable(self, monkeypatch):
+        monkeypatch.setenv("BRIDGE_STREAM_EDIT_SECS", "7")
+        assert db._stream_edit_secs() == 7.0
+
+    def test_a_nonsense_interval_falls_back_to_the_default(self, monkeypatch):
+        monkeypatch.setenv("BRIDGE_STREAM_EDIT_SECS", "soon")
+        assert db._stream_edit_secs() == 3.0
+
+    def test_the_interval_cannot_be_set_low_enough_to_earn_a_429(self, monkeypatch):
+        # Telegram rate-limits edits per chat; a turn emitting a tool call every
+        # 200ms would otherwise hammer it.
+        monkeypatch.setenv("BRIDGE_STREAM_EDIT_SECS", "0")
+        assert db._stream_edit_secs() == 1.0

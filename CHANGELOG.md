@@ -11,6 +11,25 @@ not which function moved.
 
 ### Added
 
+- **You can watch a reply run instead of waiting in silence.** Replying to a
+  card from your phone starts a `claude --resume` turn that routinely takes
+  minutes. Until now nothing came back until it finished, so a slow turn and a
+  reply that silently failed looked exactly the same — and the usual response
+  was to send the message again, which starts a *second* turn.
+
+  A progress card now appears immediately and edits itself as the turn runs:
+  each tool call with its command or file, the model's prose as it arrives, a
+  running step count, and ✅ or ❌ at the end. The full digest still follows.
+
+  It degrades quietly. An older Claude CLI that doesn't know `stream-json`
+  falls back to the blocking path and the progress card is removed rather than
+  left hanging. Edits are throttled so a chatty session cannot earn a Telegram
+  rate-limit. And once a turn has visibly started work, a failure in the
+  streaming machinery never re-runs it — a turn that already pushed a commit
+  does not get to push it twice.
+
+  `BRIDGE_STREAM=0` turns it off; `BRIDGE_STREAM_EDIT_SECS` paces the edits.
+
 - **`telechat bridge status` now answers "is the bridge actually working?"** It
   used to print a list of running Claude Code sessions, which is a different
   question and never the one being asked. It now checks every link in the

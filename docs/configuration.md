@@ -107,6 +107,8 @@ Hooks that push your desktop Claude sessions to your phone.
 |---|---|---|
 | `BRIDGE_APPROVAL_TIMEOUT` | `300` | Seconds an approval card waits for a tap before the timeout policy applies. |
 | `BRIDGE_APPROVAL_TIMEOUT_ACTION` | `fallthrough` | What an unanswered approval resolves to: `fallthrough` (default, hands back to Claude Code), `deny`, or `allow`. |
+| `BRIDGE_STREAM` | `1` | Show a live progress card while a reply from your phone runs, editing it as tools are called. On by default; set `0` to wait silently for the finished answer instead. |
+| `BRIDGE_STREAM_EDIT_SECS` | `3` | Minimum seconds between edits to that card (default `3`, floor `1`). Raise it if Telegram rate-limits a chatty session. |
 | `TELECHAT_BRIDGE_INTERNAL` |  | Set by the bridge on processes it spawns, so their own hooks don't post duplicate cards. Not for operators. |
 
 ## Storage and limits
@@ -262,4 +264,4 @@ Health endpoint, debugging, MCP.
 
 ---
 
-143 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.
+145 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.
