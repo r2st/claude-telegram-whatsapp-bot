@@ -779,6 +779,30 @@ def _bot_username(ctx: ContextTypes.DEFAULT_TYPE) -> str:
     return u.lstrip("@") if isinstance(u, str) and u else ""
 
 
+def _chat_type(update: Update) -> str:
+    t = getattr(getattr(update, "effective_chat", None), "type", None)
+    return t if isinstance(t, str) else "private"
+
+
+def _is_group(update: Update) -> bool:
+    return _chat_type(update) in ("group", "supergroup")
+
+
+def _is_reply_to_bot(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Whether this message replies to something the bot itself said."""
+    reply = getattr(getattr(update, "message", None), "reply_to_message", None)
+    frm = getattr(reply, "from_user", None) if reply is not None else None
+    if getattr(frm, "is_bot", None) is not True:
+        return False
+    mine = getattr(getattr(ctx, "bot", None), "id", None)
+    theirs = getattr(frm, "id", None)
+    if isinstance(mine, int) and isinstance(theirs, int):
+        return mine == theirs
+    # Another bot in the group is indistinguishable without ids; erring
+    # towards answering is the friendlier failure.
+    return True
+
+
 def _display_name(update: Update) -> str:
     user = getattr(update, "effective_user", None)
     name = getattr(user, "first_name", None)
@@ -1066,6 +1090,50 @@ async def cmd_kick(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ─── Group behaviour ──────────────────────────────────────────────────────────
+
+
+async def cmd_groupmode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show or change how the bot behaves in this group."""
+    from . import group_policy as gp
+
+    uid = update.effective_user.id
+    if not _allowed(uid):
+        return
+    if not _is_group(update):
+        await update.message.reply_text(
+            "That's a group setting — in a direct chat I always reply."
+        )
+        return
+
+    chat_id = str(update.effective_chat.id)
+    title = getattr(update.effective_chat, "title", "") or ""
+    parts = (update.message.text or "").split(None, 1)
+    requested = parts[1].strip() if len(parts) > 1 else ""
+
+    if requested:
+        try:
+            mode = gp.get_settings().set_mode(
+                PLATFORM, chat_id, requested, updated_by=str(uid),
+                title=title if isinstance(title, str) else "",
+            )
+        except ValueError:
+            await update.message.reply_text(
+                "Modes are `mention`, `all` or `off`.", parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        await update.message.reply_text(gp.describe(mode), parse_mode=ParseMode.MARKDOWN)
+        return
+
+    current = gp.mode_of(PLATFORM, chat_id)
+    btns = [
+        [InlineKeyboardButton(label, callback_data=f"tg:gmode:{mode}")]
+        for mode, label in gp.mode_options(current)
+    ]
+    await update.message.reply_text(
+        gp.describe(current) + "\n\nChange it:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(btns),
+    )
 
 
 async def cmd_id(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2138,6 +2206,23 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Group mode picker: value is the mode name
+    if kind == "gmode":
+        from . import group_policy as gp
+        chat = getattr(q.message, "chat", None)
+        chat_id = getattr(chat, "id", None)
+        if chat_id is None:
+            chat_id = getattr(getattr(update, "effective_chat", None), "id", None)
+        try:
+            mode = gp.get_settings().set_mode(
+                PLATFORM, str(chat_id), value, updated_by=str(uid),
+                title=getattr(chat, "title", "") or "",
+            )
+        except ValueError:
+            return
+        await q.edit_message_text(gp.describe(mode), parse_mode=ParseMode.MARKDOWN)
+        return
+
     # Handle cancel all
     if kind == "cancelall":
         count = _task_registry.cancel_all_user(uid)
@@ -2524,6 +2609,7 @@ HELP_TEXT = """*Available commands:*
 /invites — Your invites and who joined
 /revoke `code` — Kill an invite link
 /kick `id` — Remove an invited user
+/groupmode `mention|all|off` — When I reply in this group
 
 *Settings*
 /settings — All settings in one panel
@@ -3281,8 +3367,30 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     user_text = update.message.text or ""
 
+    # In a group, decide whether this message is for us *before* replying
+    # anything at all — including the refusal. A bot that answers "you're not
+    # authorized" to every line of a conversation between other people gets
+    # removed from the group, and rightly.
+    in_group = _is_group(update)
+    addressed = True
+    if in_group:
+        from . import group_policy as gp
+        chat_id = update.effective_chat.id
+        decision = gp.decide(
+            text=user_text,
+            is_direct=False,
+            mode=gp.mode_of(PLATFORM, str(chat_id)),
+            bot_username=_bot_username(ctx),
+            is_reply_to_bot=_is_reply_to_bot(update, ctx),
+        )
+        addressed = decision.addressed
+        if not decision.respond:
+            return
+        user_text = decision.text
+
     if not _allowed(uid):
-        await update.message.reply_text("You're not authorized.")
+        if addressed:
+            await update.message.reply_text("You're not authorized.")
         return
 
     if not cc.check_rate_limit(f"tg:{uid}"):
@@ -3294,7 +3402,10 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not user_text.strip():
         return
 
-    conv_uid = uid
+    # A group gets its own conversation, keyed by the (negative) chat id, so
+    # the room shares one thread instead of replaying whoever spoke last from
+    # their private history.
+    conv_uid = update.effective_chat.id if in_group else uid
 
     # Claude Desktop bridge: route replies to session cards / current-session messages
     # to a live `claude --resume` and post the result back. If handled, skip the
@@ -4022,6 +4133,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("invites",     cmd_invites))
     app.add_handler(CommandHandler("revoke",      cmd_revoke))
     app.add_handler(CommandHandler("kick",        cmd_kick))
+    app.add_handler(CommandHandler("groupmode",   cmd_groupmode))
     app.add_handler(CommandHandler("remember",    cmd_remember))
     app.add_handler(CommandHandler("recall",      cmd_recall))
     app.add_handler(CommandHandler("memories",    cmd_memories))
@@ -4104,6 +4216,7 @@ BOT_COMMANDS = [
     BotCommand("commitments", "View pending reminders"),
     BotCommand("invite", "Create an invite link"),
     BotCommand("invites", "Your invites and who joined"),
+    BotCommand("groupmode", "When I reply in this group"),
     BotCommand("tour", "Replay the walkthrough"),
     BotCommand("doctor", "Run diagnostic checks"),
     BotCommand("export", "Export conversation"),

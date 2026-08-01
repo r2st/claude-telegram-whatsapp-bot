@@ -1,15 +1,16 @@
 """
-End-to-end tests for the Telegram wiring of invites and onboarding.
+End-to-end tests for the Telegram wiring of invites, onboarding and groups.
 
-The unit tests for the two modules live next door; this file covers the part
-that actually changes user-visible behaviour — that a deep link admits
-someone, that the welcome only fires once, and that only an operator can
-mint an invite.
+The unit tests for the three modules live next door; this file covers the
+part that actually changes user-visible behaviour — that a deep link admits
+someone, that a group message from a stranger is not answered, and that the
+bot no longer talks over a conversation between other people.
 
 Run:
     pytest tests/test_telegram_growth.py -v
 """
 
+import asyncio
 import os
 import tempfile
 import time
@@ -29,6 +30,7 @@ os.environ["RATE_LIMIT_REQUESTS"] = "1000"
 os.environ["RATE_LIMIT_WINDOW"] = "60"
 
 import telechat_pkg.claude_core as cc
+from telechat_pkg import group_policy as gp
 from telechat_pkg import invites
 from telechat_pkg import onboarding as ob
 from telechat_pkg import telegram_bot as tb
@@ -123,6 +125,7 @@ def _clean_state(tmp_path, monkeypatch):
     monkeypatch.setattr(store_mod, "DB_PATH", db)
 
     invites.reset_store()
+    gp.reset_settings()
     ob.reset_store()
 
     tb._processed_msgs.clear()
@@ -132,8 +135,10 @@ def _clean_state(tmp_path, monkeypatch):
     cc._session_mgr._cache.clear()
     cc._session_mgr._active.clear()
     monkeypatch.delenv("INVITE_ALLOW_CHAINING", raising=False)
+    monkeypatch.delenv("GROUP_DEFAULT_MODE", raising=False)
     yield
     invites.reset_store()
+    gp.reset_settings()
     ob.reset_store()
 
 
@@ -194,6 +199,32 @@ class TestHelpers:
     def test_bot_username_from_a_mock_is_empty(self):
         ctx = MagicMock()
         assert tb._bot_username(ctx) == ""
+
+    @pytest.mark.parametrize("kind,expected", [
+        ("private", False), ("group", True), ("supergroup", True), ("channel", False),
+    ])
+    def test_group_detection(self, kind, expected):
+        assert tb._is_group(_make_update(chat_type=kind)) is expected
+
+    def test_chat_type_defaults_to_private(self):
+        update = MagicMock()
+        update.effective_chat = MagicMock()
+        assert tb._chat_type(update) == "private"
+
+    def test_reply_to_bot_detection(self):
+        ctx = _make_ctx(bot_id=777)
+        assert tb._is_reply_to_bot(_make_update(reply_from_bot=True), ctx)
+        assert not tb._is_reply_to_bot(_make_update(), ctx)
+
+    def test_reply_to_a_different_bot_is_not_us(self):
+        update = _make_update(reply_from_bot=True)
+        update.message.reply_to_message.from_user.id = 999
+        assert not tb._is_reply_to_bot(update, _make_ctx(bot_id=777))
+
+    def test_reply_to_a_human_is_not_a_reply_to_us(self):
+        update = _make_update(reply_from_bot=True)
+        update.message.reply_to_message.from_user.is_bot = False
+        assert not tb._is_reply_to_bot(update, _make_ctx())
 
     def test_display_name_prefers_the_first_name(self):
         assert tb._display_name(_make_update(first_name="Ada")) == "Ada"
@@ -508,3 +539,155 @@ class TestInviteCommands:
         update = _make_update(uid=1, text="/kick 5")
         await tb.cmd_kick(update, _make_ctx())
         assert "TELEGRAM_ALLOWED_USER_IDS" in _last_reply(update)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. Group behaviour
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestGroupMode:
+    @pytest.mark.asyncio
+    async def test_groupmode_in_a_dm_says_so(self):
+        update = _make_update(uid=1, text="/groupmode")
+        await tb.cmd_groupmode(update, _make_ctx())
+        assert "group setting" in _last_reply(update)
+
+    @pytest.mark.asyncio
+    async def test_groupmode_shows_a_picker(self):
+        update = _make_update(uid=1, text="/groupmode", chat_type="group", chat_id=-100)
+        await tb.cmd_groupmode(update, _make_ctx())
+        assert update.message.reply_text.call_args.kwargs.get("reply_markup") is not None
+
+    @pytest.mark.asyncio
+    async def test_groupmode_sets_a_mode(self):
+        update = _make_update(uid=1, text="/groupmode all", chat_type="group", chat_id=-100)
+        await tb.cmd_groupmode(update, _make_ctx())
+        assert gp.get_settings().get_mode("telegram", "-100") == "all"
+
+    @pytest.mark.asyncio
+    async def test_groupmode_rejects_nonsense(self):
+        update = _make_update(uid=1, text="/groupmode banana", chat_type="group", chat_id=-100)
+        await tb.cmd_groupmode(update, _make_ctx())
+        assert "mention" in _last_reply(update)
+        assert gp.get_settings().get_mode("telegram", "-100") == "mention"
+
+    @pytest.mark.asyncio
+    async def test_groupmode_callback_sets_the_mode(self):
+        update = _make_callback_update(1, "tg:gmode:off", chat_id=-100, chat_type="group")
+        await tb.handle_callback(update, _make_ctx())
+        assert gp.get_settings().get_mode("telegram", "-100") == "off"
+
+    @pytest.mark.asyncio
+    async def test_groupmode_callback_ignores_a_bad_mode(self):
+        update = _make_callback_update(1, "tg:gmode:banana", chat_id=-100, chat_type="group")
+        await tb.handle_callback(update, _make_ctx())
+        update.callback_query.edit_message_text.assert_not_called()
+
+
+class TestGroupMessages:
+    """The behaviour that decides whether the bot survives in a group."""
+
+    @staticmethod
+    async def _drive(update, ctx):
+        started = {}
+
+        async def fake_run_task(u, c, uid, text):
+            started["uid"] = uid
+            started["text"] = text
+
+        original = tb._run_task
+        tb._run_task = fake_run_task
+        try:
+            await tb.handle_message(update, ctx)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+        finally:
+            tb._run_task = original
+        return started
+
+    @pytest.mark.asyncio
+    async def test_dm_is_always_answered(self):
+        update = _make_update(uid=1, text="hello")
+        started = await self._drive(update, _make_ctx())
+        assert started["text"] == "hello"
+        assert started["uid"] == 1
+
+    @pytest.mark.asyncio
+    async def test_group_chatter_is_ignored(self):
+        update = _make_update(uid=1, text="what did you think of the game",
+                              chat_type="group", chat_id=-100)
+        started = await self._drive(update, _make_ctx())
+        assert started == {}
+        update.message.reply_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_group_mention_is_answered_without_the_handle(self):
+        update = _make_update(uid=1, text="@mybot summarise the thread",
+                              chat_type="group", chat_id=-100)
+        started = await self._drive(update, _make_ctx(username="mybot"))
+        assert started["text"] == "summarise the thread"
+
+    @pytest.mark.asyncio
+    async def test_group_conversation_is_keyed_by_the_chat(self):
+        update = _make_update(uid=1, text="@mybot hi", chat_type="group", chat_id=-100)
+        started = await self._drive(update, _make_ctx())
+        assert started["uid"] == -100
+
+    @pytest.mark.asyncio
+    async def test_reply_to_the_bot_is_answered(self):
+        update = _make_update(uid=1, text="and the second one?", chat_type="group",
+                              chat_id=-100, reply_from_bot=True)
+        started = await self._drive(update, _make_ctx(bot_id=777))
+        assert started["text"] == "and the second one?"
+
+    @pytest.mark.asyncio
+    async def test_all_mode_answers_everything(self):
+        gp.get_settings().set_mode("telegram", "-100", "all")
+        update = _make_update(uid=1, text="just talking", chat_type="group", chat_id=-100)
+        started = await self._drive(update, _make_ctx())
+        assert started["text"] == "just talking"
+
+    @pytest.mark.asyncio
+    async def test_off_mode_stays_quiet_even_when_mentioned(self):
+        gp.get_settings().set_mode("telegram", "-100", "off")
+        update = _make_update(uid=1, text="@mybot hello", chat_type="group", chat_id=-100)
+        started = await self._drive(update, _make_ctx())
+        assert started == {}
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_stranger_is_not_answered_in_a_group(self):
+        """The refusal itself would be group spam. Only answer if addressed."""
+        tb.ALLOWED_USER_IDS = {1}
+        update = _make_update(uid=99, text="chatting away", chat_type="group", chat_id=-100)
+        await self._drive(update, _make_ctx())
+        update.message.reply_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_stranger_who_mentions_the_bot_is_told(self):
+        tb.ALLOWED_USER_IDS = {1}
+        update = _make_update(uid=99, text="@mybot help me", chat_type="group", chat_id=-100)
+        await self._drive(update, _make_ctx())
+        assert "not authorized" in _last_reply(update)
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_user_in_a_dm_is_still_told(self):
+        tb.ALLOWED_USER_IDS = {1}
+        update = _make_update(uid=99, text="hello")
+        await self._drive(update, _make_ctx())
+        assert "not authorized" in _last_reply(update)
+
+    @pytest.mark.asyncio
+    async def test_bare_mention_produces_no_task(self):
+        update = _make_update(uid=1, text="@mybot", chat_type="group", chat_id=-100)
+        started = await self._drive(update, _make_ctx())
+        assert started == {}
+
+    @pytest.mark.asyncio
+    async def test_duplicate_group_message_runs_once(self):
+        ctx = _make_ctx()
+        update = _make_update(uid=1, text="@mybot hi", chat_type="group", chat_id=-100)
+        first = await self._drive(update, ctx)
+        second = await self._drive(update, ctx)
+        assert first["text"] == "hi"
+        assert second == {}

@@ -90,12 +90,13 @@ The built-in browser UI.
 | `WEB_CHAT_TOKEN` |  | Access token required to open the web UI. Strongly recommended whenever it is not on loopback. |
 | `WEB_CHAT_TRUST_PROXY` | `0` | Trust `X-Forwarded-For` for client IPs. Only set this behind a proxy you control. |
 
-## Invites
+## Invites and groups
 
-Handing access to someone else.
+Handing access to someone else, and behaviour in group chats.
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `GROUP_DEFAULT_MODE` |  | How the bot behaves in a group it has no setting for: `mention` (default — only when @mentioned, replied to, or commanded), `all`, or `off`. Per-chat overrides come from `/groupmode`. |
 | `INVITE_ALLOW_CHAINING` |  | Let users who were themselves invited mint invites of their own. Off by default, so invites fan out one level from you and a link cannot spread without you. |
 
 ## Claude Desktop bridge
@@ -259,4 +260,4 @@ Health endpoint, debugging, MCP.
 
 ---
 
-140 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.
+141 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.

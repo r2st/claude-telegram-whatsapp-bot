@@ -478,13 +478,14 @@ fail the check.
 | `/id` | Show your Telegram user ID |
 | `/tour` | Replay the walkthrough |
 
-**Sharing**
+**Sharing and groups**
 | Command | Description |
 |---------|-------------|
 | `/invite [uses] [days] [note]` | Mint a one-tap invite link — `/invite 5 30 team` is five uses over thirty days |
 | `/invites` | Your invites, their status, and who joined through them |
 | `/revoke <code>` | Kill an invite link |
 | `/kick <id>` | Remove an invited user's access |
+| `/groupmode mention\|all\|off` | When the bot replies in this group |
 
 **Sessions**
 | Command | Description |
@@ -546,6 +547,7 @@ Just send a message. There are no slash commands — WhatsApp is intentionally k
 │   ├── slack_bot.py         Slack adapter (Socket Mode)
 │   ├── memory.py            Per-user memory with FTS5 search
 │   ├── invites.py           Invite codes, access grants, referral graph
+│   ├── group_policy.py      When to answer in a group chat
 │   ├── onboarding.py        First-run tour and activation tracking
 │   ├── session_manager.py   Multi-session conversation management
 │   ├── knowledge_base.py    Document store with chunking and search
@@ -611,6 +613,7 @@ adding a second person to the allowlist.
 - **Four surfaces, one process** — Telegram, WhatsApp, Slack, and a local web chat sharing one set of sessions, memories and history (`BOT_MODE=all`)
 - **One-command setup** — `npm install -g telechat && telechat init`
 - **Invite links** — `/invite` mints a one-tap link that grants a friend access; no user IDs to collect, no `.env` edit, no restart. `/invites` shows who joined through yours
+- **Group chats** — the bot answers when mentioned or replied to and stays quiet otherwise, with its own conversation per room (`/groupmode`)
 - **Guided first run** — a five-step tour instead of a wall of commands
 - **Background service** — runs detached, survives terminal close
 - **AI-guided setup** — `telechat init` uses Claude CLI for interactive configuration
