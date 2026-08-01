@@ -11,6 +11,20 @@ not which function moved.
 
 ### Added
 
+- **Web chat shows every Claude Code session on the machine.** The bridge could
+  already talk to a session — but only if you already knew which one, and the
+  only way to find out was to ask Telegram for a panel. Open the web chat and
+  there is now a **🖥 Sessions** button in the header with a live count beside
+  it, and behind it a dashboard: what is running right now, which project each
+  session is in, which one is working versus idle, the model, how long it has
+  been up, whether approval mode is armed, and the last thing each one said —
+  plus the recent sessions you could pick back up.
+
+  It polls only while the panel is open, so a dashboard nobody is looking at
+  costs nothing. `/sessions` prints the same thing into the conversation. On a
+  machine with no Claude Code sessions the panel says so and tells you where to
+  run `telechat bridge install`, rather than showing an empty box.
+
 - **Approval cards show the call, and one tap can stop them asking again.** Two
   things made approval mode something people armed once and then switched off.
 

@@ -484,6 +484,129 @@ body {
   * { transition-duration: 0.01ms !important; }
 }
 
+/* sessions dashboard */
+.header-actions { display: flex; align-items: center; gap: 12px; }
+.sessions-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 500;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.sessions-btn:hover { color: var(--accent); border-color: var(--accent); }
+.sessions-btn[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+.sessions-btn .live-count {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 16px;
+  text-align: center;
+}
+.sessions-btn .live-count.zero { background: var(--text-dim); }
+
+.sessions-panel {
+  position: absolute;
+  top: 56px;
+  right: 24px;
+  z-index: 40;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  padding: 14px 16px 16px;
+}
+.sessions-panel.hidden { display: none; }
+.sessions-panel h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.sessions-panel .panel-sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+.sessions-panel .group-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin: 14px 0 6px;
+}
+.sessions-panel .group-label:first-of-type { margin-top: 4px; }
+.session-row {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  margin-bottom: 6px;
+  background: var(--surface);
+}
+.session-row.is-current { border-color: var(--accent); background: var(--accent-light); }
+.session-row .row-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.session-row .proj {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.session-row .sid {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.session-row .tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface2);
+  color: var(--text-secondary);
+}
+.session-row .tag.busy { background: #fff3cd; color: #8a6d3b; }
+.session-row .tag.idle { background: var(--surface2); color: var(--text-dim); }
+.session-row .tag.current { background: var(--accent); color: #fff; }
+.session-row .meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 3px;
+}
+.session-row .last {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+.sessions-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  padding: 6px 0;
+}
+@media (prefers-color-scheme: dark) {
+  .session-row .tag.busy { background: #3d3315; color: #f0d48a; }
+}
+
 /* visually hidden but available to screen readers */
 .sr-only {
   position: absolute;
@@ -533,10 +656,25 @@ body {
     <div class="header-logo" aria-hidden="true">T</div>
     <h1>TeleChat</h1>
   </div>
-  <div class="status">
-    <div class="dot" id="statusDot" aria-hidden="true"></div>
-    <span id="statusText" role="status" aria-live="polite">Connecting…</span>
+  <div class="header-actions">
+    <button type="button" class="sessions-btn" id="sessionsBtn" onclick="toggleSessions()"
+            aria-expanded="false" aria-controls="sessionsPanel" title="Claude Code sessions on this machine">
+      <span aria-hidden="true">🖥</span>
+      <span>Sessions</span>
+      <span class="live-count zero" id="sessionsCount" aria-hidden="true">0</span>
+    </button>
+    <div class="status">
+      <div class="dot" id="statusDot" aria-hidden="true"></div>
+      <span id="statusText" role="status" aria-live="polite">Connecting…</span>
+    </div>
   </div>
+</div>
+
+<!-- Sessions dashboard -->
+<div class="sessions-panel hidden" id="sessionsPanel" role="region" aria-label="Claude Code sessions">
+  <h2>Claude Code sessions</h2>
+  <div class="panel-sub" id="sessionsSub">Loading…</div>
+  <div id="sessionsBody"></div>
 </div>
 
 <!-- Messages -->
@@ -555,6 +693,7 @@ body {
         <button type="button" class="cmd" onclick="insertCmd('/help')">/help</button>
         <button type="button" class="cmd" onclick="insertCmd('/clear')">/clear</button>
         <button type="button" class="cmd" onclick="insertCmd('/new')">/new</button>
+        <button type="button" class="cmd" onclick="insertCmd('/sessions')">/sessions</button>
         <button type="button" class="cmd" onclick="insertCmd('/export')">/export</button>
       </div>
     </div>
@@ -585,6 +724,7 @@ function connect() {
   ws.onopen = () => { reconnectDelay = 1000; };
   ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
   ws.onclose = () => {
+    authenticated = false;
     setStatus(false);
     disableInput();
     setTimeout(connect, reconnectDelay);
@@ -642,6 +782,9 @@ function handleMessage(data) {
       addSystemMessage(`Exported ${data.message_count} message(s) as ${data.filename}`);
       enableInput();
       break;
+    case 'sessions':
+      renderSessions(data);
+      break;
     case 'error':
       hideThinking(data.msg_id);
       addSystemMessage('Error: ' + data.text);
@@ -649,6 +792,129 @@ function handleMessage(data) {
       enableInput();
       break;
   }
+}
+
+/* ── sessions dashboard ───────────────────────────────────────────────── */
+
+let sessionsOpen = false;
+let sessionsTimer = null;
+const SESSIONS_POLL_MS = 5000;
+
+function requestSessions() {
+  if (ws && ws.readyState === WebSocket.OPEN && authenticated) {
+    ws.send(JSON.stringify({ type: 'sessions' }));
+  }
+}
+
+function toggleSessions() {
+  sessionsOpen = !sessionsOpen;
+  const panel = document.getElementById('sessionsPanel');
+  const btn = document.getElementById('sessionsBtn');
+  panel.classList.toggle('hidden', !sessionsOpen);
+  btn.setAttribute('aria-expanded', String(sessionsOpen));
+  if (sessionsOpen) {
+    requestSessions();
+    // Poll only while visible — a closed panel should cost nothing.
+    sessionsTimer = setInterval(requestSessions, SESSIONS_POLL_MS);
+  } else if (sessionsTimer) {
+    clearInterval(sessionsTimer);
+    sessionsTimer = null;
+  }
+}
+
+function renderSessions(data) {
+  const running = data.running || [];
+  const recent = data.recent || [];
+  const live = running.length;
+
+  const countEl = document.getElementById('sessionsCount');
+  countEl.textContent = String(live);
+  countEl.classList.toggle('zero', live === 0);
+
+  const sub = document.getElementById('sessionsSub');
+  const body = document.getElementById('sessionsBody');
+  body.innerHTML = '';
+
+  if (!data.available) {
+    sub.textContent = 'Desktop bridge unavailable';
+    const p = document.createElement('div');
+    p.className = 'sessions-empty';
+    p.textContent = data.reason || 'No sessions found.';
+    body.appendChild(p);
+    return;
+  }
+
+  const busy = running.filter(s => s.busy).length;
+  sub.textContent = live === 0
+    ? 'Nothing running right now'
+    : `${live} running · ${busy} working · ${running.length - busy} idle`;
+
+  if (live > 0) {
+    body.appendChild(groupLabel('Running now'));
+    running.forEach(s => body.appendChild(sessionRow(s, true)));
+  }
+  if (recent.length > 0) {
+    body.appendChild(groupLabel('Recent'));
+    recent.forEach(s => body.appendChild(sessionRow(s, false)));
+  }
+  if (live === 0 && recent.length === 0) {
+    const p = document.createElement('div');
+    p.className = 'sessions-empty';
+    p.textContent = 'No Claude Code sessions yet. Start one and it will show up here.';
+    body.appendChild(p);
+  }
+}
+
+function groupLabel(text) {
+  const el = document.createElement('div');
+  el.className = 'group-label';
+  el.textContent = text;
+  return el;
+}
+
+function sessionRow(s, isRunning) {
+  const el = document.createElement('div');
+  el.className = 'session-row' + (s.current ? ' is-current' : '');
+
+  const top = document.createElement('div');
+  top.className = 'row-top';
+  top.appendChild(span('proj', s.project || '(new session)'));
+  if (s.short) top.appendChild(span('sid', s.short));
+  if (isRunning) {
+    top.appendChild(span('tag ' + (s.busy ? 'busy' : 'idle'), s.busy ? 'working' : 'idle'));
+    if (s.approve) top.appendChild(span('tag', '🔐 approvals'));
+  } else if (s.running) {
+    top.appendChild(span('tag busy', 'running'));
+  }
+  if (s.current) top.appendChild(span('tag current', 'current'));
+  el.appendChild(top);
+
+  const bits = [];
+  if (isRunning) {
+    if (s.model) bits.push(s.model);
+    if (s.uptime) bits.push('up ' + s.uptime);
+  } else if (s.ago) {
+    bits.push(s.ago);
+  }
+  if (s.cwd) bits.push(s.cwd);
+  if (bits.length) el.appendChild(div('meta', bits.join(' · ')));
+
+  if (s.last) el.appendChild(div('last', s.last));
+  return el;
+}
+
+function span(cls, text) {
+  const el = document.createElement('span');
+  el.className = cls;
+  el.textContent = text;
+  return el;
+}
+
+function div(cls, text) {
+  const el = document.createElement('div');
+  el.className = cls;
+  el.textContent = text;
+  return el;
 }
 
 function triggerDownload(filename, content, mime) {
@@ -667,6 +933,9 @@ function onAuthenticated() {
   authenticated = true;
   setStatus(true);
   enableInput();
+  // Populate the header badge immediately, so the count is right before the
+  // panel is ever opened — and refresh it after a reconnect.
+  requestSessions();
 }
 
 function setStatus(connected) {

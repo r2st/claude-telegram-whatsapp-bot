@@ -296,6 +296,11 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
                     chat_tasks.add(task)
                     task.add_done_callback(chat_tasks.discard)
 
+                elif msg_type == "sessions":
+                    # Cheap enough to answer inline; the dashboard polls it while
+                    # the panel is open, so it must not queue behind a chat turn.
+                    await _handle_sessions(send_json, data.get("limit"))
+
                 elif msg_type == "cancel":
                     pass
 
@@ -341,6 +346,12 @@ async def _handle_command(
     elif cmd == "/export":
         await _handle_export(send_json, user_id, args)
 
+    elif cmd == "/sessions":
+        limit = SESSIONS_LIMIT
+        if args.strip().isdigit():
+            limit = int(args.strip())
+        await _handle_sessions(send_json, limit)
+
     elif cmd == "/help":
         await send_json({
             "type": "system",
@@ -349,6 +360,7 @@ async def _handle_command(
                 "- `/clear` — clear conversation history\n"
                 "- `/new [name]` — start a new session\n"
                 "- `/model [name]` — show/set model\n"
+                "- `/sessions` — show Claude Code sessions on this machine\n"
                 "- `/export [text|md|html|json]` — download this conversation\n"
                 "- `/help` — show this help"
             ),
@@ -389,6 +401,126 @@ async def _handle_export(send_json, user_id: str, fmt_arg: str) -> None:
         "mime": _EXPORT_MIME.get(result.format, "text/plain"),
         "message_count": result.message_count,
     })
+
+
+# ───────────────────────── desktop session dashboard ─────────────────────────
+
+# How many past sessions the dashboard lists. Deliberately small: the panel is a
+# glance at what's happening, not a full session browser.
+SESSIONS_LIMIT = 8
+SESSIONS_LIMIT_MAX = 25
+
+
+def _project_name(cwd: str) -> str:
+    return Path(cwd).name if cwd else ""
+
+
+def _sessions_snapshot(limit: int = SESSIONS_LIMIT) -> dict:
+    """A JSON-safe snapshot of Claude Code sessions for the web dashboard.
+
+    Never raises. The desktop bridge only works where Claude Desktop's transcripts
+    and processes live, so on a server (or a machine that has never run it) the
+    panel degrades to an "unavailable" message instead of breaking the socket.
+    """
+    try:
+        limit = SESSIONS_LIMIT if limit is None else int(limit)
+    except (TypeError, ValueError):
+        limit = SESSIONS_LIMIT
+    limit = max(1, min(limit, SESSIONS_LIMIT_MAX))
+    unavailable = {
+        "available": False,
+        "running": [],
+        "recent": [],
+        "current": None,
+        "reason": (
+            "No Claude Code sessions found on this machine. The desktop bridge "
+            "reads sessions from ~/.claude — run `telechat bridge install` on the "
+            "computer where you use Claude Code."
+        ),
+    }
+
+    try:
+        from . import desktop_bridge as db
+    except Exception:
+        log.debug("desktop bridge unavailable for sessions panel", exc_info=True)
+        return unavailable
+
+    try:
+        current_sid, current_cwd = db.get_current_session()
+        running_raw = db.list_running_sessions()
+        recent_raw = db.list_recent_sessions(limit=limit)
+    except Exception:
+        log.debug("could not read desktop sessions", exc_info=True)
+        return unavailable
+
+    running = []
+    for s in running_raw:
+        sid = s.get("sid") or ""
+        cwd = s.get("cwd") or ""
+        # A session with no id yet (fresh Desktop window whose transcript hasn't
+        # been written) still deserves a row — it is genuinely running.
+        status = db._session_status(sid) if sid else {"busy": False, "last": None}
+        running.append({
+            "sid": sid,
+            "short": sid[:8],
+            "project": _project_name(cwd),
+            "cwd": cwd,
+            "model": s.get("model") or "",
+            "uptime": s.get("etime") or "",
+            "pid": s.get("pid") or "",
+            "busy": bool(status.get("busy")),
+            "last": status.get("last"),
+            "current": bool(sid) and sid == current_sid,
+            "approve": bool(cwd) and _approve_mode(db, cwd),
+        })
+
+    recent = []
+    for s in recent_raw:
+        sid = s.get("sid") or ""
+        cwd = s.get("cwd") or ""
+        recent.append({
+            "sid": sid,
+            "short": sid[:8],
+            "project": _project_name(cwd),
+            "cwd": cwd,
+            "ago": s.get("ago") or "",
+            "running": bool(s.get("running")),
+            "last": s.get("last"),
+            "current": bool(sid) and sid == current_sid,
+        })
+
+    current = None
+    if current_sid:
+        current = {
+            "sid": current_sid,
+            "short": current_sid[:8],
+            "cwd": current_cwd or "",
+            "project": _project_name(current_cwd or ""),
+        }
+
+    return {
+        "available": True,
+        "running": running,
+        "recent": recent,
+        "current": current,
+        "reason": "",
+    }
+
+
+def _approve_mode(db, cwd: str) -> bool:
+    """approve_mode_on() touches sqlite — one bad row must not blank the panel."""
+    try:
+        return bool(db.approve_mode_on(cwd))
+    except Exception:
+        log.debug("could not read approve mode for %s", cwd, exc_info=True)
+        return False
+
+
+async def _handle_sessions(send_json, limit=SESSIONS_LIMIT) -> None:
+    payload = await asyncio.get_running_loop().run_in_executor(
+        None, _sessions_snapshot, limit
+    )
+    await send_json({"type": "sessions", **payload})
 
 
 async def _handle_chat(

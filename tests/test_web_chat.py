@@ -85,7 +85,9 @@ class TestHealthHandler(unittest.TestCase):
         self.assertEqual(result.status, 503)
 
 
-class TestWsHandler(unittest.TestCase):
+class _WsHarness:
+    """Shared fake-WebSocket driver for the handler tests."""
+
     def _make_msg(self, data_dict=None, text=None, msg_type=None):
         msg = MagicMock()
         if msg_type:
@@ -125,6 +127,8 @@ class TestWsHandler(unittest.TestCase):
 
         return ws
 
+
+class TestWsHandler(_WsHarness, unittest.TestCase):
     def test_connect_no_auth(self):
         """No auth required — connected message with auth_required=False."""
         ws = self._run_ws([])
@@ -781,3 +785,218 @@ class TestPrintWebQrHost(unittest.TestCase):
         out = " ".join(str(c.args[0]) for c in printed.call_args_list if c.args)
         self.assertIn("tailscale-host:8585", out)
         self.assertNotIn("10.0.0.7", out)
+
+
+class TestSessionsSnapshot(unittest.TestCase):
+    """The web dashboard's read of Claude Code sessions on this machine."""
+
+    RUNNING = [
+        {"sid": "abcdef0123456789", "cwd": "/Users/me/projects/telechat",
+         "model": "opus", "etime": "12:04", "pid": "901"},
+        {"sid": "", "cwd": "", "model": "", "etime": "00:03", "pid": "902"},
+    ]
+    RECENT = [
+        {"sid": "abcdef0123456789", "cwd": "/Users/me/projects/telechat",
+         "ago": "2m ago", "running": True, "last": "Fixed the parser."},
+        {"sid": "99887766554433", "cwd": "/Users/me/projects/site",
+         "ago": "3h ago", "running": False, "last": None},
+    ]
+
+    def _patch_bridge(self, **overrides):
+        from telechat_pkg import desktop_bridge
+        defaults = {
+            "get_current_session": MagicMock(
+                return_value=("abcdef0123456789", "/Users/me/projects/telechat")),
+            "list_running_sessions": MagicMock(return_value=list(self.RUNNING)),
+            "list_recent_sessions": MagicMock(return_value=list(self.RECENT)),
+            "_session_status": MagicMock(return_value={"busy": True, "last": "Running Bash"}),
+            "approve_mode_on": MagicMock(return_value=True),
+        }
+        defaults.update(overrides)
+        return [patch.object(desktop_bridge, k, v) for k, v in defaults.items()]
+
+    def _snapshot(self, limit=8, **overrides):
+        from telechat_pkg.web_chat import _sessions_snapshot
+        patches = self._patch_bridge(**overrides)
+        for p in patches:
+            p.start()
+        try:
+            return _sessions_snapshot(limit)
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_running_sessions_carry_status_and_project(self):
+        snap = self._snapshot()
+        self.assertTrue(snap["available"])
+        first = snap["running"][0]
+        self.assertEqual(first["project"], "telechat")
+        self.assertEqual(first["short"], "abcdef01")
+        self.assertEqual(first["model"], "opus")
+        self.assertEqual(first["uptime"], "12:04")
+        self.assertTrue(first["busy"])
+        self.assertEqual(first["last"], "Running Bash")
+        self.assertTrue(first["approve"])
+
+    def test_the_selected_session_is_flagged_as_current(self):
+        snap = self._snapshot()
+        self.assertTrue(snap["running"][0]["current"])
+        self.assertTrue(snap["recent"][0]["current"])
+        self.assertFalse(snap["recent"][1]["current"])
+        self.assertEqual(snap["current"]["project"], "telechat")
+
+    def test_a_session_with_no_id_yet_is_still_listed(self):
+        # A brand-new Desktop window has no transcript to probe, but it is
+        # genuinely running — dropping it would under-report what's live.
+        snap = self._snapshot()
+        second = snap["running"][1]
+        self.assertEqual(second["sid"], "")
+        self.assertFalse(second["busy"])
+        self.assertIsNone(second["last"])
+        self.assertFalse(second["current"])
+
+    def test_no_current_session_leaves_current_null(self):
+        snap = self._snapshot(get_current_session=MagicMock(return_value=(None, None)))
+        self.assertIsNone(snap["current"])
+        self.assertFalse(any(s["current"] for s in snap["running"]))
+
+    def test_a_broken_bridge_degrades_instead_of_raising(self):
+        snap = self._snapshot(
+            list_running_sessions=MagicMock(side_effect=OSError("no ps")))
+        self.assertFalse(snap["available"])
+        self.assertEqual(snap["running"], [])
+        self.assertEqual(snap["recent"], [])
+        self.assertIn("bridge install", snap["reason"])
+
+    def test_an_unreadable_approval_setting_does_not_blank_the_panel(self):
+        snap = self._snapshot(
+            approve_mode_on=MagicMock(side_effect=RuntimeError("db locked")))
+        self.assertTrue(snap["available"])
+        self.assertFalse(snap["running"][0]["approve"])
+
+    def test_the_limit_is_clamped(self):
+        # The limit arrives from the browser, so it must survive junk without
+        # letting a client ask for every transcript on disk.
+        from telechat_pkg import web_chat
+        recorded = []
+
+        def fake_recent(limit):
+            recorded.append(limit)
+            return []
+
+        for value in (0, -5, 10_000, None, "seven"):
+            self._snapshot(value, list_recent_sessions=fake_recent)
+        self.assertEqual(
+            recorded,
+            [1, 1, web_chat.SESSIONS_LIMIT_MAX, web_chat.SESSIONS_LIMIT,
+             web_chat.SESSIONS_LIMIT],
+        )
+
+    def test_a_missing_bridge_module_degrades(self):
+        from telechat_pkg.web_chat import _sessions_snapshot
+        import builtins
+        real_import = builtins.__import__
+
+        def boom(name, globals=None, locals=None, fromlist=(), level=0):
+            if fromlist and "desktop_bridge" in fromlist:
+                raise ImportError("nope")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch.object(builtins, "__import__", side_effect=boom):
+            snap = _sessions_snapshot()
+        self.assertFalse(snap["available"])
+
+
+class TestHandleSessions(unittest.TestCase):
+    def test_sends_a_sessions_payload(self):
+        from telechat_pkg import web_chat
+        send = AsyncMock()
+        with patch.object(web_chat, "_sessions_snapshot",
+                          return_value={"available": True, "running": [], "recent": [],
+                                        "current": None, "reason": ""}):
+            asyncio.run(web_chat._handle_sessions(send, 3))
+        payload = send.call_args[0][0]
+        self.assertEqual(payload["type"], "sessions")
+        self.assertTrue(payload["available"])
+
+    def test_the_slash_command_answers_with_the_panel_payload(self):
+        from telechat_pkg import web_chat
+        send = AsyncMock()
+        with patch.object(web_chat, "_sessions_snapshot",
+                          return_value={"available": False, "running": [], "recent": [],
+                                        "current": None, "reason": "nope"}) as snap:
+            asyncio.run(web_chat._handle_command(MagicMock(), send, "u1", "/sessions"))
+        snap.assert_called_once_with(web_chat.SESSIONS_LIMIT)
+        self.assertEqual(send.call_args[0][0]["type"], "sessions")
+
+    def test_the_slash_command_accepts_a_limit(self):
+        from telechat_pkg import web_chat
+        send = AsyncMock()
+        with patch.object(web_chat, "_sessions_snapshot",
+                          return_value={"available": True, "running": [], "recent": [],
+                                        "current": None, "reason": ""}) as snap:
+            asyncio.run(web_chat._handle_command(MagicMock(), send, "u1", "/sessions 3"))
+        snap.assert_called_once_with(3)
+
+    def test_help_lists_sessions(self):
+        from telechat_pkg.web_chat import _handle_command
+        send = AsyncMock()
+        asyncio.run(_handle_command(MagicMock(), send, "u1", "/help"))
+        self.assertIn("/sessions", send.call_args[0][0]["text"])
+
+
+class TestSessionsOverWebSocket(_WsHarness, unittest.TestCase):
+    def test_an_authenticated_client_gets_the_snapshot(self):
+        from telechat_pkg import web_chat
+        with patch.object(web_chat, "_sessions_snapshot",
+                          return_value={"available": True, "running": [{"sid": "x"}],
+                                        "recent": [], "current": None, "reason": ""}):
+            ws = self._run_ws([self._make_msg({"type": "sessions"})])
+        types = [c[0][0]["type"] for c in ws.send_json.call_args_list]
+        self.assertIn("sessions", types)
+
+    def test_an_unauthenticated_client_is_refused(self):
+        from telechat_pkg import web_chat
+        with patch.object(web_chat, "_sessions_snapshot") as snap:
+            ws = self._run_ws([self._make_msg({"type": "sessions"})], auth_token="secret")
+        snap.assert_not_called()
+        types = [c[0][0]["type"] for c in ws.send_json.call_args_list]
+        self.assertNotIn("sessions", types)
+        self.assertIn("error", types)
+
+
+class TestSessionsDashboardUI(unittest.TestCase):
+    def _html(self):
+        from telechat_pkg.web_chat import _index_handler
+        return asyncio.run(_index_handler(MagicMock())).text
+
+    def test_the_header_has_a_sessions_button(self):
+        html = self._html()
+        self.assertIn('id="sessionsBtn"', html)
+        self.assertIn('aria-controls="sessionsPanel"', html)
+        self.assertIn('aria-expanded="false"', html)
+
+    def test_the_panel_exists_and_starts_hidden(self):
+        html = self._html()
+        self.assertIn('class="sessions-panel hidden" id="sessionsPanel"', html)
+        self.assertIn('id="sessionsBody"', html)
+
+    def test_the_client_handles_the_sessions_message(self):
+        html = self._html()
+        self.assertIn("case 'sessions':", html)
+        self.assertIn("function renderSessions", html)
+
+    def test_polling_only_runs_while_the_panel_is_open(self):
+        # An always-on poll would keep waking the bridge (ps + transcript reads)
+        # for a panel nobody is looking at.
+        html = self._html()
+        self.assertIn("clearInterval(sessionsTimer)", html)
+        self.assertIn("setInterval(requestSessions, SESSIONS_POLL_MS)", html)
+
+    def test_session_text_is_never_injected_as_html(self):
+        # Rows carry transcript snippets and filesystem paths; they are set with
+        # textContent so a session that echoes markup can't script the dashboard.
+        html = self._html()
+        start = html.index("function sessionRow")
+        end = html.index("function span(")
+        self.assertNotIn("innerHTML", html[start:end])
