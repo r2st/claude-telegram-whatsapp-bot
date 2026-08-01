@@ -755,7 +755,7 @@ class TestCostBudgetSecurity:
         conn = mgr._conn()
         conn.execute(
             """INSERT INTO cost_tracking (platform, user_id, date, requests, input_tokens, output_tokens, cost_usd)
-               VALUES ('telegram', 'user1', date('now'), 10, 10000, 5000, 0.05)"""
+               VALUES ('telegram', 'user1', date('now', 'localtime'), 10, 10000, 5000, 0.05)"""
         )
         conn.commit()
         warning = mgr.check("telegram", "user1")
@@ -769,7 +769,7 @@ class TestCostBudgetSecurity:
         conn = mgr._conn()
         conn.execute(
             """INSERT INTO cost_tracking (platform, user_id, date, requests, input_tokens, output_tokens, cost_usd)
-               VALUES ('telegram', 'user1', date('now'), 5, 5000, 2000, 0.85)"""
+               VALUES ('telegram', 'user1', date('now', 'localtime'), 5, 5000, 2000, 0.85)"""
         )
         conn.commit()
         warning = mgr.check("telegram", "user1")

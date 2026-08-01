@@ -110,14 +110,20 @@ class BudgetManager:
         )
 
     def _get_daily_cost(self, platform: str, user_id: str) -> tuple[float, int]:
-        """Returns (total_cost, request_count) for today."""
+        """Returns (total_cost, request_count) for today.
+
+        ``date('now')`` is UTC, but ``store.track_cost`` stamps rows with
+        ``date.today()`` — the local date. West of UTC those disagree for the
+        last hours of every day, which made the budget stop seeing the day's
+        spend right when it mattered. Both ends now agree on local time.
+        """
         conn = self._conn()
         row = conn.execute(
             """SELECT COALESCE(SUM(cost_usd), 0) as total,
                       COUNT(*) as cnt
                FROM cost_tracking
                WHERE platform = ? AND user_id = ?
-                 AND date = date('now')""",
+                 AND date = date('now', 'localtime')""",
             (platform, user_id),
         ).fetchone()
         if row:
@@ -125,14 +131,20 @@ class BudgetManager:
         return 0.0, 0
 
     def _get_monthly_cost(self, platform: str, user_id: str) -> tuple[float, int]:
-        """Returns (total_cost, request_count) for this month."""
+        """Returns (total_cost, request_count) for this month.
+
+        Local time, for the same reason as the daily window — and here the
+        disagreement is worse: on the evening of the last day of a month, a
+        UTC ``start of month`` had already rolled over, so the entire month's
+        spend fell outside the window and the monthly cap enforced nothing.
+        """
         conn = self._conn()
         row = conn.execute(
             """SELECT COALESCE(SUM(cost_usd), 0) as total,
                       COUNT(*) as cnt
                FROM cost_tracking
                WHERE platform = ? AND user_id = ?
-                 AND date >= date('now', 'start of month')""",
+                 AND date >= date('now', 'localtime', 'start of month')""",
             (platform, user_id),
         ).fetchone()
         if row:

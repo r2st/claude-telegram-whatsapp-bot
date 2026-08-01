@@ -38,7 +38,7 @@ class TestCostBudget(unittest.TestCase):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 platform TEXT,
                 user_id TEXT,
-                date TEXT DEFAULT (date('now')),
+                date TEXT DEFAULT (date('now', 'localtime')),
                 input_tokens INTEGER DEFAULT 0,
                 output_tokens INTEGER DEFAULT 0,
                 cost_usd REAL DEFAULT 0,
@@ -53,7 +53,10 @@ class TestCostBudget(unittest.TestCase):
     def tearDown(self):
         os.unlink(self.db_path)
 
-    def _add_cost(self, platform, user_id, cost, date="date('now')"):
+    # Local date, matching what store.track_cost actually stamps a row with.
+    # SQLite's bare date('now') is UTC and would simulate a row the bot never
+    # writes, which is what let the UTC/local window mismatch go unnoticed.
+    def _add_cost(self, platform, user_id, cost, date="date('now', 'localtime')"):
         conn = sqlite3.connect(self.db_path)
         conn.execute(
             f"INSERT INTO cost_tracking (platform, user_id, cost_usd, date) VALUES (?, ?, ?, {date})",

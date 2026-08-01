@@ -45,9 +45,12 @@ def _make_cost_table(db_path: str) -> None:
 def _add_cost(db_path: str, platform: str, user_id: str, cost: float, *, date: str = "now"):
     conn = sqlite3.connect(db_path)
     if date == "now":
+        # Local date, exactly as store.track_cost stamps a real row. Writing
+        # SQLite's UTC date('now') here would hide the very mismatch that made
+        # the monthly cap stop enforcing on the last evening of a month.
         conn.execute(
             "INSERT INTO cost_tracking (platform, user_id, date, requests, cost_usd) "
-            "VALUES (?, ?, date('now'), 1, ?)",
+            "VALUES (?, ?, date('now', 'localtime'), 1, ?)",
             (platform, user_id, cost),
         )
     else:
@@ -253,3 +256,44 @@ class TestResetDailyAlerts:
         mgr.reset_daily_alerts()
         assert mgr._get_budget("tg", "u1").alert_sent_daily is False
         assert mgr._get_budget("tg", "u2").alert_sent_daily is False
+
+
+class TestLocalDateAgreement:
+    """The budget must read costs on the same calendar the writer stamps them with.
+
+    ``store.track_cost`` writes ``datetime.date.today()`` — the local date —
+    while these queries used SQLite's ``date('now')``, which is UTC. Anywhere
+    west of UTC the two disagree for the last hours of every day, and on the
+    last evening of a month a UTC ``start of month`` had already rolled over,
+    so the entire month's spend fell outside the window and the monthly cap
+    enforced nothing at all.
+    """
+
+    @staticmethod
+    def _add_as_the_bot_would(db_path, cost):
+        from datetime import date
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO cost_tracking (platform, user_id, date, requests, cost_usd) "
+            "VALUES ('tg', 'u1', ?, 1, ?)",
+            (date.today().isoformat(), cost),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_daily_window_sees_a_row_the_writer_just_wrote(self, mgr, db_path):
+        self._add_as_the_bot_would(db_path, 2.0)
+        assert mgr.usage_report("tg", "u1").daily_cost == 2.0
+
+    def test_monthly_window_sees_a_row_the_writer_just_wrote(self, mgr, db_path):
+        self._add_as_the_bot_would(db_path, 2.0)
+        assert mgr.usage_report("tg", "u1").monthly_cost == 2.0
+
+    def test_monthly_block_still_fires_on_the_last_day_of_a_month(self, mgr, db_path):
+        # Spend booked on the 1st, checked "today" — whatever today is. Under
+        # the UTC boundary this returned None for the last hours of a month.
+        prior = time.strftime("%Y-%m-01")
+        _add_cost(db_path, "tg", "u1", DEFAULT_MONTHLY_BUDGET + 5.0, date=prior)
+        msg = mgr.check("tg", "u1")
+        assert msg is not None
+        assert "Monthly budget exceeded" in msg

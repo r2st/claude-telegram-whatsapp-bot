@@ -11,6 +11,45 @@ not which function moved.
 
 ### Added
 
+- **Invite links — you can finally hand your bot to someone.** Until now the
+  only way to let a friend in was to ask for their numeric Telegram ID, put it
+  in `TELEGRAM_ALLOWED_USER_IDS`, and restart. `/invite` mints a one-tap link
+  instead: whoever opens it is granted access in the database, no restart and
+  no IDs changing hands. `/invite 5 30 launch week` is five uses over thirty
+  days with a note; `/invite unlimited never` is what it says. `/invites` lists
+  yours with how many uses are left and who joined through them, `/revoke
+  <code>` kills a link, and `/kick <id>` removes someone who already came in.
+
+  A code is a bearer token, so it is 50 bits from `secrets` over an alphabet
+  with no I/O/0/1 in it, and redemption is a conditional UPDATE inside a
+  `BEGIN IMMEDIATE` — two people tapping the same single-use link at the same
+  moment cannot both get in. By default only the identities in
+  `TELEGRAM_ALLOWED_USER_IDS` may mint invites, so a link cannot spread through
+  people you never admitted; `INVITE_ALLOW_CHAINING=true` opens that up.
+
+- **The bot is usable in a group.** It used to answer *every* message in a
+  group, including the ones people were saying to each other — which is a good
+  way to get removed from a group. It now replies only when addressed: an
+  `@mention`, a reply to one of its own messages, or a command. `/groupmode`
+  changes that per chat — `mention` (the default), `all` for a room that exists
+  to talk to the bot, or `off`. `GROUP_DEFAULT_MODE` sets the default for
+  groups you have not configured.
+
+  A group also gets its own conversation now, keyed by the chat, so the room
+  shares one thread instead of replaying whoever happened to speak last from
+  their private history. The bot's own handle is stripped before the prompt
+  reaches Claude, and an unauthorized stranger talking in a group no longer
+  gets a "you're not authorized" reply per message — only if they actually
+  addressed the bot.
+
+- **`/start` welcomes a new user instead of reciting the manual.** It answered
+  a first message with forty lines listing every command, which is a reference
+  card handed to someone still deciding whether to keep the bot. First-timers
+  now get a short greeting and an optional five-step tour — one capability per
+  step, with an example to copy — and returning users get one line. `/tour`
+  replays it. If you arrived through an invite link, the welcome says who
+  invited you.
+
 - **Discord is now a fifth platform.** `BOT_MODE=discord` (or add it to a
   comma-separated list, or use `all`) runs it alongside the others in the same
   process and against the same conversation store, so a session you started on
@@ -30,6 +69,17 @@ not which function moved.
   empty means anyone who can see the bot can use it.
 
 ### Fixed
+
+- **The monthly spend cap enforced nothing on the last evening of a month.**
+  Costs are stamped with your local date when they are written, but the budget
+  added them up using SQLite's `date('now')`, which is UTC. Anywhere west of
+  UTC the two disagree for the last hours of every day — so late in the day the
+  daily total read low, and on the last evening of a month the UTC "start of
+  month" had already rolled over and the *entire* month's spend fell outside
+  the window, leaving `MONTHLY_BUDGET_USD` enforcing nothing at the point it
+  was most likely to matter. Both ends now agree on local time. If you are on
+  UTC you were never affected; the further west you are, the wider the hole
+  was.
 
 - **A code block longer than one message came out broken.** Splitting a reply
   avoids breaking inside a code block, but a block bigger than the whole message
