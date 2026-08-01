@@ -25,7 +25,7 @@
 | Two-Agent Pattern | **Done** | `two_agent.py` | /plan command: planner (haiku) + executor (sonnet) | Agent SDK two-agent pattern |
 | Event Bus / Webhooks | **Done** | `event_bus.py` | Typed async pub/sub, GitHub/generic webhook receiver | Claude Quickstarts architecture |
 | Scheduled Autonomous Tasks | **Done** | `auto_scheduler.py` | Natural language scheduling, /schedule command | Managed Agents + Dreaming |
-| MCP Integration | **Done** | `mcp_client.py` | MCP client for external tool servers | Blender MCP / Playwright MCP |
+| MCP Integration | **Done** | `mcp_client.py`, `mcp_tools.py` | MCP client for external tool servers, plus the tool-use loop that makes those tools callable on the API path | Blender MCP / Playwright MCP |
 | Knowledge Base / RAG | **Done** | `knowledge_base.py` | Document ingestion, FTS chunked search, /kb command | Customer Support Agent (Bedrock KB) |
 | Browser Automation | **Done** | `browser_automation.py` | Playwright-based /web command (screenshot, extract) | Browser Automation Agent |
 

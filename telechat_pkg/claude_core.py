@@ -416,6 +416,49 @@ def ask_claude_api(
     return text, stats
 
 
+# ─── MCP tool loop ──────────────────────────────────────────────────────────────
+
+async def _try_mcp_tool_loop(
+    client,
+    *,
+    model: str,
+    system: str,
+    messages: list[dict],
+    max_tokens: int,
+    on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None,
+) -> Optional[tuple[str, dict]]:
+    """Run the turn through the MCP tool loop, or return None to skip it.
+
+    Returns None whenever MCP is not actually usable — disabled, no servers
+    connected, no tools discovered — so the caller falls straight through to
+    the normal streaming path. A bot with no MCP configured must behave
+    exactly as it did before this existed.
+    """
+    from . import mcp_client
+
+    if not mcp_client.MCP_ENABLED:
+        return None
+    try:
+        manager = mcp_client.get_mcp_manager()
+        tools = manager.list_tools()
+        if not tools:
+            return None
+        from . import mcp_tools
+        return await mcp_tools.run_tool_loop(
+            client,
+            model=model,
+            system=system,
+            messages=messages,
+            max_tokens=max_tokens,
+            manager=manager,
+            on_tool=on_progress,
+        )
+    except Exception as exc:
+        # A broken MCP server should cost the user its tools, not their reply.
+        log.error("MCP tool loop failed, falling back to a plain turn: %s", exc, exc_info=True)
+        return None
+
+
 # ─── Claude API (async with streaming) ──────────────────────────────────────────
 
 async def ask_claude_api_async(
@@ -426,11 +469,18 @@ async def ask_claude_api_async(
     system: str = CLAUDE_SYSTEM,
     max_tokens: int = CLAUDE_MAX_TOKENS,
     on_text: Optional[Callable[[str], Awaitable[None]]] = None,
+    on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
     platform: str = "",
     user_id: str = "",
 ) -> tuple[str, dict]:
-    """Async Claude API call with streaming."""
+    """Async Claude API call with streaming.
+
+    When MCP servers are connected, the turn runs through the tool-use loop
+    instead of a plain stream, so the model can actually call the tools it has
+    been told about. Streaming is given up for those turns: the answer is not
+    known until the tools have run, so there is nothing to stream until then.
+    """
     client = _get_async_api_client()
     if client is None:
         return "[Error] anthropic package not installed. Run: pip install anthropic", {}
@@ -438,6 +488,14 @@ async def ask_claude_api_async(
     system = memory_context.append_to_system(
         system, memory_context.build(platform, user_id, user_text))
     messages = history + [{"role": "user", "content": user_text}]
+
+    tool_result = await _try_mcp_tool_loop(
+        client, model=model, system=system, messages=messages,
+        max_tokens=max_tokens, on_progress=on_progress,
+    )
+    if tool_result is not None:
+        return tool_result
+
     result_parts: list[str] = []
     stats = {"tools_used": []}
 

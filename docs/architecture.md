@@ -65,7 +65,8 @@ loop-affine — see below.
 | Cost and routing | `cost_budget.py`, `smart_router.py`, `two_agent.py` | Budgets, per-message model selection, the planner/executor split |
 | Self-improvement | `evaluator.py`, `preferences.py`, `prompt_optimizer.py`, `feedback.py`, `updater.py`, `auto_scheduler.py` | LLM-judge scoring, learned preferences, prompt A/B, update checks |
 | Media and web | `voice_transcription.py`, `tts.py`, `image_gen.py`, `music_gen.py`, `video_gen.py`, `web_search.py`, `web_fetch.py`, `link_understanding.py`, `document_extract.py` | Optional capabilities, each guarded by its own `is_available()` |
-| Infrastructure | `health.py`, `event_bus.py`, `resource_limiter.py`, `error_classifier.py`, `mcp_client.py`, `text_chunking.py`, `markdown_v2.py`, `qr_util.py` | Health/watchdog, in-process events, subprocess ceilings, error classification, MCP, formatting |
+| MCP | `mcp_client.py`, `mcp_tools.py` | Server connections and the JSON-RPC transport; converting discovered tools into Anthropic tool definitions and running the tool-use loop |
+| Infrastructure | `health.py`, `event_bus.py`, `resource_limiter.py`, `error_classifier.py`, `text_chunking.py`, `markdown_v2.py`, `qr_util.py` | Health/watchdog, in-process events, subprocess ceilings, error classification, formatting |
 
 Optional features are imported inside `try/except ImportError` and expose
 `is_available()`, so the bot runs with only the core dependencies installed and

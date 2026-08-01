@@ -225,6 +225,8 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "MCP_ALLOW_ANY_COMMAND": ("Operations", "Disable the MCP command allowlist entirely. Understand what that means first."),
     "MCP_HANDSHAKE_TIMEOUT": ("Operations", "Seconds to wait for an MCP server's initialize and tools/list replies."),
     "MCP_CALL_TIMEOUT": ("Operations", "Seconds to wait for an MCP tool call to return."),
+    "MCP_MAX_TOOL_TURNS": ("Operations", "How many rounds of MCP tool calls one message may take before the bot stops."),
+    "MCP_MAX_RESULT_CHARS": ("Operations", "Longest MCP tool result fed back to Claude; longer ones are truncated."),
 
     # ── Watchdog (scripts/watchdog.py) ──
     "WATCHDOG_ENABLED": ("Watchdog", "Master switch for the self-healing supervisor."),

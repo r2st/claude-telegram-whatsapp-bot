@@ -250,6 +250,8 @@ Health endpoint, debugging, MCP.
 | `MCP_CONFIG_FILE` |  | Path to an `mcpServers` JSON config. |
 | `MCP_ENABLED` | `false` | Connect to external MCP servers. |
 | `MCP_HANDSHAKE_TIMEOUT` | `10` | Seconds to wait for an MCP server's initialize and tools/list replies. |
+| `MCP_MAX_RESULT_CHARS` | `20000` | Longest MCP tool result fed back to Claude; longer ones are truncated. |
+| `MCP_MAX_TOOL_TURNS` | `8` | How many rounds of MCP tool calls one message may take before the bot stops. |
 | `TELECHAT_DEBUG` |  | Verbose logging, and tracebacks instead of friendly messages. |
 | `WATCHDOG_INTERVAL` | `30` | Seconds between watchdog liveness checks. |
 
@@ -272,4 +274,4 @@ Health endpoint, debugging, MCP.
 
 ---
 
-153 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.
+155 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.

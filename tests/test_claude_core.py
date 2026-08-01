@@ -1623,3 +1623,105 @@ class TestGetUsage:
         assert result["messages"] >= 1
         assert result["input"] >= 10
         assert result["output"] >= 5
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 20. MCP tool-loop gating
+#
+# MCP tools only reached Claude as prose in the system prompt, so a configured
+# server was described but never callable. The API path now routes through the
+# tool loop — but ONLY when MCP is genuinely usable. A bot with no MCP set up
+# must behave exactly as it did before, and a broken MCP server must cost the
+# user its tools, not their reply.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class _FakeManager:
+    def __init__(self, tools=None, raises=None):
+        self._tools = tools or []
+        self._raises = raises
+
+    def list_tools(self):
+        if self._raises:
+            raise self._raises
+        return self._tools
+
+
+class TestMcpToolLoopGating:
+    async def _call(self):
+        return await cc._try_mcp_tool_loop(
+            MagicMock(), model="m", system="s",
+            messages=[{"role": "user", "content": "hi"}], max_tokens=100,
+        )
+
+    @pytest.mark.asyncio
+    async def test_skipped_when_mcp_is_disabled(self, monkeypatch):
+        from telechat_pkg import mcp_client
+        monkeypatch.setattr(mcp_client, "MCP_ENABLED", False)
+        assert await self._call() is None
+
+    @pytest.mark.asyncio
+    async def test_skipped_when_no_tools_were_discovered(self, monkeypatch):
+        # MCP on but every server failed to connect: fall through to a normal
+        # turn rather than sending the API an empty `tools` list.
+        from telechat_pkg import mcp_client
+        monkeypatch.setattr(mcp_client, "MCP_ENABLED", True)
+        monkeypatch.setattr(mcp_client, "get_mcp_manager", lambda: _FakeManager([]))
+        assert await self._call() is None
+
+    @pytest.mark.asyncio
+    async def test_a_broken_manager_does_not_lose_the_reply(self, monkeypatch):
+        from telechat_pkg import mcp_client
+        monkeypatch.setattr(mcp_client, "MCP_ENABLED", True)
+        monkeypatch.setattr(
+            mcp_client, "get_mcp_manager",
+            lambda: _FakeManager(raises=RuntimeError("server exploded")))
+        assert await self._call() is None
+
+    @pytest.mark.asyncio
+    async def test_runs_the_loop_when_tools_are_available(self, monkeypatch):
+        from telechat_pkg import mcp_client, mcp_tools
+        from telechat_pkg.mcp_client import MCPTool
+        monkeypatch.setattr(mcp_client, "MCP_ENABLED", True)
+        monkeypatch.setattr(
+            mcp_client, "get_mcp_manager",
+            lambda: _FakeManager([MCPTool("read", "Read", "files", {})]))
+
+        called = {}
+
+        async def _fake_loop(client, **kwargs):
+            called.update(kwargs)
+            return "tool answer", {"tools_used": ["files__read"]}
+
+        monkeypatch.setattr(mcp_tools, "run_tool_loop", _fake_loop)
+        result = await self._call()
+        assert result == ("tool answer", {"tools_used": ["files__read"]})
+        assert called["model"] == "m"
+        assert called["system"] == "s"
+
+    @pytest.mark.asyncio
+    async def test_api_path_falls_through_to_streaming_without_mcp(self, monkeypatch):
+        # The regression that matters most: no MCP configured must leave the
+        # existing streaming path untouched.
+        from telechat_pkg import mcp_client
+        monkeypatch.setattr(mcp_client, "MCP_ENABLED", False)
+
+        streamed = MagicMock()
+        streamed.__aenter__ = AsyncMock(return_value=streamed)
+        streamed.__aexit__ = AsyncMock(return_value=False)
+
+        async def _chunks():
+            yield "streamed "
+            yield "answer"
+
+        streamed.text_stream = _chunks()
+        streamed.get_final_message = AsyncMock(return_value=SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=5, output_tokens=3)))
+
+        client = MagicMock()
+        client.messages.stream = MagicMock(return_value=streamed)
+        monkeypatch.setattr(cc, "_get_async_api_client", lambda: client)
+
+        reply, stats = await cc.ask_claude_api_async("hi", [])
+        assert reply == "streamed answer"
+        assert stats["input_tokens"] == 5
