@@ -60,7 +60,7 @@ loop-affine — see below.
 | Claude invocation | `claude_core.py`, `models.py` | The three ways to reach Claude, prompt assembly, streaming callbacks, output parsing, the model/pricing registry |
 | Persistence | `store.py`, `session_manager.py` | SQLite connection handling, the async write queue, history cache, rate limiting, usage and cost tracking, multi-session state |
 | Adapters | `telegram_bot.py`, `whatsapp_bot.py`, `slack_bot.py`, `web_chat.py` (+ `web_chat_ui.html`) | Per-platform message handling, commands, access control, rendering |
-| Desktop bridge | `desktop_bridge.py` | Claude Code hooks → Telegram cards, replies → `claude --resume`, tool approval, session following |
+| Desktop bridge | `desktop_bridge.py`, `bridge_evidence.py` | Claude Code hooks → Telegram cards, replies → `claude --resume`, tool approval, session following; card evidence (files/tests/errors) parsed from the transcript |
 | Recall | `memory.py`, `knowledge_base.py`, `context_compaction.py` | FTS5 memories, chunked document store, history summarisation |
 | Cost and routing | `cost_budget.py`, `smart_router.py`, `two_agent.py` | Budgets, per-message model selection, the planner/executor split |
 | Self-improvement | `evaluator.py`, `preferences.py`, `prompt_optimizer.py`, `feedback.py`, `updater.py`, `auto_scheduler.py` | LLM-judge scoring, learned preferences, prompt A/B, update checks |

@@ -11,6 +11,35 @@ not which function moved.
 
 ### Added
 
+- **Triage cards now show what the session did, not just what it said.** A card
+  read "✅ DONE — fixed the token refresh race", and from a phone there was no
+  way to tell whether that meant one file or thirty, or whether the suite had
+  been run at all. The same sentence gets written either way, so the card could
+  not answer the only question it exists to answer: do I need to get to my
+  laptop?
+
+  Stop cards and replies from `claude --resume` now carry a block under the
+  digest with the files the turn touched and their line counts, the test result
+  if a suite ran (pytest, jest/vitest, cargo, `go test`), and the tail of
+  anything that failed:
+
+  ```
+  📝 3 files  +112 −47
+    auth/hashing.py  +64 −31
+    tests/test_auth_flow.py  +16  new
+  ❌ pytest — 125 passed · 3 failed
+  ❌ Failed — pytest -q
+  E   assert 3 == 4
+  ```
+
+  None of this goes through a model. Claude Code already records every tool
+  call, the patch it produced and the exit status of every command, so the facts
+  are read out of the transcript — exact, free, and still there when the digest
+  model is unreachable. A failed edit is not listed as a change, because sending
+  you to your laptop to look at an edit that never landed is worse than saying
+  nothing; and a log line that merely contains the word "failed" is not reported
+  as a test failure for the same reason.
+
 - **Voice messages work without paying anyone.** Transcription needed a paid
   `OPENAI_API_KEY`, so for most installs the answer to "can I just talk to it?"
   was "first go buy an OpenAI key" — and the feature sat switched off. Groq

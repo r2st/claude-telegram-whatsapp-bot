@@ -153,7 +153,13 @@ Every notification and session reply is run through a fast model (haiku) that pr
 
 ⚠️ NEEDS DECISION
 Migrated password hashing to argon2id, consolidated token paths,
-added refresh rotation. All 31 tests pass, staging verified.
+added refresh rotation.
+
+📝 3 files  +112 −47
+  auth/hashing.py  +64 −31
+  auth/tokens.py  +32 −16
+  tests/test_auth_flow.py  +16  new
+✅ pytest — 31 passed · 2 skipped
 
 ⚠️ NEEDS YOU: Migrate OAuth1 to the new flow or drop legacy support?
 
@@ -161,10 +167,11 @@ added refresh rotation. All 31 tests pass, staging verified.
 ```
 
 - **Status at a glance** — ✅ DONE / ⚠️ NEEDS DECISION / ❌ BLOCKED / ℹ️ UPDATE
+- **Evidence, not just prose** — the files it touched with line counts, the test result, and the tail of anything that failed, read straight out of the session transcript. "Done, fixed it" reads the same whether one file changed or thirty; this is the part you can actually check from a phone
 - **Decisions surface to the top** — if Claude is asking you something, it's pulled out and flagged, so you can decide from your phone
 - **Full output on demand** — tap **📄 Full output** to get the complete, untrimmed text (smart-chunked, or attached as `.txt` if huge)
 
-The digest never loses information — the raw output is always one tap away. If summarization is unavailable, the bridge falls back to posting the full chunked text.
+The digest never loses information — the raw output is always one tap away. If summarization is unavailable, the bridge falls back to posting the full chunked text, and the evidence block still comes with it (it is parsed, not generated, so it does not depend on a model being reachable).
 
 ### How it works
 

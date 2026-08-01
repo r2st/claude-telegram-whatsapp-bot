@@ -915,6 +915,23 @@ def _format_digest(digest: str) -> tuple[str, bool]:
     return out, bool(decision or status == "NEEDS DECISION")
 
 
+def _evidence_block(tpath: Optional[Path], cwd: Optional[str] = None) -> str:
+    """Rendered files/tests/errors for the turn a transcript just finished.
+
+    Wrapped rather than called directly so that a malformed transcript costs a
+    card its evidence block and nothing more — this runs inside a Stop hook,
+    where an exception means the notification never arrives at all.
+    """
+    if not tpath:
+        return ""
+    try:
+        from .bridge_evidence import collect_evidence
+        return collect_evidence(tpath, cwd).render()
+    except Exception:
+        log.debug("evidence block failed", exc_info=True)
+        return ""
+
+
 def _store_full_output(content: str) -> str:
     """Stash full output, return a short token for the 'Full output' button."""
     token = uuid.uuid4().hex[:10]
@@ -938,18 +955,32 @@ def _get_full_output(token: str) -> Optional[str]:
     return row[0] if row else None
 
 
-def _digest_card(header: str, raw_body: str, session_short: Optional[str] = None) -> Optional[dict]:
-    """Send a triage card: AI digest + quick-action buttons.
+def _digest_card(header: str, raw_body: str, session_short: Optional[str] = None,
+                 evidence: str = "") -> Optional[dict]:
+    """Send a triage card: AI digest + evidence block + quick-action buttons.
       Row 1 (when session known): [✅ Proceed] (decisions only) · [📊 Status]
       Row 2: [💬 Use session] · [📄 Full output]
     Falls back to chunked full text if summarization is unavailable.
-    Returns the Telegram response of the button-bearing message (for DB row capture)."""
+    Returns the Telegram response of the button-bearing message (for DB row capture).
+
+    ``evidence`` is the rendered files/tests/errors block from bridge_evidence.
+    It is deliberately *not* fed to the summarizer: those facts are already
+    exact, and paraphrasing them through a model can only make them wrong."""
     digest = _summarize(raw_body)
     if not digest:
+        # Even with no digest the evidence is worth having — arguably more so,
+        # since the fallback dumps raw text the reader has to skim. It goes in
+        # its own message rather than appended to the body: _tg_send_long runs
+        # everything through _md(), which strips exactly the backticks and
+        # asterisks the evidence block is made of.
         _tg_send_long(header, raw_body)
+        if evidence:
+            _tg_send(evidence)
         return None
 
     body_text, has_decision = _format_digest(digest)
+    if evidence:
+        body_text += f"\n\n{evidence}"
     token = _store_full_output(raw_body)
 
     rows = []
@@ -995,7 +1026,12 @@ def _run_resume_background(sid: str, cwd: str, message: str) -> None:
                 env=env,
             )
             out = (r.stdout or "").strip() or (r.stderr or "").strip() or "(no output)"
-            _digest_card(f"💬 *Reply from* `[{sid[:8]}]`", out, session_short=sid[:8])
+            # The resume just wrote its turn to the transcript, so the same
+            # extraction that enriches a Stop card works here — a reply sent
+            # from your phone should show what it changed.
+            evidence = _evidence_block(_find_transcript_by_sid(sid), real_cwd)
+            _digest_card(f"💬 *Reply from* `[{sid[:8]}]`", out,
+                         session_short=sid[:8], evidence=evidence)
         except subprocess.TimeoutExpired:
             _tg_send(f"⏱ Session `[{sid[:8]}]` timed out (15 min)")
         except Exception as e:
@@ -1019,10 +1055,17 @@ def hook_notify(event: str, payload: dict) -> None:
     body_parts = []
     if notif_msg:
         body_parts.append(notif_msg)
-    summary = _last_assistant_text(_find_transcript(payload)) if event in ("Stop", "SubagentStop") else None
+    transcript = _find_transcript(payload)
+    summary = _last_assistant_text(transcript) if event in ("Stop", "SubagentStop") else None
     if summary:
         body_parts.append(summary)
     body = "\n\n".join(body_parts)
+
+    # What the turn actually did — files, tests, errors — read straight out of
+    # the transcript. A Notification is a permission prompt, not finished work,
+    # so it has no turn to describe.
+    evidence = (_evidence_block(transcript, cwd)
+                if event in ("Stop", "SubagentStop") else "")
 
     footer_note = "_Reply to interact, or tap a button._"
     session_short = short if (sid and cwd) else None
@@ -1030,7 +1073,7 @@ def hook_notify(event: str, payload: dict) -> None:
     # Substantial body → AI triage digest + [📄 Full output] (+ [💬 Use session]) buttons.
     # Short / empty body → simple card with the Use-session button.
     if body and len(body) >= _DIGEST_MIN_CHARS:
-        r = _digest_card(header, body, session_short=session_short)
+        r = _digest_card(header, body, session_short=session_short, evidence=evidence)
         if r is None:
             # digest unavailable → fallback already chunked the body; add a button-bearing tail.
             markup = {"inline_keyboard": [[
@@ -1041,7 +1084,12 @@ def hook_notify(event: str, payload: dict) -> None:
         markup = {"inline_keyboard": [[
             {"text": "💬 Use this session", "callback_data": f"bridge:use:{short}"},
         ]]} if session_short else None
-        text = header + ("\n\n" + _md(body) if body else "") + "\n\n" + footer_note
+        # A short body is where evidence earns the most: "Done." plus three
+        # files and a green suite is a card you can act on; "Done." alone is not.
+        text = header + ("\n\n" + _md(body) if body else "")
+        if evidence:
+            text += "\n\n" + evidence
+        text += "\n\n" + footer_note
         r = _tg_send(text, reply_markup=markup)
 
     if r and r.get("ok") and sid and cwd:

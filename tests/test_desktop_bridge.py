@@ -1040,6 +1040,108 @@ class TestNotifyHook:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 6b. Evidence on the card
+#
+# The card used to carry only what the assistant *said*. These assert that what
+# it *did* — files, tests, failures — reaches the phone too, on every route a
+# card can take: digested, undigested, and short-body.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _working_turn(cwd: str) -> list[dict]:
+    """A turn that edited a file and ran a suite that went red."""
+    return [
+        {"type": "user", "message": {"content": [{"type": "text", "text": "fix it"}]}},
+        {"type": "assistant", "cwd": cwd, "message": {"content": [
+            {"type": "tool_use", "id": "e1", "name": "Edit",
+             "input": {"file_path": f"{cwd}/auth_flow.py"}},
+        ]}},
+        {"type": "user",
+         "toolUseResult": {"structuredPatch": [{"lines": ["+new", "+more", "-old"]}]},
+         "message": {"content": [
+             {"type": "tool_result", "tool_use_id": "e1", "content": "ok"}]}},
+        {"type": "assistant", "cwd": cwd, "message": {"content": [
+            {"type": "tool_use", "id": "b1", "name": "Bash",
+             "input": {"command": "pytest -q"}},
+        ]}},
+        {"type": "user",
+         "toolUseResult": {"stdout": "3 failed, 125 passed in 2.10s", "stderr": ""},
+         "message": {"content": [
+             {"type": "tool_result", "tool_use_id": "b1", "content": "…"}]}},
+        {"type": "assistant", "cwd": cwd, "message": {"content": [
+            {"type": "text", "text": "Reworked the refresh path."},
+        ]}},
+    ]
+
+
+class TestCardEvidence:
+    def test_a_stop_card_names_the_files_and_the_suite(self, bridge, no_summarizer):
+        bridge.write_transcript("abcd1234-session", "/tmp/proj", _working_turn("/tmp/proj"))
+        db.hook_notify("Stop", {"session_id": "abcd1234-session", "cwd": "/tmp/proj"})
+        blob = "\n".join(bridge.tg.texts)
+        assert "auth_flow.py" in blob        # and not mangled to "auth flow.py"
+        assert "+2" in blob and "−1" in blob
+        assert "3 failed" in blob and "125 passed" in blob
+
+    def test_evidence_survives_the_no_digest_fallback(self, bridge, no_summarizer):
+        """The fallback chunker runs the body through _md(), which would eat the
+        block's backticks and asterisks — so it is posted on its own."""
+        long_turn = _working_turn("/tmp/proj")
+        long_turn[-1]["message"]["content"][0]["text"] = "x " * 200
+        bridge.write_transcript("abcd1234-session", "/tmp/proj", long_turn)
+        db.hook_notify("Stop", {"session_id": "abcd1234-session", "cwd": "/tmp/proj"})
+        assert any("`auth_flow.py`" in t for t in bridge.tg.texts)
+
+    def test_evidence_reaches_the_digested_card(self, bridge, monkeypatch):
+        monkeypatch.setattr(db, "_summarize", lambda raw: "DONE\nReworked the refresh path.")
+        long_turn = _working_turn("/tmp/proj")
+        long_turn[-1]["message"]["content"][0]["text"] = "x " * 200
+        bridge.write_transcript("abcd1234-session", "/tmp/proj", long_turn)
+        db.hook_notify("Stop", {"session_id": "abcd1234-session", "cwd": "/tmp/proj"})
+        card = bridge.tg.texts[0]
+        # Prose from the model, facts from the transcript, in that order.
+        assert card.index("Reworked") < card.index("auth_flow.py")
+        assert "3 failed" in card
+
+    def test_a_short_body_still_carries_evidence(self, bridge, no_summarizer):
+        """'Done.' plus three files and a red suite is actionable. 'Done.' is not."""
+        turn = _working_turn("/tmp/proj")
+        turn[-1]["message"]["content"][0]["text"] = "Done."
+        bridge.write_transcript("abcd1234-session", "/tmp/proj", turn)
+        db.hook_notify("Stop", {"session_id": "abcd1234-session", "cwd": "/tmp/proj"})
+        assert any("auth_flow.py" in t and "Done." in t for t in bridge.tg.texts)
+
+    def test_a_notification_card_has_no_evidence_block(self, bridge, no_summarizer):
+        """A permission prompt is not finished work — there is no turn to describe."""
+        bridge.write_transcript("abcd1234-session", "/tmp/proj", _working_turn("/tmp/proj"))
+        db.hook_notify("Notification", {
+            "session_id": "abcd1234-session", "cwd": "/tmp/proj", "message": "needs Bash",
+        })
+        assert not any("auth_flow.py" in t for t in bridge.tg.texts)
+
+    def test_an_unreadable_transcript_costs_the_block_not_the_card(self, bridge, monkeypatch):
+        """This runs inside a Stop hook: no evidence is a far smaller failure
+        than no notification."""
+        monkeypatch.setattr(db, "_summarize", lambda raw: None)
+        monkeypatch.setattr(
+            "telechat_pkg.bridge_evidence.collect_evidence",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        bridge.write_transcript("abcd1234-session", "/tmp/proj", [
+            bridge.assistant_turn("Finished the migration.", cwd="/tmp/proj"),
+        ])
+        db.hook_notify("Stop", {"session_id": "abcd1234-session", "cwd": "/tmp/proj"})
+        assert any("Finished the migration." in t for t in bridge.tg.texts)
+
+    def test_a_reply_from_a_resume_shows_what_it_changed(self, bridge, no_summarizer):
+        cwd = bridge.make_cwd("proj")
+        bridge.write_transcript("abcd1234-x", cwd, _working_turn(cwd))
+        bridge.set_claude_output(stdout="Reworked it.")
+        db._run_resume_background("abcd1234-x", cwd, "please fix")
+        assert bridge.wait_for_text("auth_flow.py")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 7. The background watcher
 #
 # It runs on a daemon thread and used to swallow every exception silently, so a
