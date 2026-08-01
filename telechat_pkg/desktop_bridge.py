@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import sqlite3
@@ -29,6 +30,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -436,22 +438,134 @@ def _rule_label(tool: str, prefix: str) -> str:
 
 # ───────────────────────── Telegram API (raw, no python-telegram-bot) ─────────────────────────
 
+#: HTTP statuses where trying again is pointless. A 400 means the payload is
+#: malformed and will be malformed on the next attempt too; 401/403 mean the
+#: token is wrong or the bot was blocked. Retrying these burns seconds and
+#: hides the real cause behind a timeout.
+_TG_PERMANENT = frozenset({400, 401, 403, 404})
+
+#: Ceiling on a server-supplied `retry_after`. Telegram can ask for a very long
+#: pause; a hook subprocess that honours it verbatim looks like a hang, and the
+#: card is better late from the next attempt than never from this one.
+_TG_MAX_RETRY_AFTER = 30.0
+
+
+def _tg_attempts() -> int:
+    try:
+        return max(1, int(os.environ.get("BRIDGE_TG_RETRIES", "4")))
+    except (TypeError, ValueError):
+        return 4
+
+
+def _tg_timeout() -> float:
+    try:
+        return max(1.0, float(os.environ.get("BRIDGE_TG_TIMEOUT", "10")))
+    except (TypeError, ValueError):
+        return 10.0
+
+
+def _tg_backoff(attempt: int) -> float:
+    """Exponential backoff with jitter: ~0.5s, 1s, 2s, capped at 8s.
+
+    The jitter matters more than it looks. Cards are posted by short-lived hook
+    subprocesses, and a laptop waking from sleep fires several at once — in
+    lockstep, they would retry in lockstep and rebuild the same thundering herd
+    against an endpoint that is already unhappy.
+    """
+    return min(8.0, 0.5 * (2 ** attempt)) * (0.5 + random.random())
+
+
+def _tg_retry_after(payload: dict) -> Optional[float]:
+    """Seconds Telegram asked us to wait, if it said so."""
+    try:
+        value = float(payload.get("parameters", {}).get("retry_after", 0))
+    except (TypeError, ValueError):
+        return None
+    return min(value, _TG_MAX_RETRY_AFTER) if value > 0 else None
+
+
 def _tg_call(method: str, **params) -> Optional[dict]:
+    """POST to the Telegram API, retrying transient failures.
+
+    This used to be one `urlopen` inside a bare `except: return None`, which
+    made every failure identical and invisible: a laptop resuming from sleep, a
+    wifi handover, a Telegram 5xx, and a genuinely malformed payload all
+    produced a silently dropped card and not one line in the log. Cards are the
+    product — a Stop card that never arrives is a session you never hear about,
+    and there was no way to find out it had happened.
+
+    Retries cover connection failures, timeouts, 5xx, and 429 (honouring
+    `retry_after`). Client errors are not retried; they are logged with
+    Telegram's own description, which is what actually tells you the token is
+    wrong or the chat id is bad.
+
+    One honest caveat: a request that reached Telegram but whose response was
+    lost gets retried, so a dropped response can post a card twice. There is no
+    idempotency key to prevent it. A duplicate card is visible and mildly
+    annoying; a missing card is silent and defeats the point of the bridge, so
+    the trade goes this way deliberately. `BRIDGE_TG_RETRIES=1` opts out.
+    """
     env = _load_env_file()
     token = env.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:
+        log.warning("no Telegram bot token — bridge cards cannot be delivered")
         return None
     for k, v in list(params.items()):
         if isinstance(v, (dict, list)):
             params[k] = json.dumps(v)
     body = urllib.parse.urlencode(params).encode()
     url = f"https://api.telegram.org/bot{token}/{method}"
-    req = urllib.request.Request(url, data=body, method="POST")
-    try:
-        resp = urllib.request.urlopen(req, timeout=10)
-        return json.loads(resp.read())
-    except Exception:
-        return None
+
+    attempts = _tg_attempts()
+    for attempt in range(attempts):
+        last = attempt == attempts - 1
+        delay: Optional[float] = None
+        try:
+            req = urllib.request.Request(url, data=body, method="POST")
+            with urllib.request.urlopen(req, timeout=_tg_timeout()) as resp:
+                payload = json.loads(resp.read())
+            if payload.get("ok"):
+                return payload
+            # A 200 with ok=false: Telegram accepted the request and refused
+            # the operation. "message is not modified" lands here and is not
+            # worth a retry or a raised eyebrow.
+            delay = _tg_retry_after(payload)
+            if delay is None:
+                log.debug("telegram %s refused: %s", method,
+                          payload.get("description", payload))
+                return payload
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = json.loads(exc.read()).get("description", "")
+            except Exception:
+                log.debug("telegram %s: unreadable error body", method, exc_info=True)
+            if exc.code in _TG_PERMANENT:
+                # 400 is also how a Markdown parse error arrives, and _tg_send
+                # and _tg_edit answer that by retrying as plain text. Routine
+                # and already handled, so it stays at debug; 401/403/404 are
+                # configuration problems someone needs to see.
+                emit = log.debug if exc.code == 400 else log.warning
+                emit("telegram %s failed permanently (HTTP %s): %s",
+                     method, exc.code, detail or exc.reason)
+                return None
+            if exc.code == 429:
+                delay = _tg_retry_after({"parameters": {
+                    "retry_after": exc.headers.get("Retry-After", 0)}})
+            log.debug("telegram %s: HTTP %s%s", method, exc.code,
+                      f" ({detail})" if detail else "")
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            # URLError/OSError: DNS, refused, reset, timeout — the machine was
+            # asleep or the network moved. ValueError: a captive portal or
+            # proxy answered with something that is not JSON.
+            log.debug("telegram %s: %s", method, exc)
+
+        if last:
+            log.warning("telegram %s gave up after %d attempts — a card was lost",
+                        method, attempts)
+            return None
+        time.sleep(delay if delay is not None else _tg_backoff(attempt))
+    return None
 
 
 def _tg_edit(message_id: int, text: str, chat_id: Optional[str] = None) -> Optional[dict]:

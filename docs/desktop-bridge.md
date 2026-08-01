@@ -138,6 +138,8 @@ into the conversation.
 | Cards arrive, replies do nothing | No long-lived OAuth token; the reply 401s | `claude setup-token`, add `CLAUDE_CODE_OAUTH_TOKEN` to `~/.telechat/.env`, restart |
 | Cards arrive, replies do nothing, token is set | Telechat itself is not running — cards come from the hook subprocess, but replies need the poller | `telechat status`, then `telechat` or `telechat bridge service install` |
 | Cards stop after a reboot | The background service is not loaded | `telechat bridge service status` → `telechat bridge service install` |
+| An occasional card never arrives | The network dropped every retry — check `bot.log` for `gave up` | Usually transient; raise `BRIDGE_TG_RETRIES` if it recurs |
+| The same card arrives twice | A call was retried after its response was lost in transit | Expected and rare; `BRIDGE_TG_RETRIES=1` trades it for lost cards |
 | `Bootstrap failed: 5` from launchctl | The service label was explicitly disabled | `launchctl enable gui/$(id -u)/com.telechat.bot`, then re-run the service install |
 | Duplicate cards for one event | Two Telechat processes are polling — usually a launchd service *and* a foreground `telechat` | `telechat stop`, then let the service own it |
 | Approval prompts never appear | The `PreToolUse` hook was not installed, or approval is not armed for that project | `telechat bridge install --approval`, then `/desktop_approve_on` as a reply to a card from that project |
@@ -162,6 +164,8 @@ into the conversation.
 | `BRIDGE_APPROVAL_TIMEOUT_ACTION` | `fallthrough` | What an untapped card does: `fallthrough`, `deny`, or `allow` |
 | `CLAUDE_CODE_OAUTH_TOKEN` | — | Required for replies and digests |
 | `BRIDGE_STREAM` | `1` | Live progress card while a reply runs; `0` waits silently |
+| `BRIDGE_TG_RETRIES` | `4` | Attempts per Telegram call before a card is given up on |
+| `BRIDGE_TG_TIMEOUT` | `10` | Seconds to wait on a single Telegram call |
 | `BRIDGE_STREAM_EDIT_SECS` | `3` | Minimum seconds between edits to that card (floor `1`) |
 
 Start/exit pings are on by default and toggled from the chat with `/lifecycle`,

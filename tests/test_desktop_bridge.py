@@ -2435,3 +2435,191 @@ class TestStreamConfig:
         # 200ms would otherwise hammer it.
         monkeypatch.setenv("BRIDGE_STREAM_EDIT_SECS", "0")
         assert db._stream_edit_secs() == 1.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 10. Telegram transport: retries and error visibility
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class FakeHTTPResponse:
+    """Minimal stand-in for what urlopen returns, usable as a context manager."""
+
+    def __init__(self, payload):
+        self._body = json.dumps(payload).encode() if isinstance(payload, dict) else payload
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _http_error(code: int, description: str = "", retry_after: int = 0):
+    import io
+    import urllib.error
+    body = json.dumps({"ok": False, "description": description}).encode()
+    headers = {"Retry-After": str(retry_after)} if retry_after else {}
+    return urllib.error.HTTPError(
+        "https://api.telegram.org", code, description, headers, io.BytesIO(body))
+
+
+@pytest.fixture
+def transport():
+    """Drive the real `_tg_call` against a scripted sequence of outcomes.
+
+    Deliberately independent of the `bridge` fixture, which stubs `_tg_call`
+    wholesale — right for every other test here, and useless when `_tg_call`
+    is itself the thing under test. `wired_transport` builds the small amount
+    of world this needs: a home with a token in it.
+    """
+
+    class Transport:
+        def __init__(self):
+            self.outcomes = []
+            self.calls = 0
+            self.sleeps = []
+
+        def script(self, *outcomes):
+            self.outcomes = list(outcomes)
+
+        def urlopen(self, req, timeout=None):
+            self.calls += 1
+            outcome = self.outcomes.pop(0) if self.outcomes else {"ok": True}
+            if isinstance(outcome, Exception):
+                raise outcome
+            return FakeHTTPResponse(outcome)
+
+    return Transport()
+
+
+@pytest.fixture
+def wired_transport(tmp_path, monkeypatch, transport):
+    """`transport`, with urlopen and sleep patched in and a token on disk."""
+    home = tmp_path / "thome"
+    (home / ".telechat").mkdir(parents=True)
+    (home / ".telechat" / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_CHAT_ID=424242\n")
+    monkeypatch.setattr(db, "TELECHAT_HOME", home / ".telechat")
+    monkeypatch.setattr(db.urllib.request, "urlopen", transport.urlopen)
+    monkeypatch.setattr(db.time, "sleep", lambda s: transport.sleeps.append(s))
+    for name in ("BRIDGE_TG_RETRIES", "BRIDGE_TG_TIMEOUT"):
+        monkeypatch.delenv(name, raising=False)
+    return transport
+
+
+class TestTelegramTransport:
+    def test_a_successful_call_returns_the_payload(self, wired_transport):
+        wired_transport.script({"ok": True, "result": {"message_id": 7}})
+        assert db._tg_call("sendMessage", text="hi")["result"]["message_id"] == 7
+        assert wired_transport.calls == 1
+
+    def test_a_transient_failure_is_retried_rather_than_dropped(self, wired_transport):
+        # The regression this exists for: one `urlopen` in a bare except meant a
+        # laptop waking from sleep silently lost the card, with nothing logged.
+        wired_transport.script(OSError("network is unreachable"),
+                               {"ok": True, "result": {"message_id": 7}})
+        assert db._tg_call("sendMessage", text="hi")["ok"] is True
+        assert wired_transport.calls == 2
+
+    def test_a_server_error_is_retried(self, wired_transport):
+        wired_transport.script(_http_error(502, "Bad Gateway"), {"ok": True})
+        assert db._tg_call("sendMessage", text="hi")["ok"] is True
+        assert wired_transport.calls == 2
+
+    def test_a_captive_portal_answering_with_html_is_retried(self, wired_transport):
+        wired_transport.script(b"<html>sign in to the wifi</html>", {"ok": True})
+        assert db._tg_call("sendMessage", text="hi")["ok"] is True
+
+    def test_retries_are_bounded_and_then_it_gives_up(self, wired_transport):
+        wired_transport.script(*[OSError("down")] * 10)
+        assert db._tg_call("sendMessage", text="hi") is None
+        assert wired_transport.calls == 4          # the documented default
+
+    def test_giving_up_says_a_card_was_lost(self, wired_transport, caplog):
+        wired_transport.script(*[OSError("down")] * 10)
+        with caplog.at_level(logging.WARNING, logger=db.log.name):
+            db._tg_call("sendMessage", text="hi")
+        assert "gave up" in caplog.text
+
+    def test_backoff_grows_between_attempts(self, wired_transport):
+        wired_transport.script(*[OSError("down")] * 10)
+        db._tg_call("sendMessage", text="hi")
+        # Jittered, so assert the trend rather than exact values — and that
+        # nothing sleeps for an absurd length of time in a hook subprocess.
+        assert len(wired_transport.sleeps) == 3
+        assert max(wired_transport.sleeps) <= 8.0
+        assert wired_transport.sleeps[-1] > wired_transport.sleeps[0]
+
+    def test_a_malformed_request_is_not_retried(self, wired_transport):
+        # Retrying a 400 cannot help: the payload will be just as malformed.
+        wired_transport.script(_http_error(400, "message text is empty"))
+        assert db._tg_call("sendMessage", text="") is None
+        assert wired_transport.calls == 1
+
+    def test_a_bad_token_is_not_retried_and_is_visible(self, wired_transport, caplog):
+        with caplog.at_level(logging.WARNING, logger=db.log.name):
+            wired_transport.script(_http_error(401, "Unauthorized"))
+            assert db._tg_call("sendMessage", text="hi") is None
+        assert wired_transport.calls == 1
+        assert "Unauthorized" in caplog.text
+
+    def test_a_rate_limit_waits_exactly_as_long_as_telegram_asked(self, wired_transport):
+        wired_transport.script(_http_error(429, "Too Many Requests", retry_after=7),
+                               {"ok": True})
+        assert db._tg_call("sendMessage", text="hi")["ok"] is True
+        assert wired_transport.sleeps == [7.0]
+
+    def test_an_ok_false_retry_after_is_also_honoured(self, wired_transport):
+        # Telegram sometimes reports a flood wait as HTTP 200 with ok=false.
+        wired_transport.script(
+            {"ok": False, "description": "Too Many Requests",
+             "parameters": {"retry_after": 3}},
+            {"ok": True})
+        assert db._tg_call("sendMessage", text="hi")["ok"] is True
+        assert wired_transport.sleeps == [3.0]
+
+    def test_an_outlandish_retry_after_is_capped(self, wired_transport):
+        # A hook subprocess honouring a 20-minute wait verbatim looks like a hang.
+        wired_transport.script(_http_error(429, "flood", retry_after=1200), {"ok": True})
+        db._tg_call("sendMessage", text="hi")
+        assert wired_transport.sleeps == [db._TG_MAX_RETRY_AFTER]
+
+    def test_a_refusal_is_handed_back_so_callers_can_fall_back(self, wired_transport):
+        # _tg_send and _tg_edit answer a Markdown parse failure by retrying as
+        # plain text — they need the non-ok payload, not None.
+        payload = {"ok": False, "description": "can't parse entities"}
+        wired_transport.script(payload)
+        assert db._tg_call("editMessageText", text="*bad")["ok"] is False
+        assert wired_transport.calls == 1
+
+    def test_no_token_means_no_request_at_all(self, wired_transport, monkeypatch, tmp_path):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.setattr(db, "TELECHAT_HOME", empty)
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        assert db._tg_call("sendMessage", text="hi") is None
+        assert wired_transport.calls == 0
+
+    def test_retries_can_be_switched_off(self, wired_transport, monkeypatch):
+        # The escape hatch for anyone who would rather lose a card than risk the
+        # duplicate a retried-but-actually-delivered send can produce.
+        monkeypatch.setenv("BRIDGE_TG_RETRIES", "1")
+        wired_transport.script(*[OSError("down")] * 5)
+        assert db._tg_call("sendMessage", text="hi") is None
+        assert wired_transport.calls == 1
+
+    def test_a_nonsense_retry_setting_falls_back_to_the_default(self, monkeypatch):
+        monkeypatch.setenv("BRIDGE_TG_RETRIES", "many")
+        assert db._tg_attempts() == 4
+
+    def test_a_nonsense_timeout_falls_back_to_the_default(self, monkeypatch):
+        monkeypatch.setenv("BRIDGE_TG_TIMEOUT", "soon")
+        assert db._tg_timeout() == 10.0
+
+    def test_the_attempt_count_cannot_be_zero(self, monkeypatch):
+        monkeypatch.setenv("BRIDGE_TG_RETRIES", "0")
+        assert db._tg_attempts() == 1

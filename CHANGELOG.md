@@ -39,6 +39,26 @@ not which function moved.
 
 ### Fixed
 
+- **A network blip no longer costs you a card, silently.** Every bridge card
+  went out through a single HTTP request wrapped in a bare `except: return
+  None`. One dropped packet — a laptop waking from sleep, a wifi handover, a
+  Telegram 5xx, a rate limit — and the card was gone. Nothing was retried and
+  nothing was logged, so a lost card and a bridge that was never installed
+  looked identical from the outside, and neither `bot.log` nor
+  `telechat bridge status` could tell you which one you had.
+
+  Telegram calls now retry with backoff, wait exactly as long as Telegram asks
+  when rate-limited, and log why when they finally give up. Errors that
+  retrying cannot fix — a malformed request, a bad token, a blocked bot — are
+  not retried, and now say so with Telegram's own description instead of
+  vanishing.
+
+  The trade-off, stated plainly: a call that reached Telegram but whose
+  response was lost gets retried, so a card can very occasionally arrive twice.
+  There is no idempotency key that would prevent it. A duplicate card is
+  visible and mildly annoying; a missing card is silent and defeats the point
+  of the bridge. `BRIDGE_TG_RETRIES=1` chooses the other way.
+
 - **Memory search matched nothing when you asked in a sentence.** `recall`
   joined your words with an implicit AND, so "how do I deploy this?" demanded a
   single memory containing *every* one of those words. Fine for `/recall`,
