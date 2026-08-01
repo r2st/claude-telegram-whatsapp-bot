@@ -11,6 +11,28 @@ not which function moved.
 
 ### Added
 
+- **Voice messages work without paying anyone.** Transcription needed a paid
+  `OPENAI_API_KEY`, so for most installs the answer to "can I just talk to it?"
+  was "first go buy an OpenAI key" — and the feature sat switched off. Groq
+  serves Whisper on a free tier over the same API shape, so it is now the
+  default: put `GROQ_API_KEY` in `.env` (free, from
+  <https://console.groq.com/keys>) and voice notes start working. That key does
+  nothing else here, so setting it turns transcription on by itself; no second
+  flag to find.
+
+  An existing OpenAI setup is untouched and still needs
+  `TRANSCRIPTION_ENABLED=true` — that key is shared with TTS and image
+  generation, and setting it up to make pictures is not consent to send your
+  voice notes anywhere. `TRANSCRIPTION_PROVIDER` pins one explicitly.
+
+  Two sharp edges went with it. `.env.example` shipped `WHISPER_MODEL=whisper-1`
+  for a long time; that model does not exist on Groq, so a leftover line would
+  have 404'd every voice message the day you added a Groq key — a model that
+  belongs to the other provider is now ignored rather than sent. And with
+  nothing configured at all, the bot used to hand Claude the *path* to an `.ogg`
+  it cannot open, which produced a confident answer about a voice message
+  nobody had heard; it now tells you what is missing.
+
 - **Invite links — you can finally hand your bot to someone.** Until now the
   only way to let a friend in was to ask for their numeric Telegram ID, put it
   in `TELEGRAM_ALLOWED_USER_IDS`, and restart. `/invite` mints a one-tap link

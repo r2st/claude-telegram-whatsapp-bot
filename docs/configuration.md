@@ -174,6 +174,7 @@ Voice, images, music, video, search, fetch, documents.
 | `BROWSER_TIMEOUT` | `30000` | Per-action browser timeout in milliseconds. |
 | `EXTRACT_MAX_SIZE_MB` | `50` | Largest document accepted. |
 | `EXTRACT_MAX_TEXT_CHARS` | `500000` | Characters kept from an extracted document. |
+| `GROQ_API_KEY` |  | Groq API key. Groq serves Whisper on a free tier, so this is all voice transcription needs — setting it switches transcription on by itself. Get one at https://console.groq.com/keys. |
 | `IMAGE_GEN_ENABLED` | `false` | Enable image generation. |
 | `IMAGE_GEN_MODEL` | `dall-e-3` | Image model id. |
 | `IMAGE_GEN_QUALITY` | `standard` | Generated image quality tier. |
@@ -190,8 +191,9 @@ Voice, images, music, video, search, fetch, documents.
 | `REPLICATE_API_TOKEN` |  | Replicate token, used for music and video generation. |
 | `SCREENSHOT_DIR` |  | Where browser screenshots are written. |
 | `TAVILY_API_KEY` |  | Tavily key, the other supported search backend. |
-| `TRANSCRIPTION_ENABLED` | `false` | Transcribe inbound voice messages. |
-| `TRANSCRIPTION_MAX_SIZE_MB` | `25` | Largest voice file accepted for transcription. |
+| `TRANSCRIPTION_ENABLED` |  | Transcribe inbound voice messages. Leave unset to let a `GROQ_API_KEY` decide on its own; `false` always wins. An `OPENAI_API_KEY` alone will not enable it, because TTS and image generation share that key. |
+| `TRANSCRIPTION_MAX_SIZE_MB` |  | Largest voice file accepted for transcription. |
+| `TRANSCRIPTION_PROVIDER` |  | Which transcription service to use: `auto` (default — prefers the free one), `groq`, or `openai`. Pinning a provider with no key configured disables transcription rather than quietly using the other one. |
 | `TTS_ENABLED` | `false` | Enable text-to-speech replies. |
 | `TTS_MAX_LENGTH` | `4096` | Longest text sent to the TTS API in one request. |
 | `TTS_MODEL` | `tts-1` | Text-to-speech model id. |
@@ -204,7 +206,7 @@ Voice, images, music, video, search, fetch, documents.
 | `WEB_SEARCH_ENABLED` | `false` | Enable web search. |
 | `WEB_SEARCH_MAX_RESULTS` | `5` | Results kept per search. |
 | `WEB_SEARCH_PROVIDER` | `auto` | Search backend: `auto` picks whichever key is present, or name `brave` / `tavily`. |
-| `WHISPER_MODEL` | `whisper-1` | Whisper model id for transcription. |
+| `WHISPER_MODEL` |  | Whisper model id for transcription. Leave empty for the right default per provider (`whisper-large-v3-turbo` on Groq, `whisper-1` on OpenAI); a model that only exists on the other provider is ignored rather than sent. |
 
 ## Self-improvement
 
@@ -260,4 +262,4 @@ Health endpoint, debugging, MCP.
 
 ---
 
-141 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.
+143 variables, generated from `telechat_pkg/*.py` and `scripts/*.py`.

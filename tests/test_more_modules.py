@@ -3,6 +3,7 @@ text_chunking, video_gen, voice_transcription, web_fetch modules."""
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -680,34 +681,48 @@ from telechat_pkg import voice_transcription as vt
 
 
 class TestVoiceTranscription:
+    """Covers the transcriber against a patched *real* aiohttp.
+
+    tests/test_voice_transcription.py drives the same code through a fake
+    aiohttp module; keeping both means a change that only works against the
+    stand-in gets caught here.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for name in ("GROQ_API_KEY", "OPENAI_API_KEY", "TRANSCRIPTION_ENABLED",
+                     "TRANSCRIPTION_PROVIDER", "TRANSCRIPTION_MAX_SIZE_MB",
+                     "WHISPER_MODEL"):
+            monkeypatch.delenv(name, raising=False)
+
     def test_available(self, monkeypatch):
-        monkeypatch.setattr(vt, "TRANSCRIPTION_ENABLED", True)
-        monkeypatch.setattr(vt, "OPENAI_API_KEY", "k")
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        monkeypatch.setenv("TRANSCRIPTION_ENABLED", "true")
         assert vt.is_available() is True
 
     def test_not_available(self, monkeypatch):
-        monkeypatch.setattr(vt, "TRANSCRIPTION_ENABLED", False)
+        monkeypatch.setenv("OPENAI_API_KEY", "k")
+        monkeypatch.setenv("TRANSCRIPTION_ENABLED", "false")
         assert vt.is_available() is False
 
     @pytest.mark.asyncio
-    async def test_no_api_key(self, monkeypatch):
-        monkeypatch.setattr(vt, "OPENAI_API_KEY", "")
+    async def test_no_api_key(self):
         r = await vt.transcribe("/tmp/test.ogg")
-        assert "OPENAI_API_KEY" in r.error
+        assert "GROQ_API_KEY" in r.error
 
     @pytest.mark.asyncio
     async def test_file_too_large(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(vt, "OPENAI_API_KEY", "key")
-        monkeypatch.setattr(vt, "MAX_AUDIO_SIZE", 10)
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
+        monkeypatch.setenv("TRANSCRIPTION_MAX_SIZE_MB", "1")
         f = tmp_path / "big.ogg"
         f.write_bytes(b"x" * 100)
+        monkeypatch.setattr(os.path, "getsize", lambda _p: 5 * 1024 * 1024)
         r = await vt.transcribe(str(f))
         assert "too large" in r.error
 
     @pytest.mark.asyncio
     async def test_import_error(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(vt, "OPENAI_API_KEY", "key")
-        monkeypatch.setattr(vt, "MAX_AUDIO_SIZE", 1000)
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
         f = tmp_path / "audio.ogg"
         f.write_bytes(b"data")
         real_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
@@ -721,8 +736,7 @@ class TestVoiceTranscription:
 
     @pytest.mark.asyncio
     async def test_success(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(vt, "OPENAI_API_KEY", "key")
-        monkeypatch.setattr(vt, "MAX_AUDIO_SIZE", 10000)
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
         f = tmp_path / "audio.ogg"
         f.write_bytes(b"audiodata")
         mock_resp = AsyncMock(status=200)
@@ -741,8 +755,7 @@ class TestVoiceTranscription:
 
     @pytest.mark.asyncio
     async def test_http_error(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(vt, "OPENAI_API_KEY", "key")
-        monkeypatch.setattr(vt, "MAX_AUDIO_SIZE", 10000)
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
         f = tmp_path / "audio.ogg"
         f.write_bytes(b"data")
         mock_resp = AsyncMock(status=401)
@@ -757,12 +770,11 @@ class TestVoiceTranscription:
              patch("aiohttp.ClientTimeout"), \
              patch("aiohttp.FormData"):
             r = await vt.transcribe(str(f))
-        assert "401" in r.error
+        assert "OPENAI_API_KEY" in r.error
 
     @pytest.mark.asyncio
     async def test_timeout(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(vt, "OPENAI_API_KEY", "key")
-        monkeypatch.setattr(vt, "MAX_AUDIO_SIZE", 10000)
+        monkeypatch.setenv("OPENAI_API_KEY", "key")
         f = tmp_path / "audio.ogg"
         f.write_bytes(b"data")
         mock_sess = AsyncMock()

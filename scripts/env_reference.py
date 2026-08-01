@@ -149,9 +149,11 @@ DESCRIPTIONS: dict[str, tuple[str, str]] = {
     "EXECUTOR_MODEL": ("Cost and routing", "Model that executes each step."),
 
     # ── Media and web ──
-    "TRANSCRIPTION_ENABLED": ("Media and web", "Transcribe inbound voice messages."),
+    "GROQ_API_KEY": ("Media and web", "Groq API key. Groq serves Whisper on a free tier, so this is all voice transcription needs — setting it switches transcription on by itself. Get one at https://console.groq.com/keys."),
+    "TRANSCRIPTION_ENABLED": ("Media and web", "Transcribe inbound voice messages. Leave unset to let a `GROQ_API_KEY` decide on its own; `false` always wins. An `OPENAI_API_KEY` alone will not enable it, because TTS and image generation share that key."),
+    "TRANSCRIPTION_PROVIDER": ("Media and web", "Which transcription service to use: `auto` (default — prefers the free one), `groq`, or `openai`. Pinning a provider with no key configured disables transcription rather than quietly using the other one."),
     "TRANSCRIPTION_MAX_SIZE_MB": ("Media and web", "Largest voice file accepted for transcription."),
-    "WHISPER_MODEL": ("Media and web", "Whisper model id for transcription."),
+    "WHISPER_MODEL": ("Media and web", "Whisper model id for transcription. Leave empty for the right default per provider (`whisper-large-v3-turbo` on Groq, `whisper-1` on OpenAI); a model that only exists on the other provider is ignored rather than sent."),
     "TTS_ENABLED": ("Media and web", "Enable text-to-speech replies."),
     "TTS_VOICE": ("Media and web", "Default voice."),
     "TTS_MODEL": ("Media and web", "Text-to-speech model id."),

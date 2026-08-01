@@ -3028,10 +3028,16 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not voice:
         return
 
-    # Reject excessively large audio uploads (25 MB matches OpenAI Whisper limit)
+    # Reject oversized audio before downloading it, using the same limit the
+    # transcriber enforces — a hardcoded 25 MB here ignored anyone who had
+    # lowered TRANSCRIPTION_MAX_SIZE_MB, and downloaded the file regardless.
+    from .voice_transcription import max_audio_size
+    limit = max_audio_size()
     fsize = getattr(voice, "file_size", None)
-    if isinstance(fsize, int) and fsize > 25 * 1024 * 1024:
-        await update.message.reply_text("Audio file too large (max 25 MB).")
+    if isinstance(fsize, int) and fsize > limit:
+        await update.message.reply_text(
+            f"Audio file too large (max {limit // 1024 // 1024} MB)."
+        )
         return
 
     # Download voice file
@@ -3063,10 +3069,14 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if _task_registry.user_task_count(uid) < MAX_CONCURRENT_TASKS:
             asyncio.create_task(_run_task(update, ctx, uid, transcript))
     else:
-        # No transcription available — send audio path to Claude
-        caption = update.message.caption or "Analyze this voice message."
-        prompt = f"{caption}\n\n[Voice message saved at: {save_path}]"
-        asyncio.create_task(_run_task(update, ctx, uid, prompt))
+        # Handing Claude a path to an .ogg it cannot open produced an answer
+        # about a voice message nobody had heard. Say what is actually wrong,
+        # and point at the free key that fixes it.
+        from .voice_transcription import availability_hint
+        await update.message.reply_text(
+            "I can't listen to voice messages yet — nothing is set up to "
+            f"transcribe them.\n\n{availability_hint()}"
+        )
 
 
 # ─── Message handler ─────────────────────────────────────────────────────────────

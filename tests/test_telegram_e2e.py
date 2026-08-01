@@ -2260,6 +2260,12 @@ class TestHandleVoice:
     @patch("telechat_pkg.telegram_bot.transcription_available", return_value=False)
     @patch("telechat_pkg.telegram_bot._run_task", new_callable=AsyncMock)
     async def test_voice_no_transcription(self, mock_run, _):
+        """With nothing configured, say so — don't ask Claude about a file path.
+
+        The old fallback handed Claude "[Voice message saved at: …]" for an
+        .ogg it cannot open, so the user got a confident answer about a voice
+        message nobody had listened to.
+        """
         update = _make_update(uid=12345)
         voice = MagicMock()
         voice.file_id = "voice123"
@@ -2271,6 +2277,10 @@ class TestHandleVoice:
         ctx.bot.get_file = AsyncMock(return_value=mock_file)
         update.message.caption = None
         await tb.handle_voice(update, ctx)
+
+        mock_run.assert_not_called()
+        said = " ".join(str(c) for c in update.message.reply_text.call_args_list)
+        assert "voice" in said.lower()
 
     @pytest.mark.asyncio
     @patch("telechat_pkg.telegram_bot.transcription_available", return_value=True)

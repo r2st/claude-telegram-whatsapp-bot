@@ -615,6 +615,7 @@ adding a second person to the allowlist.
 - **Invite links** — `/invite` mints a one-tap link that grants a friend access; no user IDs to collect, no `.env` edit, no restart. `/invites` shows who joined through yours
 - **Group chats** — the bot answers when mentioned or replied to and stays quiet otherwise, with its own conversation per room (`/groupmode`)
 - **Guided first run** — a five-step tour instead of a wall of commands
+- **Voice messages** — send a voice note and it answers the transcript; free via Groq's Whisper tier (`GROQ_API_KEY`), no paid key required
 - **Background service** — runs detached, survives terminal close
 - **AI-guided setup** — `telechat init` uses Claude CLI for interactive configuration
 - **Dual Claude mode** — CLI (free with Claude subscription) or API
