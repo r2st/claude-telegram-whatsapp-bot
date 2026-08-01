@@ -1284,7 +1284,7 @@ def describe_tool_call(tool: str, tool_input: dict, cwd: str = "") -> str:
 
     if tool == "Bash":
         command = str(ti.get("command") or "")
-        head = f"*Bash*"
+        head = "*Bash*"
         desc = str(ti.get("description") or "").strip()
         if desc:
             head += f" — _{_md(desc)}_"

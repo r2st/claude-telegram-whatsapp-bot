@@ -42,6 +42,21 @@ def _make_cost_table(db_path: str) -> None:
     conn.close()
 
 
+def _other_day_this_month() -> str:
+    """A date inside the current month that is *not* today.
+
+    These tests isolate the monthly cap by booking spend on a day that does not
+    count toward today's daily total. Hardcoding the 1st broke every time the
+    suite ran on the 1st: the charge landed on today, the daily cap tripped
+    first, and three monthly assertions failed for a reason that had nothing to
+    do with monthly budgets. The month window is ``>= start of month``, so the
+    2nd works as the stand-in on the one day the 1st cannot.
+    """
+    today = time.strftime("%Y-%m-%d")
+    first = time.strftime("%Y-%m-01")
+    return first if today != first else time.strftime("%Y-%m-02")
+
+
 def _add_cost(db_path: str, platform: str, user_id: str, cost: float, *, date: str = "now"):
     conn = sqlite3.connect(db_path)
     if date == "now":
@@ -157,7 +172,7 @@ class TestWarnings:
         # Below daily limit but above monthly warn threshold.
         # Daily budget default $5, monthly $50. Put a charge on a prior day this
         # month so daily cost is 0 but monthly cost crosses 80% of $50 = $40.
-        prior = time.strftime("%Y-%m-01")
+        prior = _other_day_this_month()
         _add_cost(db_path, "tg", "u1", DEFAULT_MONTHLY_BUDGET * WARN_THRESHOLD, date=prior)
         msg = mgr.check("tg", "u1")
         assert msg is not None
@@ -173,7 +188,7 @@ class TestBlocking:
 
     def test_monthly_block(self, mgr, db_path):
         # Monthly exceeded but today's spend below daily limit.
-        prior = time.strftime("%Y-%m-01")
+        prior = _other_day_this_month()
         _add_cost(db_path, "tg", "u1", DEFAULT_MONTHLY_BUDGET + 5.0, date=prior)
         msg = mgr.check("tg", "u1")
         assert msg is not None
@@ -292,7 +307,7 @@ class TestLocalDateAgreement:
     def test_monthly_block_still_fires_on_the_last_day_of_a_month(self, mgr, db_path):
         # Spend booked on the 1st, checked "today" — whatever today is. Under
         # the UTC boundary this returned None for the last hours of a month.
-        prior = time.strftime("%Y-%m-01")
+        prior = _other_day_this_month()
         _add_cost(db_path, "tg", "u1", DEFAULT_MONTHLY_BUDGET + 5.0, date=prior)
         msg = mgr.check("tg", "u1")
         assert msg is not None
